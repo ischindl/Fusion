@@ -89,7 +89,16 @@ describe("GET /api/tasks releaseGate enrichment", () => {
     expect(await store.listTasks?.({ slim: true })).not.toEqual(expect.arrayContaining([expect.objectContaining({ releaseGate: expect.anything() })]));
   });
 
-  it("keeps verdict-less and truncation rows byte-identical", async () => {
+  /*
+  FNXC:TaskLifecycleProjection 2026-11-17-18:45 (RUFU-583):
+  The byte-identity this test guards is "no verdict enrichment leaked into an unenriched row", and it is now
+  stated as fixture-plus-lifecycle rather than the bare fixture. RUFU-583 stamps an explicit lifecycle
+  discriminator on EVERY projected row (`live` here) precisely so a consumer cannot read the absence of a
+  deletion key as "alive", so the key is part of the expected payload by contract. Stating it as a spread
+  keeps the assertion strict — an extra enrichment key on either row still fails it — where loosening it to
+  `toMatchObject` would have silently dropped the guard this test exists for.
+  */
+  it("keeps verdict-less and truncation rows byte-identical apart from the lifecycle stamp", async () => {
     const first = createTask("FN-9029-FIRST");
     const beyondLimit = createTask("FN-9029-BEYOND");
     vi.spyOn(core, "resolveProjectColumnsForRoles").mockResolvedValue(new Set());
@@ -98,6 +107,9 @@ describe("GET /api/tasks releaseGate enrichment", () => {
     const response = await performRequest(app, "GET", "/api/tasks");
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual([first, beyondLimit]);
+    expect(response.body).toEqual([
+      { ...first, lifecycle: "live" },
+      { ...beyondLimit, lifecycle: "live" },
+    ]);
   });
 });

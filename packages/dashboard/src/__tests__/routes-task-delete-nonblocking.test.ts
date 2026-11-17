@@ -136,4 +136,54 @@ describe("DELETE /api/tasks/:id", () => {
     });
     expect(agentStore.deleteAgent).not.toHaveBeenCalled();
   });
+
+  /*
+  FNXC:RefusedDeleteEnvelope 2026-11-17-16:16 (RUFU-583):
+  These are PINS, not rewrites. The 409 bodies and their codes are pre-existing behavior; they are
+  asserted here because the refusal is the ONE delete outcome that leaves the row live, and RUFU-583
+  changes what a live row looks like over the wire. Pair them with the pg case in
+  `task-list-lifecycle-projection.pg.test.ts`, which proves the row really does survive the refusal with
+  no `deletedAt` and keeps its real lane: the envelope proves the operator is TOLD, the pg case proves
+  the board is NOT lying. Neither claim belongs to the other file.
+  */
+  it("reports a lineage refusal as a 409 naming the children, so the row is not silently dropped", async () => {
+    const lineageError = Object.assign(new Error("Task FN-583P has live lineage children"), {
+      name: "TaskHasLineageChildrenError",
+      childIds: ["FN-583C"],
+    });
+    const store: Partial<TaskStore> = { deleteTask: vi.fn().mockRejectedValue(lineageError) };
+    const app = buildApp({ store });
+
+    const response = await performRequest(app, "DELETE", "/api/tasks/FN-583P");
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      error: "Task FN-583P has live lineage children",
+      details: {
+        code: "TASK_HAS_LINEAGE_CHILDREN",
+        taskId: "FN-583P",
+        lineageChildIds: ["FN-583C"],
+      },
+    });
+  });
+
+  it("reports a dependents refusal as a 409 naming the dependents", async () => {
+    const dependentsError = Object.assign(new Error("Task FN-583P has dependents"), {
+      name: "TaskHasDependentsError",
+      dependentIds: ["FN-583D"],
+    });
+    const store: Partial<TaskStore> = { deleteTask: vi.fn().mockRejectedValue(dependentsError) };
+    const app = buildApp({ store });
+
+    const response = await performRequest(app, "DELETE", "/api/tasks/FN-583P");
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      details: {
+        code: "TASK_HAS_DEPENDENTS",
+        taskId: "FN-583P",
+        dependentIds: ["FN-583D"],
+      },
+    });
+  });
 });

@@ -11,7 +11,7 @@ FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7):
 The waiver label is resolved by the helper `TaskDetailModal` also uses for its audit-reason prompt. The import
 is one-directional at runtime - `taskRetryCopy` reaches back here for a TYPE only - so this adds no module cycle.
 */
-import { resolveBypassReviewCopy } from "../utils/taskRetryCopy";
+import { resolveBypassReviewCopy, resolveReviewBypassDeclineHint } from "../utils/taskRetryCopy";
 /*
 FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546):
 The terminal-lane question below is answered through the board's resolved `complete` trait, so this
@@ -113,6 +113,20 @@ export interface TaskActionMenuModel {
   reviewAction?: TaskReviewActionDescriptor;
   shouldShowActionsMenu: boolean;
   isTaskPaused: boolean;
+  /*
+  FNXC:ReviewBypassDecline 2026-11-17-18:20 (RUFU-583, folded from RUFU-243):
+  THE EXPLANATION FOR A WAIVER THAT IS NOT OFFERED, carried OUT of the action list rather than inside it.
+  Six classes decline this affordance and every one of them used to arrive as the absence of a row; the
+  server now names the class (`Task.reviewBypassDecline`) and this field carries its sentence to whatever
+  container renders the menu.
+
+  It is deliberately NOT a descriptor: `tone: "note"` renders a `<span role="note">` inside the action list
+  and `selectAction` early-returns for it, which RUFU-179 measured as the operator-visible failure (an
+  affordance-shaped row that does nothing). A disabled or empty button is the other half of the same
+  failure. So the model hands the sentence up and the menu/detail container owns one explanatory line of
+  its own, outside the item list — one sentence for the whole menu, not an item per refusal.
+  */
+  bypassDeclineHint?: string;
 }
 
 export interface BuildTaskActionMenuModelOptions {
@@ -518,6 +532,19 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   shared role helper is recorded at the predicate.
   */
   const bypassTarget = task.reviewBypass;
+  /*
+  FNXC:ReviewBypassDecline 2026-11-17-18:20 (RUFU-583, folded from RUFU-243):
+  The hint is gated on the SAME three conditions that gate the offer — a host that can perform the waiver,
+  a lane the store admits it in, and no capability shipped — so the sentence appears exactly where the item
+  would have stood and nowhere else. A card with no decline at all (the overwhelmingly common case: the
+  server derives nothing for a healthy card) renders no line, which keeps this from becoming ambient copy
+  on every menu on the board.
+  */
+  const bypassDeclineHint = hasBypassReviewHandler
+    && isReviewBypassLaneColumn(currentColumnFlags, task.column)
+    && !bypassTarget
+    ? resolveReviewBypassDeclineHint(t, task.reviewBypassDecline)?.sentence
+    : undefined;
   if (hasBypassReviewHandler && isReviewBypassLaneColumn(currentColumnFlags, task.column) && bypassTarget) {
     /*
     FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 1 / RUFU-474):
@@ -591,6 +618,7 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     */
     shouldShowActionsMenu: actions.length > 0,
     isTaskPaused,
+    bypassDeclineHint,
   };
 }
 
@@ -601,6 +629,13 @@ export interface TaskContextMenuProps {
   itemClassName?: string;
   dangerItemClassName?: string;
   noteItemClassName?: string;
+  /*
+  FNXC:ReviewBypassDecline 2026-11-17-18:20 (RUFU-583):
+  The container-owned explanatory line for a waiver this card was refused. Optional by construction: a
+  host that does not forward it renders exactly what it rendered before.
+  */
+  declineHint?: string;
+  declineHintTestId?: string;
   onActionSelect?: (action: TaskMenuActionDescriptor) => void;
   renderAction?: (action: TaskMenuActionDescriptor, defaultNode: ReactNode) => ReactNode;
   autoFocusFirstItem?: boolean;
@@ -617,6 +652,8 @@ export function TaskContextMenu({
   itemClassName = "task-context-menu__item",
   dangerItemClassName = "task-context-menu__item--danger",
   noteItemClassName = "task-context-menu__item--note",
+  declineHint,
+  declineHintTestId = "task-bypass-review-decline-hint",
   onActionSelect,
   renderAction,
   autoFocusFirstItem = true,
@@ -803,6 +840,19 @@ export function TaskContextMenu({
         );
         return <Fragment key={action.id}>{renderAction ? renderAction(action, defaultNode) : defaultNode}</Fragment>;
       })}
+      {/*
+      FNXC:ReviewBypassDecline 2026-11-17-18:20 (RUFU-583, folded from RUFU-243):
+      THE SENTENCE LIVES HERE, IN THE CONTAINER, NOT IN THE ITEM LIST. Rendered after the items so it cannot
+      be mistaken for an affordance: no `onSelect`, no button element, no disabled shell, and nothing in the
+      descriptor model to keep in step. Because this one component backs the board card menu, the list menu,
+      the detail modal's Actions menu, and the mobile drawer, the explanation reaches every surface that ever
+      silently withheld the waiver — the desktop/mobile parity the shared descriptor list already guarantees.
+      */}
+      {declineHint ? (
+        <p className="task-context-menu__decline-hint" role="note" data-testid={declineHintTestId} title={declineHint}>
+          {declineHint}
+        </p>
+      ) : null}
     </UiMenu>
   );
 }

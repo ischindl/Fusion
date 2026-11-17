@@ -220,6 +220,16 @@ pgTest("listTasks derive opt-out (PostgreSQL)", () => {
   (`/api/tasks?includeDeleted=true`). Both fill orders are pinned: whichever shape fills first, the
   other must still read its own payload, and the two snapshots must not be reference-identical —
   the reference check makes the test non-vacuous (a keyless pass shares one snapshot either way).
+
+  FNXC:TombstoneLifecycleProjection 2026-11-17-19:05 (RUFU-583):
+  THE SENTENCE ABOVE ABOUT THE COLUMN FILTER IS NO LONGER THE WHOLE TRUTH, and the case below replaces the
+  asymmetry it described. RUFU-583 made tombstone visibility an EXPLICIT lifecycle predicate in the list SQL
+  instead of a side effect of which sentinel column a read filtered on: `includeDeleted: true` now admits the
+  soft-deleted row whatever `includeArchived` says. So the live-vs-forensic pair diverges in BOTH shapes, not
+  only in the `includeArchived: true` one, and a memo key that forgot the dimension would now serve a
+  resurrected board to a forensic read even on the default board lane — the harm this test exists to catch,
+  reachable from a second direction. Measured: default lane returns `PROBE-A` alone; the forensic read returns
+  both, with the tombstone's `deletedAt` populated; `Object.is` separates the snapshots either order.
   */
   it("keeps live-only and forensic (includeDeleted) snapshots as separate memo entries", async () => {
     await seedInProgressCard("RUFU-9207");
@@ -251,6 +261,44 @@ pgTest("listTasks derive opt-out (PostgreSQL)", () => {
     const liveSecond = await store.listTasks({ slim: true, includeArchived: true, startupMemo: true });
     expect(forensicFirst.map((t) => t.id)).toContain("RUFU-9208");
     expect(liveSecond.map((t) => t.id)).not.toContain("RUFU-9208");
+    expect(Object.is(forensicFirst, liveSecond)).toBe(false);
+  });
+
+  /*
+  FNXC:TombstoneLifecycleProjection 2026-11-17-19:05 (RUFU-583):
+  THE SECOND DIVERGENT PAIR, the one that did not exist before this change: the DEFAULT lane (no
+  `includeArchived`) with and without `includeDeleted`. Before RUFU-583 the archived sentinel column hid a
+  tombstone from both reads, so the pair was indistinguishable here and proved nothing about the memo key.
+  Now the forensic read reaches the tombstone through the explicit lifecycle predicate, so this pair carries
+  the same hazard as the archived pair above — and it is the pair the ordinary board and the ordinary
+  forensic drill-down (`?includeDeleted=1`) actually take, without ever asking for archived cards.
+
+  Pinned the same way: both fill orders, and a reference check that keeps the pass non-vacuous. The
+  tombstone's `deletedAt` is asserted present on the forensic row and absent from the live one, because
+  membership alone would also pass if BOTH reads were forensic.
+  */
+  it("keeps live-only and forensic snapshots separate on the default lane too, where the archived filter is absent", async () => {
+    await seedInProgressCard("RUFU-9209");
+    await seedInProgressCard("RUFU-9210");
+    const store = h.store();
+    await store.deleteTask("RUFU-9210");
+
+    // Live-first: the forensic read must not be served the live snapshot that hides the tombstone.
+    const live = await store.listTasks({ slim: true, startupMemo: true });
+    const forensic = await store.listTasks({ slim: true, includeDeleted: true, startupMemo: true });
+    expect(live.map((t) => t.id)).not.toContain("RUFU-9210");
+    expect(live.every((t) => (t as { deletedAt?: string | null }).deletedAt == null)).toBe(true);
+    expect(forensic.map((t) => t.id)).toContain("RUFU-9210");
+    const tombstone = forensic.find((t) => t.id === "RUFU-9210") as { deletedAt?: string | null } | undefined;
+    expect(typeof tombstone?.deletedAt).toBe("string");
+    expect(Object.is(live, forensic)).toBe(false);
+
+    // Forensic-first: the live read must not inherit the tombstone out of the forensic snapshot.
+    store.clearStartupSlimListMemo();
+    const forensicFirst = await store.listTasks({ slim: true, includeDeleted: true, startupMemo: true });
+    const liveSecond = await store.listTasks({ slim: true, startupMemo: true });
+    expect(forensicFirst.map((t) => t.id)).toContain("RUFU-9210");
+    expect(liveSecond.map((t) => t.id)).not.toContain("RUFU-9210");
     expect(Object.is(forensicFirst, liveSecond)).toBe(false);
   });
 

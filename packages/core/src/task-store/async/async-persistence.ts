@@ -1065,12 +1065,44 @@ export async function readLiveTaskRows(
   comparator the JS sort uses — so the SQL page is exactly the JS page.
   */
   if (options?.columns?.length === 0) return [];
+  /*
+  FNXC:TombstoneForensicReachability 2026-11-13-00:37 (RUFU-583):
+  A forensic list read that asks for deleted rows must be able to GET them, and today it cannot.
+  `softDeleteTaskRowInTransaction` (this file, :639; stamp at :670-673) and the direct
+  `softDeleteTaskRow` (:550, stamp at :565) both write the literal `column: "archived"` ALONGSIDE
+  `deletedAt` — a DELIBERATE-LITERAL archive marker, not a workflow move. `listTasksImpl` therefore
+  sets the implicit single-column exclusion `excludeColumn: "archived"` for every read that does not
+  opt into archived rows (`reads.ts:1249`), and this arm compiled that exclusion as an unconditional lane
+  predicate. The tombstone's own column then equals the excluded lane, so the row was dropped by the
+  LANE predicate before the `liveFilter` ternary below ever consulted `includeDeleted`:
+  `GET /api/tasks?includeDeleted=1` returned zero tombstones while the flag was accepted. The repo
+  documented the blindness (`list-tasks-derive-optout.pg.test.ts:215`,
+  `docs/solutions/performance/list-tasks-derive-optout-and-memo.md:105`) and the engine consumer
+  `findDefinedFeatureBootstrapDuplicate` (`packages/engine/src/agent-tools.ts`) is written against
+  the intent that `includeDeleted` returns soft-deleted rows.
+
+  Requirement this closes: "absence of the deletion field cannot read as alive" is worthless when the
+  row carrying it is unreachable, and a monitoring consumer must be able to ask the list for its
+  tombstones in one request. The relaxation admits `deleted_at IS NOT NULL` past the IMPLICIT
+  single-column exclusion only, so the forensic payload stays "live board union tombstones":
+  - non-forensic reads emit the SQL they emit today, byte-identically (nothing widens them —
+    `ACTIVE_TASK_FILTER` above already excludes tombstones for them);
+  - a non-tombstone row merely resting in the sentinel lane (NULL `deleted_at`) still does not leak;
+  - explicit lane selection (`column` / `columns` / `excludeColumns`, the arms below) is untouched,
+    so a caller that NAMES lanes stays authoritative even under `includeDeleted` — the RUFU-378
+    lane-authority note on `GET /api/tasks` relies on that;
+  - it is a `WHERE`-clause change only, so the RUFU-902 board-feed SELECT-list projection
+    (`postgres/board-feed.ts`) and its parity test cannot be disturbed by it.
+  */
   const columnScope = options?.column !== undefined
     ? eq(schema.project.tasks.column, options.column)
     : options?.columns !== undefined
       ? inArray(schema.project.tasks.column, [...options.columns])
       : options?.excludeColumn !== undefined
-        ? sql`${schema.project.tasks.column} IS DISTINCT FROM ${options.excludeColumn}`
+        ? options.includeDeleted
+          // Forensic read: the implicit sentinel-lane exclusion must not drop the tombstone it asked for.
+          ? sql`(${schema.project.tasks.column} IS DISTINCT FROM ${options.excludeColumn} OR ${schema.project.tasks.deletedAt} IS NOT NULL)`
+          : sql`${schema.project.tasks.column} IS DISTINCT FROM ${options.excludeColumn}`
         : options?.excludeColumns?.length
           ? notInArray(schema.project.tasks.column, [...options.excludeColumns])
           : undefined;

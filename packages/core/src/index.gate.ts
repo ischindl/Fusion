@@ -1066,6 +1066,11 @@ export {
 } from "./duplicates/duplicate-guard.js";
 export type { TaskDependencyMutation } from "./store.js";
 export type { ListTasksOptions } from "./task-store/reads.js";
+/* FNXC:TaskLifecycleProjection 2026-11-13-00:37 (RUFU-583): mirrored from `index.ts` so the two
+   barrels stay in parity (gate-barrel rule) — a symbol the projection routes import must resolve
+   identically under the engine-core gate alias. */
+export { deriveTaskLifecycle, withTaskLifecycle, withTaskLifecycleAll, readTaskLifecycle, TASK_LIFECYCLE_FIELD } from "./task-store/lifecycle-projection.js";
+export type { TaskLifecycleState } from "./task-store/lifecycle-projection.js";
 /* FNXC:ListReadFieldDeclaration 2026-10-25-23:31 (RUFU-627): `ListTasksOptions.fields` is typed by a closed union
    owned by the projection site, and a type that is not exported cannot be named by a caller that wants a
    shared constant array, only written inline. Exported from BOTH barrels so they stay in parity. */

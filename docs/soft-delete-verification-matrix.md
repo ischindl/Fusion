@@ -51,6 +51,11 @@
 | 1,4,6,7,8 | Dashboard SSE + reload deleted-task filtering | `packages/dashboard/src/__tests__/sse-task-deleted-payload.test.ts:5`; `packages/dashboard/app/hooks/__tests__/useTasks.test.ts:1124`; `packages/dashboard/app/hooks/__tests__/useTasks.test.ts:1147`; `packages/dashboard/app/hooks/__tests__/useTasks.test.ts:1255` | GREEN | — | FN-5135 |
 | 4,10 | Cross-layer delete-during-execution / refresh convergence | No single composition backstop before this task | Added in this task | `packages/engine/src/__tests__/reliability-interactions/soft-delete-end-to-end.test.ts` | FN-5153 |
 | 10 | Checked-out-task soft-delete composition | Entry guards exist, but no coverage focused on checked-out deleted tasks | New follow-up filed | `packages/core/src/__tests__/soft-delete-tasks.test.ts` and `packages/engine/src/__tests__/auto-claim-snapshot-soft-delete.test.ts` | FN-5195 |
+| 1-8,10-11 | Every projected row states its lifecycle (`live` / `deleted` / `archived`) at the HTTP boundary, in every arm: default, column-scoped, `excludeDone`, `q`-searched, both page arms, forensic | `packages/dashboard/src/__tests__/routes-tasks-lifecycle-projection.test.ts`, `packages/core/src/__tests__/task-lifecycle-projection.test.ts` | GREEN — stamped after the store call, so it survives every row shape (`excludeLog`, `fields`, board-feed); a `deletedAt`-falsy filter can no longer read a tombstone as alive | — | RUFU-583 |
+| 1-8 | Default board read provably carries no non-live row | `packages/dashboard/src/__tests__/routes-tasks-lifecycle-projection.test.ts` (asserts every row `lifecycle === "live"`), `packages/core/src/__tests__/postgres/task-list-lifecycle-projection.pg.test.ts` | GREEN — the exclusion is now an assertion, not an accident of the lane predicate | — | RUFU-583 |
+| 11 | `?includeDeleted=1` reaches the tombstone on a real store (real `store.deleteTask`, then real `listTasks`) | `packages/core/src/__tests__/postgres/task-list-lifecycle-projection.pg.test.ts` | GREEN — the implicit sentinel-lane exclusion is relaxed for a forensic read only; historical lanes and an explicit `excludeColumns` arm stay excluded, and live/forensic reads never share a memo entry (`packages/core/src/__tests__/postgres/list-tasks-derive-optout.pg.test.ts`) | — | RUFU-583 |
+| 1-8 | Single route decides "did my delete take?" in ONE request: `404` + `details.code: TASK_SOFT_DELETED` + timestamp, or forensic `200`; a never-existed id stays a plain `404` | `packages/dashboard/src/__tests__/routes-tasks-lifecycle-projection.test.ts` | GREEN — one route, one request; a probe fault falls back to the plain `404`, never a `500` | — | RUFU-583 |
+| 2,3 | A refused delete is reported at delete time (`409` + structured code) while the row demonstrably stays live and listed | `packages/dashboard/src/__tests__/routes-task-delete-nonblocking.test.ts` | GREEN — `TASK_HAS_DEPENDENTS` / `TASK_HAS_LINEAGE_CHILDREN`; the refusal can no longer surface later only as a list-vs-single mismatch | — | RUFU-583 |
 | 12-15 | Singular/workspace worktree cleanup, duplicate observed delivery, restart replay, ownership and liveness vetoes | Real Git plus production `SelfHealingManager` listener/reconciler coverage | GREEN — directory and `git worktree list --porcelain` converge; tombstone remains; repeated delivery is harmless | `packages/engine/src/__tests__/self-healing-deleted-task-worktree-cleanup.test.ts`, `packages/engine/src/__tests__/self-healing-workspace.test.ts`, `packages/engine/src/__tests__/reliability-interactions/soft-delete-in-flight-abort.test.ts` | FN-309 |
 
 ## Release-blocking checks
@@ -66,12 +71,31 @@
 
 ## Forensic access escape hatch
 
-Supported forensic access is internal only:
+Forensic access has two layers, and since RUFU-583 the public one is no longer a silent option.
+
+Internal (unchanged):
 
 - `readTaskFromDb(id, { includeDeleted: true })` in `packages/core/src/store.ts`
 - direct SQL against `tasks` and `task_documents`, plus on-disk reads of `.fusion/tasks/{ID}/agent-log.jsonl`
 
-No public API flag exposes deleted-task forensics today. Adding one requires a new FN with its own review.
+Public (RUFU-583): `?includeDeleted=1` on `GET /api/tasks`, `GET /api/tasks/page`, and `GET /api/tasks/:id`
+really returns tombstones now. It used to be accepted and answer `[]` on a real store: a soft delete stamps
+`column: "archived"` beside `deletedAt`, and a read with no explicit lane constraint gets an implicit
+`excludeColumn: "archived"`, which dropped the tombstone on the lane predicate before `includeDeleted` ever
+reached the live-row filter. The relaxation is narrow by contract: it removes that implicit sentinel-lane
+exclusion **only** for a forensic read, so a forensic payload stays "live board union tombstones" and never
+merges the historical lane or an explicit `excludeColumns` arm.
+
+Every projected row states its own state, so a consumer never has to keep an id set of tombstones: the
+`lifecycle` field is `live`, `deleted`, or `archived`, derived once by `deriveTaskLifecycle` /
+`withTaskLifecycle` in `packages/core/src/task-store/lifecycle-projection.ts` and stamped at the HTTP boundary
+(never inside `rowToTask`, which would leak the field into every store consumer and into persisted shapes).
+`GET /api/tasks/:id` settles "did my delete take?" in one request: either `404` with
+`details.code: "TASK_SOFT_DELETED"` and the `deletedAt` timestamp, or — when the caller asked forensically —
+`200` with the tombstone self-marked `deleted`. A never-existed id stays a plain `404` with no such code, so
+the code names a tombstone and nothing else.
+
+<!-- FNXC:TombstoneLifecycleProjection 2026-11-17-18:06 (RUFU-583): this section's closing sentence ("No public API flag exposes deleted-task forensics today") was falsified by the card that fixed forensic reachability; the flag existed but silently returned nothing, which is the same trap wearing a different name. -->
 
 ## Out of scope
 

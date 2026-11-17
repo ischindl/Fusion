@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { ReviewBypassTargetKind } from "@fusion/core";
+import type { ReviewBypassDeclineReason, ReviewBypassTargetKind } from "@fusion/core";
 import type { TaskContextMenuColumnFlags } from "../components/TaskContextMenu";
 
 export type RetryStage = "plan" | "implementation" | "review" | "generic";
@@ -113,8 +113,7 @@ export interface BypassReviewCopy {
 export function resolveBypassReviewCopy(
   t: TFunction<"app">,
   target: { kind: ReviewBypassTargetKind; phase?: "pre-merge" | "post-merge" },
-): BypassReviewCopy {
-  if (target.phase === "post-merge") {
+): BypassReviewCopy {  if (target.phase === "post-merge") {
     return target.kind === "verdictless-skipped"
       ? {
         label: t("taskDetail.bypassReview.btnPostMergeVerdictless", "Waive post-merge gate that never reported"),
@@ -155,4 +154,79 @@ export function resolveBypassReviewCopy(
     promptMessage: t("taskDetail.bypassReview.promptMessage", "Reason for bypassing the failed pre-merge review step (required, audit-logged):"),
     success: (taskId) => t("taskDetail.bypassReview.success", "Bypassed failed review lane for {{id}}", { id: taskId }),
   };
+}
+
+/*
+FNXC:ReviewBypassDecline 2026-11-17-18:05 (RUFU-583, folded from RUFU-243):
+THE SENTENCE FOR A WAIVER THAT IS NOT OFFERED. Six classes refuse this affordance, and until now every one
+of them reached the operator as the absence of a row - measured on RUFU-583, a card held by hand in the
+review lane showed no item on either Actions surface and no line on the detail modal, while the API answered
+`task is paused`. Each class gets its OWN sentence with its own remedy: two classes sharing one string would
+put words in the operator's mouth about a distinction the server never drew, which is how a refusal becomes a
+second, more confident bug. The class arrives as `Task.reviewBypassDecline.reason`, derived server-side in
+`@fusion/core` - the browser may import types only from that package, so nothing here re-decides anything, it
+only words what was decided. A reason this build does not know (a newer daemon behind an older dashboard) gets
+the generic sentence rather than silence, because silence is the defect being removed.
+*/
+export interface ReviewBypassDeclineHint {
+  /** Operator-facing explanation of the refusal; rendered where the offer would have stood. */
+  sentence: string;
+}
+
+export function resolveReviewBypassDeclineHint(
+  t: TFunction<"app">,
+  decline: { reason: ReviewBypassDeclineReason; workflowStepId?: string } | undefined,
+): ReviewBypassDeclineHint | undefined {
+  if (!decline) return undefined;
+  switch (decline.reason) {
+    case "operator-task-hold":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.operatorTaskHold",
+          "No waiver is offered while you hold this card by hand. Unpause it to let the engine work the gate, or move the card - a waiver answers a gate that is refusing an unheld card.",
+        ),
+      };
+    case "not-in-review-lane":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.notInReviewLane",
+          "No waiver is offered in this column: the card is not standing in a review lane, so no review gate is holding it here. Retry repeats this card's current stage instead.",
+        ),
+      };
+    case "no-refusing-gate":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.noRefusingGate",
+          "No waiver is offered: every review gate this card owes has already produced its evidence, so nothing here is refusing it. Retry would discard verdicts that were reached.",
+        ),
+      };
+    case "post-merge-review-not-owed":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.postMergeReviewNotOwed",
+          "No waiver is offered yet: this card's post-merge gate has no evidence owed against it until its landing is confirmed, so there is nothing to waive. Waiting on the merge, not on you.",
+        ),
+      };
+    case "workspace-scope-withheld":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.workspaceScopeWithheld",
+          "No waiver is offered for this card: it delivers across several repositories, and one audited waiver cannot stand in for each repository's own review evidence. Clear the gate in the repository that owes it.",
+        ),
+      };
+    case "workflow-ir-unreadable":
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.workflowIrUnreadable",
+          "No waiver can be decided for this card: its workflow definition could not be read, so the board cannot tell which gate a waiver would speak for. Repair or reselect the workflow before looking for this action.",
+        ),
+      };
+    default:
+      return {
+        sentence: t(
+          "taskDetail.bypassReview.decline.unknown",
+          "No waiver is offered for this card. The reason the board recorded is one this view does not describe - see this card's history for the refusal.",
+        ),
+      };
+  }
 }

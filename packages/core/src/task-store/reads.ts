@@ -54,7 +54,7 @@ import {computeRetrySummary} from "../tasks/retry-summary.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
 // FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): the bypass affordance must ask about the post-merge gates too.
 import {resolveRequiredPostMergeGateIds} from "../merge/confirmed-merge-reconciliation.js";
-import {deriveReviewBypassTarget, isOperatorPausedForOperatorEscapeHatch, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
+import {deriveReviewBypassDecision, isOperatorPausedForOperatorEscapeHatch, resolveReviewBypassLanes, type ReviewBypassDecision, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
 // FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4): the Retry refusal is hydrated beside the
 // waiver it mirrors, from the ONE classifier every Retry surface consults.
 import {classifyApprovalDestroyingRetry, type ApprovalDestroyingRetry} from "../tasks/approval-destroying-retry.js";
@@ -414,7 +414,7 @@ async function resolveReviewBypassForTask(
   task: Task,
   irCache: Map<string, WorkflowIr>,
   selectionCache?: WorkflowSelectionCache,
-): Promise<ReviewBypassTarget | undefined> {
+): Promise<ReviewBypassDecision> {
   /*
   FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
   The OPERATOR-HOLD early return: a hand-placed hold suppresses the capability, while an
@@ -425,26 +425,63 @@ async function resolveReviewBypassForTask(
   refusal so the two cannot drift; reasoning at `merge/review-bypass-target.ts`. Still needs no IR, so
   it answers most of a board before the first workflow read.
   */
-  if (isOperatorPausedForOperatorEscapeHatch(task)) return undefined;
-  try {
-    const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
-    const lanes = resolveReviewBypassLanes(ir);
-    if (!lanes.includes(task.column)) return undefined;
-    const requiredStepIds = ir
-      ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task)
-      : new Set<string>();
-    /*
-    FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
-    The required POST-merge set is passed so the affordance matches the store on the gate that holds a
-    LANDED card out of `done` — the RUFU-179 invariant (UI eligibility == store acceptance) is only real
-    if both sides ask about the same gates. Cost is one more pure pass over the already-resolved IR, on
-    rows that are neither operator-held nor outside a bypass lane.
-    */
-    const requiredPostMergeStepIds = ir ? new Set(resolveRequiredPostMergeGateIds(task, ir)) : new Set<string>();
-    return deriveReviewBypassTarget(task, requiredStepIds, new Set(lanes), requiredPostMergeStepIds);
-  } catch {
-    return undefined;
+  if (isOperatorPausedForOperatorEscapeHatch(task)) {
+    return { kind: "declined", decline: { reason: "operator-task-hold" } };
   }
+  let ir: WorkflowIr | undefined;
+  try {
+    ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
+  } catch {
+    /*
+    FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583, folded from RUFU-243):
+    THE ARM THAT USED TO LAUNDER A BROKEN WORKFLOW READ INTO "NO GATE IS REFUSING". This `catch`
+    returned the same `undefined` as a card whose gates had all passed, so the one cause an operator
+    could not act on — a workflow definition that cannot be read — was told to them as "nothing to
+    bypass". The class is named here rather than in the derivation because only this seam has an IR to
+    fail on (the derivation is pure and I/O-free per its module note), and it is recorded at this seam
+    through the store's own diagnostic channel: ids only, never the thrown sentence, and never a
+    card-write from a read path.
+    */
+    storeLog.warn("[review-bypass] workflow IR unreadable; bypass decline recorded as workflow-ir-unreadable", {
+      taskId: task.id,
+      column: task.column,
+    });
+    return { kind: "declined", decline: { reason: "workflow-ir-unreadable" } };
+  }
+  const lanes = resolveReviewBypassLanes(ir);
+  if (!lanes.includes(task.column)) {
+    return { kind: "declined", decline: { reason: "not-in-review-lane" } };
+  }
+  const requiredStepIds = ir
+    ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task)
+    : new Set<string>();
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+  The required POST-merge set is passed so the affordance matches the store on the gate that holds a
+  LANDED card out of `done` — the RUFU-179 invariant (UI eligibility == store acceptance) is only real
+  if both sides ask about the same gates. Cost is one more pure pass over the already-resolved IR, on
+  rows that are neither operator-held nor outside a bypass lane.
+  */
+  const requiredPostMergeStepIds = ir ? new Set(resolveRequiredPostMergeGateIds(task, ir)) : new Set<string>();
+  return deriveReviewBypassDecision(task, requiredStepIds, new Set(lanes), requiredPostMergeStepIds);
+}
+
+/*
+FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583, folded from RUFU-243):
+THE ONE PLACE BOTH HALVES OF THE ANSWER GET ATTACHED, so a hydration site cannot ship the capability
+and forget the explanation. `reviewBypass` keeps the exact value it always shipped — the declined arm
+assigns `undefined` the same way the old `undefined` return did, so an offered-vs-refused card carries
+the same payload on the wire apart from the new key, which appears only on a refusal.
+*/
+function applyReviewBypassDecision(task: Task, decision: ReviewBypassDecision): ReviewBypassTarget | undefined {
+  if (decision.kind === "offered") {
+    task.reviewBypass = decision.target;
+    task.reviewBypassDecline = undefined;
+    return decision.target;
+  }
+  task.reviewBypass = undefined;
+  task.reviewBypassDecline = decision.decline;
+  return undefined;
 }
 
 /*
@@ -621,7 +658,7 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       });
       /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): detail-view parity with the board feed.
          Not suppressed on merge-queue or activity — the capability must survive the wedge it is for. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, detailIrCache, detailSelectionCache);
+      applyReviewBypassDecision(task, await resolveReviewBypassForTask(store, task, detailIrCache, detailSelectionCache));
       /* FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4): detail parity with the board
          feed — the card face and the detail drawer refuse the same Retry the API refuses. */
       task.retryRefusal = await resolveRetryRefusalForTask(store, task, task.reviewBypass, detailIrCache, detailSelectionCache);
@@ -1475,7 +1512,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
          BEFORE the slim strip below — the slim SQL projection still selects `workflow_step_results`
          (only `log` is dropped), so the derivation sees the same real results the full read does,
          and the capability reaches the slim board row the context menu renders from. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, listPassIrCache, listPassSelectionCache);
+      applyReviewBypassDecision(task, await resolveReviewBypassForTask(store, task, listPassIrCache, listPassSelectionCache));
       /* FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4): the board row the context menu
          and the mobile drawer render from carries the refusal, so neither can offer the destructive Retry. */
       task.retryRefusal = await resolveRetryRefusalForTask(store, task, task.reviewBypass, listPassIrCache, listPassSelectionCache);
@@ -2252,7 +2289,7 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
         /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): computed BEFORE the stall-suppression
            branch below and never skipped by it — merge-queued or actively-logging cards keep their
            capability; only the store's own gates (lane, pause, gate state) decide. */
-        reviewBypassByTaskId.set(task.id, await resolveReviewBypassForTask(store, task, irCache, selectionCache));
+        reviewBypassByTaskId.set(task.id, applyReviewBypassDecision(task, await resolveReviewBypassForTask(store, task, irCache, selectionCache)));
         /* FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4): derived in the same prelude
            pass, off the same warm IR cache, and gated on the waiver answer above — see `resolveRetryRefusalForTask`. */
         retryRefusalByTaskId.set(task.id, await resolveRetryRefusalForTask(store, task, reviewBypassByTaskId.get(task.id), irCache, selectionCache));
@@ -2625,7 +2662,7 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       /* FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179): search parity — a card reached through
          search offers exactly what the board and detail views offer. Search rows are full selects,
          and the slim strip below only zeroes `log`, so results are real here too. */
-      task.reviewBypass = await resolveReviewBypassForTask(store, task, searchPassIrCache, searchPassSelectionCache);
+      applyReviewBypassDecision(task, await resolveReviewBypassForTask(store, task, searchPassIrCache, searchPassSelectionCache));
       /* FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4): search parity — a card reached
          through search refuses exactly the Retry the board and detail views refuse. */
       task.retryRefusal = await resolveRetryRefusalForTask(store, task, task.reviewBypass, searchPassIrCache, searchPassSelectionCache);

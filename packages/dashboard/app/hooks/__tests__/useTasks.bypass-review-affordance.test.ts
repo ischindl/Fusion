@@ -165,6 +165,41 @@ describe("useTasks reviewBypass affordance survives the stall anti-flicker clear
     expect(result.current.tasks[0]?.reviewBypass).toMatchObject({ kind: "absent", workflowStepId: "code-review" });
   });
 
+  /*
+  FNXC:ReviewBypassDecline 2026-11-17-18:45 (RUFU-583, folded from RUFU-243):
+  THE EXPLANATION IS A CAPABILITY-SHAPED FIELD, NOT A DIAGNOSTIC. `reviewBypassDecline` says why the server
+  withheld the waiver, so it belongs to the doors, not to the flicker window: a clear that dropped it would put
+  the card back into the exact state RUFU-583 was filed against - no item and no sentence, with the refusal
+  living only in a 404 the operator never sees. A review-lane card that is declined is commonly also stalled
+  (the hold IS why the gate is not running), so this is not a hypothetical pairing.
+  */
+  it("keeps the refusal explanation while a fresh agent-log activity blanks the diagnostics", async () => {
+    const initialTask = createMockTask({
+      reviewBypassDecline: { reason: "operator-task-hold" },
+      stallReason: gatePendingStall as never,
+    });
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
+
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+
+    expect(result.current.tasks[0]?.reviewBypassDecline).toEqual({ reason: "operator-task-hold" });
+    expect(result.current.tasks[0]?.stallReason?.code).toBe("pre-merge-gate-pending");
+
+    act(() => {
+      MockEventSource.instances[0]._emit("agent:log", {
+        taskId: "FN-179",
+        timestamp: "2026-09-01T00:00:02.000Z", // fresh
+        type: "text",
+        agent: "reviewer",
+      });
+    });
+
+    // The diagnostic blanks; the refusal does not.
+    expect(result.current.tasks[0]?.stallReason).toBeUndefined();
+    expect(result.current.tasks[0]?.reviewBypassDecline).toEqual({ reason: "operator-task-hold" });
+  });
+
   it("keeps the capability when only it is present (the clear's early-return must not touch it)", async () => {
     // Non-vacuous control for the stall clear's early-return branch: a card whose ONLY stall-family
     // field is the capability. If `reviewBypass` were ever added to the cleared-field list, both this

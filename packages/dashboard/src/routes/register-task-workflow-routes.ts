@@ -17,6 +17,19 @@ entry path drifts below direct chat's finite transport envelope.
  * than turning one board load into thousands of file reads. Truncation is logged, never silent.
  */
 const AWAITING_PLANNING_ENRICH_LIMIT = 200;
+
+/*
+FNXC:TaskLifecycleProjection 2026-11-17-16:16 (RUFU-583):
+The paged board feed answers `{ tasks, total, hasMore, nextCursor }`, so a page cannot be stamped as a
+row array. This stamps the ROWS only and leaves `total` exactly as the store computed it:
+`listCurrentTasksPageImpl` / `listTaskQueuePageImpl` count live rows and accept no `includeDeleted`, so
+a page's total stays tombstone-free by the store's own predicate and this projection neither adds nor
+removes a card. Lowercase render-free helper at module scope (never inline in a handler) so both page
+arms stamp with one definition instead of two copies that can drift.
+*/
+function withLifecycleOnPage<P extends { tasks: Task[] }>(page: P): P {
+  return { ...page, tasks: withTaskLifecycleAll(page.tasks) };
+}
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { existsSync } from "node:fs";
@@ -170,7 +183,7 @@ import {
 } from "./project-list-coalescer.js";
 import { resolveNativeStructurePreview } from "../native-structure-preview.js";
 import { isBackwardMoveBlockedByOpenPr, PR_OPEN_BLOCKS_MOVE_BACK_MESSAGE } from "./register-pull-requests-routes.js";
-import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, resolveEffectiveAutoMerge, type RunAuditEventInput } from "@fusion/core";
+import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, resolveEffectiveAutoMerge, withTaskLifecycle, withTaskLifecycleAll, type RunAuditEventInput } from "@fusion/core";
 import { FUSION_CLIENT_HEADER, resolveHttpDeleteCallerKind, isValidTaskBranchName } from "@fusion/core";
 import { ApiError, badRequest, conflict, notFound } from "../api-error.js";
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's operator surface for the per-card delivery lock. */
@@ -178,7 +191,7 @@ import { registerTaskMergeApprovalRoutes } from "./task-merge-approval.js";
 import { registerTaskPlanningLockRoutes, mapPlanningLifecycleLockError } from "./task-planning-lock.js";
 import { isGhAuthenticated } from "@fusion/core";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
-import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
+import { isTaskLookupMiss, probeSoftDeletedTask, rethrowTaskApiError, softDeletedNotFound } from "./task-lookup-error.js";
 import { resolveStoreForProjectId } from "./context.js";
 import {
   CROSS_NODE_REFUSAL,
@@ -1685,7 +1698,27 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         // board load — fall through with the un-enriched task list.
       }
 
-      res.json(tasks);
+      /*
+      FNXC:TaskLifecycleProjection 2026-11-17-16:16 (RUFU-583):
+      Every row this route ships states its lifecycle, derived by the one shared core helper
+      (`deriveTaskLifecycle`), because the requirement this card closes is "absence of the field
+      cannot read as alive": `deletedAt` is `undefined` on a live row and `JSON.stringify` drops the
+      key, so a consumer's reflex `deletedAt is falsy` filter was blind by construction and reported
+      "0 of the deleted cards still present" over five tombstones plus one card whose delete had been
+      REFUSED. Stamping here rather than in `rowToTask` is what makes the contract shape-independent:
+      it runs after the store call and after every best-effort enrichment above (all of which spread
+      `{...task}`), so it survives the RUFU-902 board-feed SELECT-list narrowing and the RUFU-615/627
+      `fields` declaration without either having to name the key.
+
+      Two claims this makes machine-checkable, and neither is a hope about the SQL:
+      - a DEFAULT read (no `includeDeleted`) contains only `live` rows, because `ACTIVE_TASK_FILTER`
+        excludes tombstones (VAL-DATA-005); the assertion is on the response, not on the query;
+      - an `includeDeleted=1` read is self-marking: RUFU-583 made those tombstones reachable at the
+        `WHERE` layer, and each one now says `deleted` on its own row (VAL-DATA-006).
+      Ordering relative to the enrichments is deliberate: they may omit or add their own keys, but none
+      of them may decide lifecycle, so the stamp is the LAST transform before the body is written.
+      */
+      res.json(withTaskLifecycleAll(tasks));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -1734,16 +1767,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (columns.length > 0 && query) throw badRequest("columns cannot be combined with q");
       try {
         if (columns.length > 0) {
-          res.json(await scopedStore.listTaskQueuePage({
+          res.json(withLifecycleOnPage(await scopedStore.listTaskQueuePage({
             columns,
             limit,
             ...(cursor ? { cursor } : {}),
             ...(orderParam ? { order: orderParam } : {}),
             ...(reviewScopeClaim ? { reviewScope: true } : {}),
-          }));
+          })));
           return;
         }
-        res.json(await scopedStore.listCurrentTasksPage({ limit, cursor, ...(query ? { query } : {}) }));
+        res.json(withLifecycleOnPage(await scopedStore.listCurrentTasksPage({ limit, cursor, ...(query ? { query } : {}) })));
       } catch (error) {
         if (error instanceof TypeError && (error.message === "Invalid task list cursor" || error.message === "Invalid task queue cursor")) throw badRequest(error.message);
         throw error;
@@ -5761,10 +5794,33 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
   // Get single task with prompt content
   router.get("/tasks/:id", async (req, res) => {
+    /*
+    FNXC:SoftDeleteDisclosure 2026-11-17-16:16 (RUFU-583):
+    Held BEFORE the try so the catch can still ask the store a forensic question. `scopedStore` is bound
+    inside the block, and re-acquiring the project context from a refusal path would add a second failure
+    source to the code path whose whole job is to answer a question honestly.
+    */
+    let forensicStore: TaskStore | undefined;
+    /*
+    Parsed OUTSIDE the try because the catch consults it: it decides whether a forensic probe is still a
+    question worth asking. A `const` declared in the try block would be out of scope in the sibling catch
+    and the resulting ReferenceError would arrive as a 500 on the one path that must only ever refuse.
+    */
+    const includeDeleted = req.query.includeDeleted === "1" || req.query.includeDeleted === "true";
     try {
       const { store: scopedStore, engine } = await getProjectContext(req);
+      forensicStore = scopedStore;
+      /*
+      FNXC:SoftDeleteDisclosure 2026-11-17-16:16 (RUFU-583):
+      `?includeDeleted=1|true` on the single route, parsed exactly like the list route parses it, is the
+      explicit-parity half of "make the list and the single-task route agree": one request returns the
+      tombstone itself (self-marked `deleted`) instead of a refusal, the same answer a forensic list read
+      gives. The DEFAULT read is untouched, so the live API still excludes tombstones (FNXC:TaskLookup404
+      holds) and nothing turns a tombstone into a 200 unless the caller asked for deleted rows.
+      */
       const task = await scopedStore.getTask(req.params.id, {
         activityLogLimit: TASK_DETAIL_ACTIVITY_LOG_LIMIT,
+        ...(includeDeleted ? { includeDeleted } : {}),
       });
       let enrichedTask = task;
       // FNXC:PlannerOversight 2026-07-05-00:00:
@@ -5787,7 +5843,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         // Planner-overseer-state enrichment is best-effort and must never
         // fail the task-detail load — fall through with the un-enriched task.
       }
-      res.json(trimTaskDetailActivityLog(enrichedTask));
+      /*
+      FNXC:TaskLifecycleProjection 2026-11-17-16:16 (RUFU-583):
+      The lifecycle stamp is the OUTERMOST transform, applied after `trimTaskDetailActivityLog`, which is
+      itself a spread of the row. The ordering choice and its reason, stated once: the planner-overseer
+      enrichment above and the trim below may each or neither copy the row, so a stamp placed inside
+      either of them survives only while that step keeps spreading; applied last, no upstream step can
+      remove the field however it rebuilds the row. It is also the one ordering under which the list,
+      page and single routes state lifecycle by the same rule.
+      */
+      res.json(withTaskLifecycle(trimTaskDetailActivityLog(enrichedTask)));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -5805,6 +5870,24 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       `@fusion/core` first and keeps ENOENT as a legacy fallback.
       */
       if (isTaskLookupMiss(err)) {
+        /*
+        FNXC:SoftDeleteDisclosure 2026-11-17-16:16 (RUFU-583):
+        Decide tombstone-vs-never-existed HERE, in this one request, instead of leaving the consumer to
+        discover it as a list-vs-single mismatch later (the list said `in-progress/failed`, this route said
+        `not found`, and nothing on either body said which answer was authoritative). The probe is
+        best-effort and three-state: a string or null means the id IS a tombstone and the refusal now says
+        so with its timestamp in `details`, the same structured envelope the 409 lineage/dependents
+        refusals use; `undefined` means there is no tombstone OR the probe faulted, and in both of those
+        cases the caller gets EXACTLY the byte-identical plain 404 this route produced before, never a 500
+        and never a slower refusal than the one already owed. Skipped when the read was already forensic:
+        a forensic miss is itself the answer that no tombstone exists, so probing again would re-ask a
+        question this request has already settled.
+        */
+        const deletedAt = includeDeleted ? undefined : await probeSoftDeletedTask(forensicStore, req.params.id);
+        if (deletedAt !== undefined) {
+          const message = err instanceof Error && err.message ? err.message : `Task ${req.params.id} not found`;
+          throw softDeletedNotFound(req.params.id, message, deletedAt);
+        }
         throw notFound(`Task ${req.params.id} not found`);
       } else {
         rethrowAsApiError(err, "Internal server error");

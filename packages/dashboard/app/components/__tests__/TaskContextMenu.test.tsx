@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Task } from "@fusion/core";
 import { TaskContextMenu, buildTaskActionMenuModel } from "../TaskContextMenu";
+import { resolveReviewBypassDeclineHint } from "../../utils/taskRetryCopy";
 
 const t = ((key: string, fallback: string, vars?: Record<string, string>) => {
   if (!vars) return fallback;
@@ -841,5 +842,105 @@ describe("bypass-review renders from the server capability, not a local predicat
       });
       expect(actions.map((a) => a.id)).not.toContain("bypass-review");
     }
+  });
+});
+
+/*
+FNXC:ReviewBypassDecline 2026-11-17-18:55 (RUFU-583, folded from RUFU-243):
+A REFUSAL THAT SPEAKS, ON THE SHARED MENU SURFACE, WITHOUT BECOMING AN AFFORDANCE.
+
+Six classes decline the operator waiver and every one of them used to reach the operator as a missing menu
+item - including the one an operator can least infer, `workflow-ir-unreadable`, where the board could not read
+its workflow and so could not name the gate a waiver would speak for. Three properties make the new sentence a
+fact rather than a second bug:
+
+1. TOTALITY - every class the server can name produces its own line here, so no class renders as a bare
+   absence. The wording is pinned in `taskRetryCopy.bypass-decline.test.ts`; what is pinned here is that the
+   menu shows a line at all, and where it puts it.
+2. NOT AN AFFORDANCE - RUFU-179 measured that a `tone: "note"` descriptor renders a `<span role="note">` whose
+   `onSelect` can never fire, and RUFU-599 recorded that an impossible item is DROPPED rather than greyed out.
+   So the sentence is a container-owned paragraph: no descriptor, no button, no disabled or empty shell, and no
+   click target a keyboard user can land on and get nothing from.
+3. PARITY WITH THE OFFER - the line appears exactly where the waiver would have stood and nowhere else: not
+   beside an offer, not on a host that never wires one (RUFU-218's negative surface), and not on a healthy
+   card, which would turn a refusal-specific explanation into ambient copy on every menu on the board.
+
+Both `role` shapes are asserted because one component backs both breakpoints: the desktop context menu renders
+`role="menu"` while the list/mobile host renders the same descriptor list as `role="list"`. A sentence that
+reached only one of them would repeat the desktop-only coverage that re-opened FN-5751.
+*/
+describe("a declined waiver names its reason on the shared menu surface (RUFU-583)", () => {
+  const DECLINE_CLASSES = [
+    "operator-task-hold",
+    "not-in-review-lane",
+    "no-refusing-gate",
+    "post-merge-review-not-owed",
+    "workspace-scope-withheld",
+    "workflow-ir-unreadable",
+  ] as const;
+  const capability = { kind: "failed", workflowStepId: "code-review", workflowStepName: "Code Review" };
+  const sentenceFor = (reason: string) =>
+    resolveReviewBypassDeclineHint(t, { reason: reason as never })?.sentence ?? "";
+
+  const modelFor = (overrides: Partial<Task> = {}) =>
+    buildTaskActionMenuModel({
+      task: makeTask({ column: "in-review", ...overrides }),
+      t,
+      onBypassReview: vi.fn(),
+    });
+
+  for (const reason of DECLINE_CLASSES) {
+    it(`names "${reason}" as a line and never as an action`, () => {
+      const model = modelFor({ reviewBypassDecline: { reason } });
+      const sentence = sentenceFor(reason);
+      expect(model.bypassDeclineHint, reason).toBe(sentence);
+      // A refusal must not smuggle itself back in as a clickable row.
+      expect(model.actions.map((action) => action.id)).not.toContain("bypass-review");
+      expect(model.actions.map((action) => action.label)).not.toContain(sentence);
+    });
+  }
+
+  for (const role of ["menu", "list"] as const) {
+    it(`renders the sentence as a container-owned line and no dead shell (role="${role}", the ${role === "menu" ? "desktop" : "list/mobile"} shape)`, () => {
+      const sentence = sentenceFor("workflow-ir-unreadable");
+      const { actions } = modelFor({ reviewBypassDecline: { reason: "workflow-ir-unreadable" } });
+      render(<TaskContextMenu actions={actions} role={role} declineHint={sentence} />);
+
+      const hint = screen.getByTestId("task-bypass-review-decline-hint");
+      expect(hint).toHaveTextContent(sentence);
+      // A paragraph the container owns - never a button, never an item, never a note-shaped action.
+      expect(hint.tagName).toBe("P");
+      expect(screen.queryAllByRole("menuitem", { name: sentence })).toHaveLength(0);
+      expect(screen.queryAllByRole("button", { name: sentence })).toHaveLength(0);
+      // Every rendered item stays a real action: no empty or disabled shell appeared for the sentence.
+      for (const item of screen.queryAllByRole("menuitem")) {
+        expect(item).not.toBe(hint);
+        expect(item.hasAttribute("disabled")).toBe(false);
+        expect(item.getAttribute("aria-disabled")).not.toBe("true");
+      }
+    });
+  }
+
+  it("stays silent when the server declined for no recorded reason", () => {
+    // The absence half: a healthy card carries no decline, so no menu on the board grows ambient copy.
+    const model = modelFor();
+    expect(model.bypassDeclineHint).toBeUndefined();
+    render(<TaskContextMenu actions={model.actions} declineHint={model.bypassDeclineHint} />);
+    expect(screen.queryByTestId("task-bypass-review-decline-hint")).not.toBeInTheDocument();
+  });
+
+  it("says nothing while it is offering, and nothing on a host that never wires the waiver", () => {
+    // An offer and a refusal on one card is a contradiction, and the derived decline is simply absent.
+    const offered = modelFor({ reviewBypass: capability });
+    expect(offered.bypassDeclineHint).toBeUndefined();
+    expect(offered.actions.map((action) => action.id)).toContain("bypass-review");
+
+    // RUFU-218's negative surface, mirrored: TaskCard and ListView wire no handler, so they never offered the
+    // waiver and must not start carrying a sentence about it.
+    const noHandler = buildTaskActionMenuModel({
+      task: makeTask({ column: "in-review", reviewBypassDecline: { reason: "no-refusing-gate" } }),
+      t,
+    });
+    expect(noHandler.bypassDeclineHint).toBeUndefined();
   });
 });

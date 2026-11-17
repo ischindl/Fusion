@@ -833,6 +833,23 @@ for a "skipped" outcome upstream).
   color: var(--text-muted);
 }
 
+/*
+FNXC:ReviewBypassDecline 2026-11-17-18:25 (RUFU-583, folded from RUFU-243):
+The same refusal sentence on the card face, so an operator is not forced to open a menu to learn that the menu
+has no answer. Warning-tinted at low opacity: the state is a decision the system made that the operator can act
+on (unpause the card, repair the workflow, clear the gate in the owning repository), not a failure of the card.
+*/
+.detail-bypass-decline-hint {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  overflow-wrap: anywhere;
+}
+
 .detail-error-actions {
   display: flex;
   flex-wrap: wrap;

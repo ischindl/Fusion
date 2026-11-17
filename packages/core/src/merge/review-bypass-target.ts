@@ -168,14 +168,19 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
 }
 
 /**
- * Derive the bypass target for a card, or `undefined` when a bypass would be refused.
+ * The bypass decision tree: which gate a bypass would act on, or which class refuses it.
+ *
+ * FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583, folded from RUFU-243):
+ * Every "nothing" below is now a NAMED refusal class (`ReviewBypassDeclineReason`). The tree itself is
+ * unchanged — same gates, same order, same precedence — only the refusals stopped being anonymous, so
+ * a card that cannot be bypassed can say why on the surface the operator is looking at.
  *
  * Order is the store's acceptance order and must stay that way (the operator-hold and lane gates are
  * checked even when a target exists, because the store refuses on them first):
- * 1. `isOperatorPausedForOperatorEscapeHatch(task)` → nothing. An OPERATOR hold is a hold on automation AND
+ * 1. `isOperatorPausedForOperatorEscapeHatch(task)` → `operator-task-hold`. An OPERATOR hold is a hold on automation AND
  *    on this escape hatch; an engine-originated park (`paused` with no `userPaused`) is not — it
  *    freezes automation only, and the hatch exists precisely for the card the engine parked.
- * 2. `task.column` not in `reviewColumns` → nothing.
+ * 2. `task.column` not in `reviewColumns` → `not-in-review-lane`.
  * 3. `getLatestFailedPreMergeReviewStep()` when present → `kind: "failed"`. Failed WINS over an
  *    unrun gate: the store rewrites the failed result and one bypass must not silently also
  *    consume the unrun-gate decision the operator has not made yet.
@@ -183,7 +188,8 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
  *    A `pending` result counts as PRESENT: a gate that is running is not a gate that never ran, and
  *    offering to skip it mid-flight would let an operator skip past a review in progress.
  * 5. else a required POST-merge gate with NO result row → `kind: "absent"` + `phase: "post-merge"`.
- * 6. else nothing (includes the fast lane and the no-gates case, whose resolved set is empty).
+ * 6. else `no-refusing-gate` (includes the fast lane and the no-gates case, whose resolved set is empty,
+ *    and is deliberately not split further — see the reason list for why those three are one class).
  *
  * `requiredStepIds` is resolved by the caller because it needs the workflow IR, which only the
  * server holds — see the module note for why that keeps this predicate server-side.
@@ -207,21 +213,95 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
  * would light the menu item beside a perfectly healthy Merge button. `mergeDetails.mergeConfirmed` is
  * the same proof the finalizer and every recovery lane keys on.
  */
-export function deriveReviewBypassTarget(
+/**
+ * Every way this module can answer "no". A REFUSAL-CLASS LIST, not a copy list: the operator-facing
+ * sentence lives in the hydration consumer and in `app/utils/taskRetryCopy.ts`, never here, because the
+ * module note rules this derivation pure, I/O-free and string-free so the SAME function runs in the
+ * store's write path and in every read-path hydration.
+ *
+ * FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583, folded from RUFU-243):
+ * ONE NAME PER REFUSAL, because a refusal with no name is invisible in exactly the two places an
+ * operator can look. Measured on RUFU-583: a held card in the review lane rendered NO bypass row at
+ * all, and the detail modal said nothing, while the API answered `task is paused` — the operator had
+ * three surfaces and not one of them said which condition held. Six classes, and no sixth invented:
+ *
+ * - `"operator-task-hold"` — an operator-authored hold (`paused` AND `userPaused`). The hold holds this
+ *   escape hatch too (RUFU-218/RUFU-219); an engine-originated park is NOT this class and stays offered.
+ * - `"not-in-review-lane"` — the card rests outside every lane the bypass admits. Two different operator
+ *   situations reach this exit (a lane a human decides in, and a lane held for a human merge) and the
+ *   pure derivation cannot tell them apart without a lane vocabulary no caller passes it, so it names
+ *   the ONE class it can defend and does not invent the distinction.
+ * - `"no-refusing-gate"` — the lane admits the bypass and no gate is refusing. This single name covers
+ *   the fast lane and the no-gates board as well, and the derivation deliberately does NOT distinguish
+ *   those: a board whose resolved required-gate set is empty is indistinguishable from a card whose
+ *   gates all passed, and guessing would be a fabricated diagnosis.
+ * - `"post-merge-review-not-owed"` — a required post-merge gate exists but the work has not landed, so
+ *   there is no evidence to waive yet (RUFU-408's durable-proof requirement).
+ * - `"workspace-scope-withheld"` — the only refusing gate is a `verdictless-skipped` carrier on a
+ *   multi-repo card, where an audited waiver cannot clear the door (`evaluatePreMergeApprovals` refuses
+ *   a workspace descriptor). RUFU-179's dead-affordance rule withholds the offer; RUFU-583 makes the
+ *   withholding say so.
+ * - `"workflow-ir-unreadable"` — the workflow IR could not be resolved, so the required-gate set is
+ *   unknown. This class is authored by the HYDRATION seam (`task-store/reads.ts`), not by the pure
+ *   derivation, which has no IR to fail on; it exists because that arm's `catch { return undefined }`
+ *   laundered a broken workflow read into "no gate is refusing", the one cause an operator could not
+ *   tell a refusal from.
+ */
+export type ReviewBypassDeclineReason =
+  | "operator-task-hold"
+  | "not-in-review-lane"
+  | "no-refusing-gate"
+  | "post-merge-review-not-owed"
+  | "workspace-scope-withheld"
+  | "workflow-ir-unreadable";
+
+/** The decline, named, plus the gate it concerns where the refusal can point at one. */
+export interface ReviewBypassDecline {
+  reason: ReviewBypassDeclineReason;
+  workflowStepId?: string;
+}
+
+/**
+ * The whole answer: the gate a bypass would act on, or the class that refuses it. Consumers project
+ * the half they need — `deriveReviewBypassTarget` and the shipped `task.reviewBypass` field read the
+ * `"offered"` arm exactly as they always did, and `task.reviewBypassDecline` carries the other.
+ */
+export type ReviewBypassDecision =
+  | { kind: "offered"; target: ReviewBypassTarget }
+  | { kind: "declined"; decline: ReviewBypassDecline };
+
+/**
+ * The decision tree, total. Order is the store's acceptance order and is the order the reasons were
+ * already refused in — no gate moved, no precedence changed.
+ *
+ * FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583):
+ * This is the function `deriveReviewBypassTarget` used to be, with the four `return undefined` exits
+ * given a name. The refusal classes are enumerated at `ReviewBypassDeclineReason`, including the two
+ * the derivation deliberately cannot tell apart (see the reason list: a declined arm must name a class
+ * it can prove from its inputs, never one it infers from what the operator probably meant).
+ */
+export function deriveReviewBypassDecision(
   task: ReviewBypassTaskView,
   requiredStepIds: ReadonlySet<string>,
   reviewColumns: ReadonlySet<string>,
   requiredPostMergeStepIds: ReadonlySet<string> = new Set(),
-): ReviewBypassTarget | undefined {
-  if (isOperatorPausedForOperatorEscapeHatch(task)) return undefined;
-  if (!reviewColumns.has(task.column)) return undefined;
+): ReviewBypassDecision {
+  if (isOperatorPausedForOperatorEscapeHatch(task)) {
+    return { kind: "declined", decline: { reason: "operator-task-hold" } };
+  }
+  if (!reviewColumns.has(task.column)) {
+    return { kind: "declined", decline: { reason: "not-in-review-lane" } };
+  }
 
   const failedStep: WorkflowStepResult | undefined = getLatestFailedPreMergeReviewStep(task);
   if (failedStep) {
     return {
-      kind: "failed",
-      workflowStepId: failedStep.workflowStepId,
-      workflowStepName: failedStep.workflowStepName,
+      kind: "offered",
+      target: {
+        kind: "failed",
+        workflowStepId: failedStep.workflowStepId,
+        workflowStepName: failedStep.workflowStepName,
+      },
     };
   }
 
@@ -239,28 +319,57 @@ export function deriveReviewBypassTarget(
   Offering it there would be the dead affordance RUFU-179 was written to delete, in the direction the
   operator pays for.
   */
+  let withheldWorkspaceGate: string | undefined;
   if (task.workspaceWorktrees === undefined) {
     for (const workflowStepId of requiredStepIds) {
       const latest = results.filter((result) => result.workflowStepId === workflowStepId).at(-1);
       if (latest && isVerdictLessSkippedOwedVerdictRow(latest)) {
         return {
-          kind: "verdictless-skipped",
-          workflowStepId,
-          workflowStepName: latest.workflowStepName || workflowStepId,
+          kind: "offered",
+          target: {
+            kind: "verdictless-skipped",
+            workflowStepId,
+            workflowStepName: latest.workflowStepName || workflowStepId,
+          },
         };
+      }
+    }
+  } else {
+    /*
+    FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583):
+    The singular-scope rule above SKIPS the verdictless class on a multi-repo card, and that withholding
+    used to reach the caller as a bare `undefined` — indistinguishable from "nothing is refusing". It is
+    now NAMED, but remembered rather than returned on the spot: a workspace card can hold a withheld
+    carrier AND an unrun gate at once, and the unrun gate is offered today. Returning here would have
+    taken that offer away, which is the dead-refusal direction of the RUFU-179 invariant this module
+    exists to keep — the store would still accept the unrun gate while the surface said declined.
+    */
+    for (const workflowStepId of requiredStepIds) {
+      const latest = results.filter((result) => result.workflowStepId === workflowStepId).at(-1);
+      if (latest && isVerdictLessSkippedOwedVerdictRow(latest)) {
+        withheldWorkspaceGate = workflowStepId;
+        break;
       }
     }
   }
   for (const workflowStepId of requiredStepIds) {
     if (!results.some((result) => result.workflowStepId === workflowStepId)) {
-      return { kind: "absent", workflowStepId, workflowStepName: workflowStepId };
+      return {
+        kind: "offered",
+        target: { kind: "absent", workflowStepId, workflowStepName: workflowStepId },
+      };
     }
   }
   for (const workflowStepId of requiredPostMergeStepIds) {
-    if (task.mergeDetails?.mergeConfirmed !== true) return undefined;
+    if (task.mergeDetails?.mergeConfirmed !== true) {
+      return { kind: "declined", decline: { reason: "post-merge-review-not-owed", workflowStepId } };
+    }
     const latestPostMerge = results.filter((result) => result.workflowStepId === workflowStepId);
     if (latestPostMerge.length === 0) {
-      return { kind: "absent", workflowStepId, workflowStepName: workflowStepId, phase: "post-merge" };
+      return {
+        kind: "offered",
+        target: { kind: "absent", workflowStepId, workflowStepName: workflowStepId, phase: "post-merge" },
+      };
     }
     /*
     FNXC:PostMergeGateWaiver 2026-11-14-01:35 (RUFU-599 reproduction 1, RUFU-474):
@@ -283,12 +392,37 @@ export function deriveReviewBypassTarget(
     if (latestPostMerge.length === 1 && postMergeGateWaiverReason(latestPostMerge[0]) !== undefined) {
       const [row] = latestPostMerge;
       return {
-        kind: "verdictless-skipped",
-        workflowStepId,
-        workflowStepName: row.workflowStepName || workflowStepId,
-        phase: "post-merge",
+        kind: "offered",
+        target: {
+          kind: "verdictless-skipped",
+          workflowStepId,
+          workflowStepName: row.workflowStepName || workflowStepId,
+          phase: "post-merge",
+        },
       };
     }
   }
-  return undefined;
+  if (withheldWorkspaceGate !== undefined) {
+    return { kind: "declined", decline: { reason: "workspace-scope-withheld", workflowStepId: withheldWorkspaceGate } };
+  }
+  return { kind: "declined", decline: { reason: "no-refusing-gate" } };
+}
+
+/**
+ * Derive the bypass target for a card, or `undefined` when a bypass would be refused.
+ *
+ * A one-line projection over `deriveReviewBypassDecision`, and it must stay exactly that: this is the
+ * shape `store.ts`, `reads.ts` and every existing assertion contract on (~40 assertions in
+ * `review-bypass-target.test.ts` are this signature's contract, not a suggestion). The refusal it
+ * returns as `undefined` is not lost — the decision underneath names it, which is what
+ * `task.reviewBypassDecline` ships.
+ */
+export function deriveReviewBypassTarget(
+  task: ReviewBypassTaskView,
+  requiredStepIds: ReadonlySet<string>,
+  reviewColumns: ReadonlySet<string>,
+  requiredPostMergeStepIds: ReadonlySet<string> = new Set(),
+): ReviewBypassTarget | undefined {
+  const decision = deriveReviewBypassDecision(task, requiredStepIds, reviewColumns, requiredPostMergeStepIds);
+  return decision.kind === "offered" ? decision.target : undefined;
 }

@@ -5641,6 +5641,8 @@ export function TaskDetailContent({
                     itemClassName="detail-actions-menu-item"
                     dangerItemClassName="detail-actions-menu-item-danger"
                     noteItemClassName="detail-actions-menu-note"
+                    declineHint={taskActionMenuModel.bypassDeclineHint}
+                    declineHintTestId="task-actions-menu-bypass-decline-hint"
                     onActionSelect={() => closeMenus()}
                   />
                 )}
@@ -5951,6 +5953,21 @@ export function TaskDetailContent({
             </>
           )}
           {activeTab === "definition" && <ExternalBlockNotice task={task as Task} variant="detail" onOpenChatWithPrefill={onOpenChatWithPrefill} onRetryTask={onRetryTask} addToast={addToast} />}
+          {/*
+          FNXC:ReviewBypassDecline 2026-11-17-18:20 (RUFU-583, folded from RUFU-243):
+          THE REFUSAL, NAMED ON THE CARD — not only inside the Actions menu an operator has to open to discover
+          that it says nothing. RUFU-243's measured complaint was that a refusal produced no signal anywhere: no
+          item on the menu, no line on the detail, and a POST that answered `task is paused`. The sentence comes
+          from the model the shared menu builds (one gate set, one vocabulary), so the card face and the menu can
+          never disagree about why. It renders only when the server derived a decline AND this host can otherwise
+          perform a waiver, so a healthy card shows nothing and a board card whose host never wires the action is
+          not told about an action that surface cannot take.
+          */}
+          {activeTab === "definition" && taskActionMenuModel.bypassDeclineHint ? (
+            <div className="detail-bypass-decline-hint" role="note" data-testid="task-bypass-review-decline-hint" title={taskActionMenuModel.bypassDeclineHint}>
+              {taskActionMenuModel.bypassDeclineHint}
+            </div>
+          ) : null}
           {activeTab === "definition" && shouldShowTaskFailureAlert && (
             <div className="detail-error-alert" role="alert">
               <span className="detail-error-icon">⚠</span>

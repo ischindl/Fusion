@@ -57,3 +57,11 @@ describe("resolveBypassReviewCopy", () => {
     expect(owed.promptMessage).toContain("without a verdict");
   });
 });
+
+/*
+FNXC:ReviewBypassDecline 2026-11-17-18:50 (RUFU-583, folded from RUFU-243):
+The DECLINE copy contract lives in taskRetryCopy.bypass-decline.test.ts, beside its own resolver arms, not here.
+This file states what an operator is OFFERED (RUFU-599); that one states what an operator is REFUSED (RUFU-243). Two
+different operator questions, and the operator's fold-in instruction keeps them as two separately failing tests rather
+than one file whose green pass would hide a red half.
+*/

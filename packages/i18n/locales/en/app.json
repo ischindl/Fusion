@@ -5928,6 +5928,16 @@
       "btnPostMergeVerdictless": "Waive post-merge gate that never reported",
       "promptMessagePostMergeVerdictless": "Reason for waiving the post-merge gate that ended without a verdict (required, audit-logged):",
       "successPostMergeVerdictless": "Waived post-merge gate for {{id}}"
+,
+      "decline": {
+        "operatorTaskHold": "No waiver is offered while you hold this card by hand. Unpause it to let the engine work the gate, or move the card - a waiver answers a gate that is refusing an unheld card.",
+        "notInReviewLane": "No waiver is offered in this column: the card is not standing in a review lane, so no review gate is holding it here. Retry repeats this card's current stage instead.",
+        "noRefusingGate": "No waiver is offered: every review gate this card owes has already produced its evidence, so nothing here is refusing it. Retry would discard verdicts that were reached.",
+        "postMergeReviewNotOwed": "No waiver is offered yet: this card's post-merge gate has no evidence owed against it until its landing is confirmed, so there is nothing to waive. Waiting on the merge, not on you.",
+        "workspaceScopeWithheld": "No waiver is offered for this card: it delivers across several repositories, and one audited waiver cannot stand in for each repository's own review evidence. Clear the gate in the repository that owes it.",
+        "workflowIrUnreadable": "No waiver can be decided for this card: its workflow definition could not be read, so the board cannot tell which gate a waiver would speak for. Repair or reselect the workflow before looking for this action.",
+        "unknown": "No waiver is offered for this card. The reason the board recorded is one this view does not describe - see this card's history for the refusal."
+      }
     },
     "details": {
       "collapseRouting": "Collapse routing details",

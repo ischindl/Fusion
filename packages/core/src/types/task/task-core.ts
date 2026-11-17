@@ -29,7 +29,7 @@ import type { WorkflowStepResult } from "../workflow/workflow-steps.js";
 import type { InReviewStallSignal } from "../../tasks/in-review-stall.js";
 import type { InReviewStalledSignal } from "../../tasks/in-review-stalled.js";
 import type { TaskStallReason } from "../../tasks/task-stall-reason.js";
-import type { ReviewBypassTarget } from "../../merge/review-bypass-target.js";
+import type { ReviewBypassDecline, ReviewBypassTarget } from "../../merge/review-bypass-target.js";
 // FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599): type-only, so the erased import keeps the
 // types <- tasks dependency graph one-directional at runtime.
 import type { ApprovalDestroyingRetry } from "../../tasks/approval-destroying-retry.js";
@@ -1977,6 +1977,25 @@ export interface Task {
    */
   reviewBypass?: ReviewBypassTarget;
   /*
+  FNXC:ReviewBypassDecline 2026-11-17-17:40 (RUFU-583, folded from RUFU-243):
+  THE REFUSAL MIRROR OF `reviewBypass`, hydrated at the same seam and for the same reason: a refusal
+  nobody can see is not a refusal the operator can act on. Measured on RUFU-583, a card held by hand
+  (`paused` AND `userPaused`) in the review lane rendered NO bypass row on either Actions surface and no
+  sentence on the detail modal, while `POST /tasks/:id/bypass-review` answered `task is paused` — the
+  three surfaces agreed on silence and only the API knew a class.
+
+  Shipped rather than re-derived client-side for the reason RUFU-179 already established: the dashboard
+  bundle aliases `@fusion/core` to the types-only leaf, so a browser-side copy of this predicate would
+  be a second selection authority that drifts on any custom board the server can read and the browser
+  cannot. `reviewBypass` stays the capability and byte-identical; this field is populated ONLY when the
+  decision declined, so an offered card carries exactly the payload it carries today.
+
+  Never activity-suppressed and never merge-queue-suppressed, exactly like the capability beside it: an
+  escape hatch's EXPLANATION cannot depend on whether a reviewer session last wrote a log line. Absent
+  means either a bypass is offered or the caller opted out of derivation — it is not itself a "no".
+  */
+  reviewBypassDecline?: ReviewBypassDecline;
+  /*
    * FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
    * Server-derived REFUSAL CAPABILITY, the mirror image of `reviewBypass` one door to the left: the
    * destructive Retry this card must NOT be offered, with the sentence naming the waiver that is its
@@ -2504,6 +2523,16 @@ export interface Task {
    */
   archivedAt?: string;
   deletedAt?: string;
+  /*
+  FNXC:TaskLifecycleProjection 2026-11-13-00:37 (RUFU-583):
+  A PROJECTION field, never persisted by a write path. The HTTP task projection (`GET /api/tasks`,
+  `GET /api/tasks/page`, `GET /api/tasks/:id`) stamps it from `deriveTaskLifecycle` so every row
+  states whether it is `live`, `deleted`, or `archived`; `deletedAt` alone cannot carry that meaning
+  because it is `undefined` on a live row and `JSON.stringify` then drops the key, which is precisely
+  how a soft-deleted card came to read as alive. Derived at the HTTP boundary and never written, so
+  engine-internal Task objects and SSE payloads stay byte-stable.
+  */
+  lifecycle?: "live" | "deleted" | "archived";
   allowResurrection?: boolean;
   createdAt: string;
   updatedAt: string;

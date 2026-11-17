@@ -103,12 +103,19 @@ The memo key carries every dimension that changes the **result shape** — archi
 column filter, `columns`, `excludeColumns`, `sort`, derived vs raw (`derive`), and live vs forensic
 (`includeDeleted` → `live`/`deleted`). A snapshot is never handed to a caller whose requested shape
 differs from the one that filled the entry. Soft deletion stamps the historical `archived` sentinel
-column, so an `active`-scope read already hides tombstones through the column filter; the reads where
-`includeDeleted` genuinely changes the payload are `includeArchived: true` ones (admin/forensic
-surfaces, e.g. `?includeDeleted=true`), where only the live-row filter separates the two. Sharing one
-entry across that pair would hand a board read a tombstone-bearing snapshot, or starve a forensic read
-of the rows it asked for, for up to one TTL. Both fill orders are pinned by
+column, so an `active`-scope read hides tombstones through the column filter. That was the whole story only
+while a forensic read needed `includeArchived: true` to differ at all: `GET /api/tasks?includeDeleted=1` asked
+for the tombstones and answered `[]`, because the implicit sentinel-lane exclusion dropped the row before
+`includeDeleted` ever reached the live-row filter. RUFU-583 relaxed that exclusion for a forensic read only, so
+`includeDeleted` now changes the payload on BOTH scopes: the `active` scope, where the sentinel predicate and the
+live-row filter are both in play, and the `includeArchived: true` scope, where only the live-row filter is. That
+is why the key keeps carrying the axis - a default-scope board snapshot and a default-scope forensic snapshot are
+two different result sets, and sharing one entry between them would hand a board read a tombstone-bearing
+snapshot or starve a forensic read of the rows it asked for, for up to one TTL. Both fill orders are pinned, for
+both scopes, by
 `packages/core/src/__tests__/postgres/list-tasks-derive-optout.pg.test.ts`.
+
+<!-- FNXC:TombstoneLifecycleProjection 2026-11-17-18:10 (RUFU-583): this paragraph stated that the only reads `includeDeleted` changes are `includeArchived: true` ones. That was the retired behavior described as intent, and it is the sentence that made an unreachable forensic flag look designed. -->
 
 **Across processes there are no events** — a second engine/dashboard process writing the same database
 can leave this process serving a snapshot up to 15 s stale. That is the accepted trade-off: every

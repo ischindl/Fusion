@@ -47,6 +47,22 @@
 }
 
 /*
+FNXC:ReviewBypassDecline 2026-11-17-18:25 (RUFU-583, folded from RUFU-243):
+The explanation for a waiver this card was refused, rendered by the menu CONTAINER after the item list. It is
+not an item: no button chrome, no disabled shell. The muted note treatment is what tells the operator this line
+is the answer, not an action that failed; the old failure was an action-shaped row that did nothing.
+*/
+.task-context-menu__decline-hint {
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
+/*
 FNXC:NativeUiCollections 2026-09-10-20:00:
 Task actions use one valid native menu collection per visual row. The row menu is layout-transparent, while a submenu remains anchored to the row that opened it instead of being moved behind the complete parent collection.
 */
