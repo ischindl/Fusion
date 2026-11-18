@@ -44,6 +44,26 @@ export function initRepoWithCommit(repoDir: string, defaultBranch = "main"): voi
   ].join(" && "));
 }
 
+/**
+ * Attach a bare `origin` remote to a fixture sub-repo and push its current branch, so a
+ * remote-containment proof (RUFU-594) is exercised against a REAL remote rather than a mock.
+ *
+ * FNXC:WorkspaceFinalization 2026-11-18-13:57:
+ * The guard's third delivery proof reads `refs/remotes/`, and no other fixture in this file has ever
+ * had a remote — that absence is exactly why the published-to-remote case had no coverage and a
+ * published commit could read as a fresh bypass. The bare repository lives as a sibling under the
+ * NON-git workspace root (never inside the sub-repo, where it would become untracked dirt the guard
+ * itself reports), and it is not listed in `workspace.json`, so no guard iteration walks into it.
+ * Call it AFTER the commits under test exist, or push again afterwards.
+ */
+export function attachBareOriginAndPush(fixture: WorkspaceFixture, repo = "repo-a"): string {
+  const remoteDir = path.join(fixture.rootDir, ".remotes", `${repo}.git`);
+  const branch = fixture.git(repo, "git rev-parse --abbrev-ref HEAD");
+  mkdirSync(remoteDir, { recursive: true });
+  fixture.git(repo, `git init --bare '${remoteDir}' && git remote add origin '${remoteDir}' && git push --quiet origin HEAD:refs/heads/${branch}`);
+  return remoteDir;
+}
+
 export interface WorkspaceFixture {
   /** Absolute path to the non-git workspace root. */
   rootDir: string;

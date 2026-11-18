@@ -13,12 +13,66 @@ import { execSync } from "node:child_process";
 import { mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
-import { detectWorkspaceMainCheckoutWork, workspaceExecutionAnchor } from "../executor/workspace-main-checkout-guard.js";
+import {
+  commitMessageAttributesTask,
+  commitPublishedToRemote,
+  detectWorkspaceMainCheckoutWork,
+  workspaceExecutionAnchor,
+} from "../executor/workspace-main-checkout-guard.js";
 import { verifyWorktreeInvariants } from "../executor/worktree-verify-invariants.js";
-import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
+import { attachBareOriginAndPush, createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
 
 const describeIfGit = hasGit ? describe : describe.skip;
 const settings = {} as Settings;
+
+/*
+FNXC:WorkspaceFinalization 2026-11-18-13:57:
+RUFU-594 unit matrix for the guard's attribution predicate: the positive column is every shape the
+repo already treats as authorship, the negative column is every shape that used to be enough.
+The bare-ID-mention rows are the SANE-453 regression — they must stay false forever.
+*/
+describe("commitMessageAttributesTask", () => {
+  const id = "FN-1001";
+
+  it.each([
+    ["attribution trailer", { subject: "docs: unrelated subject", body: "Free prose.\n\nFusion-Task-Id: FN-1001\n" }],
+    ["indented trailer", { subject: "docs: unrelated subject", body: "  Fusion-Task-Id: FN-1001  " }],
+    ["conventional scope", { subject: "fix(FN-1001): direct main edit", body: "" }],
+    ["breaking-change marker", { subject: "feat(FN-1001)!: reworked CLI", body: "" }],
+    ["multi-term scope", { subject: "chore(engine, FN-1001): touch guard", body: "" }],
+    ["bare subject prefix", { subject: "FN-1001: direct main edit", body: "" }],
+    ["case-insensitive id", { subject: "fix(fn-1001): lowercase scope", body: "" }],
+  ] as const)("attributes the %s form", (_label, message) => {
+    expect(commitMessageAttributesTask(message, id)).toBe(true);
+  });
+
+  it.each([
+    ["cross-reference in body, other card in subject", { subject: "fix(FN-9999): cross-cutting note", body: "Supersedes the analysis in FN-1001." }],
+    ["prose mention only", { subject: "docs: notes", body: "See FN-1001 for context." }],
+    ["url mention", { subject: "docs: notes", body: "https://example.com/FN-1001" }],
+    ["prose mentions FN-1001 in prose", { subject: "feat: unrelated change", body: "mentions FN-1001 in prose" }],
+    ["foreign trailer owns the commit", { subject: "docs: notes", body: "Fusion-Task-Id: FN-9999" }],
+    ["trailer name without a value", { subject: "docs: notes", body: "Fusion-Task-Id:" }],
+    ["longer id in scope", { subject: "fix(FN-10011): longer id", body: "" }],
+    ["suffixed id in scope", { subject: "fix(FN-1001A): suffixed id", body: "" }],
+    ["longer id as subject prefix", { subject: "FN-10011: longer prefix", body: "" }],
+    ["id mid-subject", { subject: "task FN-1001: mid-subject mention", body: "" }],
+    ["bare type with no scope", { subject: "feat: unrelated change", body: "" }],
+  ] as const)("does not attribute the %s form", (_label, message) => {
+    expect(commitMessageAttributesTask(message, id)).toBe(false);
+  });
+
+  it("honours configured trailer names and escapes them as literals", () => {
+    expect(commitMessageAttributesTask({ subject: "docs: x", body: "Fixes: FN-1001" }, id, ["Fixes"])).toBe(true);
+    expect(commitMessageAttributesTask({ subject: "docs: x", body: "Fixes: FN-1001" }, id)).toBe(false);
+    // An unescaped configured name would let `Fusion.Task-Id` match `FusionXTask-Id`.
+    expect(commitMessageAttributesTask({ subject: "docs: x", body: "Fusion.Task-Id: FN-1001" }, id, ["Fusion.Task-Id"])).toBe(true);
+    expect(commitMessageAttributesTask({ subject: "docs: x", body: "FusionXTask-Id: FN-1001" }, id, ["Fusion.Task-Id"])).toBe(false);
+    // Blank configured entries fall back to the canonical trailer rather than matching everything.
+    expect(commitMessageAttributesTask({ subject: "docs: x", body: "Fusion-Task-Id: FN-1001" }, id, ["   "])).toBe(true);
+  });
+});
+
 function task(overrides: Partial<Task> = {}): Task {
   const start = new Date(Date.now() + 1_000).toISOString();
   return { id: "FN-1001", title: "guard", description: "", column: "in-progress", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: start, updatedAt: start, firstExecutionAt: start, executionStartedAt: start, ...overrides } as Task;
@@ -48,6 +102,18 @@ function addEmptyWorktree(fixture: WorkspaceFixture, repo = "repo-a"): { worktre
   const worktreePath = path.join(fixture.repoPath(repo), ".worktrees", "fn-1001");
   fixture.git(repo, `git worktree add -b fusion/fn-1001 ${worktreePath} HEAD`);
   return { worktreePath, baseCommitSha };
+}
+
+/**
+ * Commit in a sub-repo's MAIN checkout with an explicit commit date (so a case can be made
+ * post-anchor on demand), returning the new sha. Each `-m` becomes one paragraph, so a trailer can
+ * be passed as a separate message and still land in the body where `%b` reads it.
+ */
+function commitInMainCheckout(fixture: WorkspaceFixture, repo: string, file: string, messages: string[], committedAt: string): string {
+  writeFileSync(path.join(fixture.repoPath(repo), file), "export const marker = true;\n");
+  fixture.git(repo, `git add '${file}'`);
+  fixture.git(repo, `GIT_AUTHOR_DATE='${committedAt}' GIT_COMMITTER_DATE='${committedAt}' git commit ${messages.map((message) => `-m '${message}'`).join(" ")}`);
+  return fixture.git(repo, "git rev-parse HEAD");
 }
 
 describeIfGit("workspace main-checkout guard", () => {
@@ -329,5 +395,121 @@ describeIfGit("workspace main-checkout guard", () => {
     expect(result.violations).toEqual([]);
     expect(result.warnings).toContainEqual(expect.objectContaining({ repo: "repo-a", reason: "pre-existing-dirt", files: ["old.txt"] }));
     rmSync(path.dirname(path.dirname(nested)), { recursive: true, force: true });
+  });
+
+  /*
+  FNXC:WorkspaceFinalization 2026-11-18-13:57:
+  RUFU-594 symptom acceptance, on the exact production shape (SANE-453): the task has NO
+  `workspaceWorktrees` entry, so neither recorded landing nor recorded base ancestry can prove
+  anything, and a commit whose subject belongs to ANOTHER card cross-references this card's ID in
+  prose. Before the change that cross-reference alone was the whole "evidence" and `fn_task_done`
+  refused with an un-actionable remedy. Both directions are asserted on ONE tree, because proving
+  only the negative half would let a relaxation of the predicate pass unnoticed.
+  */
+  it("refuses a structurally attributed commit but never a cross-reference in another card's message", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    const activeTask = task({ workspaceWorktrees: {} });
+    const at = (offsetMs: number) => new Date(Date.parse(activeTask.firstExecutionAt!) + offsetMs).toISOString();
+    const deps = () => invariantDeps(fixture);
+
+    const crossReference = commitInMainCheckout(
+      fixture, "repo-a", "cross-reference.ts", ["fix(FN-9999): cross-cutting note", "Supersedes the analysis in FN-1001."], at(10_000),
+    );
+
+    const crossReferencedOnly = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, []);
+    expect(crossReferencedOnly.violations).toEqual([]);
+    expect(crossReferencedOnly.warnings).toContainEqual(expect.objectContaining({
+      repo: "repo-a", commits: [crossReference], reason: "pre-existing-dirt",
+    }));
+    expect(await verifyWorktreeInvariants(deps(), activeTask)).not.toMatchObject({ reason: "main_checkout_edit" });
+
+    // Same tree, now a commit that CARRIES the card's fingerprint in its trailer.
+    const trailerCommit = commitInMainCheckout(
+      fixture, "repo-a", "trailer.ts", ["docs: note for another card", "Fusion-Task-Id: FN-1001"], at(20_000),
+    );
+    const withTrailer = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, []);
+    expect(withTrailer.violations).toContainEqual(expect.objectContaining({
+      repo: "repo-a", commits: [trailerCommit], evidence: "task-attributed-commit",
+    }));
+    const trailerRefusal = await verifyWorktreeInvariants(deps(), activeTask);
+    expect(trailerRefusal).toMatchObject({ ok: false, reason: "main_checkout_edit", repo: "repo-a" });
+    expect(trailerRefusal.ok ? "" : trailerRefusal.observed).toContain(trailerCommit.slice(0, 12));
+
+    // And again with the bare subject-prefix shape the SANE-452 commit uses for its OWN id.
+    const subjectCommit = commitInMainCheckout(fixture, "repo-a", "subject.ts", ["FN-1001: direct main edit"], at(30_000));
+    const withSubjectPrefix = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, []);
+    expect(withSubjectPrefix.violations.flatMap((violation) => violation.commits)).toEqual(
+      expect.arrayContaining([trailerCommit, subjectCommit]),
+    );
+    expect(await verifyWorktreeInvariants(deps(), activeTask)).toMatchObject({ ok: false, reason: "main_checkout_edit" });
+  });
+
+  /*
+  FNXC:WorkspaceFinalization 2026-11-18-13:57:
+  RUFU-594 delivery half, asserted end-to-end on a REAL remote: an attributed post-anchor commit that
+  `origin/main` already contains is a `published-to-remote` WARNING, so the verdict and the
+  `worktree:workspace-main-checkout-edit` row agree (no `outcome:"blocked"` row for a published-only
+  card). Refusing here would demand rewriting pushed history, which is why the proof exists.
+  */
+  it("warns published-to-remote instead of refusing a commit the remote already has", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    const activeTask = task({ workspaceWorktrees: {} });
+    const published = commitInMainCheckout(fixture, "repo-a", "published.ts", ["fix(FN-1001): direct main edit"], new Date(Date.parse(activeTask.firstExecutionAt!) + 10_000).toISOString());
+    attachBareOriginAndPush(fixture);
+
+    const evidence = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, []);
+    expect(evidence.violations).toEqual([]);
+    expect(evidence.warnings).toContainEqual(expect.objectContaining({
+      repo: "repo-a", commits: [published], reason: "published-to-remote", evidence: "task-attributed-commit",
+    }));
+
+    const auditEvents = vi.fn().mockResolvedValue(undefined);
+    const deps = invariantDeps(fixture, [], {
+      recordRunAuditEvent: auditEvents,
+      runContext: { runId: "run-fn-1001", agentId: "agent-fn-1001", taskId: activeTask.id },
+    });
+    expect(await verifyWorktreeInvariants(deps, activeTask)).not.toMatchObject({ reason: "main_checkout_edit" });
+    expect(auditEvents).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "worktree:workspace-main-checkout-edit",
+      metadata: expect.objectContaining({
+        outcome: "warned", reason: "published-to-remote", commitCount: 1, evidence: "task-attributed-commit",
+      }),
+    }));
+    expect(auditEvents).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "worktree:workspace-main-checkout-edit",
+      metadata: expect.objectContaining({ outcome: "blocked" }),
+    }));
+  });
+
+  it("proves remote containment only from a real remote-tracking ref, never from a failed probe", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    const sha = fixture.git("repo-a", "git rev-parse HEAD");
+    const unknownSha = "0123456789abcdef0123456789abcdef01234567";
+
+    // No remote at all — the shape of this whole suite: nothing is proven, so refusals stay intact
+    // (the "detects clean-tree direct main commits" and MRG-055 cases are the guard against widening).
+    expect(await commitPublishedToRemote(sha, fixture.repoPath("repo-a"))).toBe(false);
+    // A well-formed but unknown object, an unreadable directory, and a non-sha argument are each
+    // NOT proven: an unknown probe never accepts delivery, so it falls through to the violation.
+    expect(await commitPublishedToRemote(unknownSha, fixture.repoPath("repo-a"))).toBe(false);
+    expect(await commitPublishedToRemote(sha, path.join(fixture.rootDir, "not-a-repo"))).toBe(false);
+    expect(await commitPublishedToRemote("not-a-sha; rm -rf /", fixture.repoPath("repo-a"))).toBe(false);
+
+    attachBareOriginAndPush(fixture);
+    expect(await commitPublishedToRemote(sha, fixture.repoPath("repo-a"))).toBe(true);
+  });
+
+  it("keeps the recorded-base proof working for a post-anchor attributed commit the base already contains", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    const activeTask = task({ workspaceWorktrees: {} });
+    const committed = commitInMainCheckout(fixture, "repo-a", "predates-acquisition.ts", ["fix(FN-1001): landed before acquisition"], new Date(Date.parse(activeTask.firstExecutionAt!) + 10_000).toISOString());
+    // Acquisition AFTER the commit makes its own tip a container of that commit, so base ancestry —
+    // the pre-existing escape hatch — must still release it even though it is post-anchor.
+    const acquired = addEmptyWorktree(fixture);
+    activeTask.workspaceWorktrees = { "repo-a": { ...acquired, branch: "fusion/fn-1001" } };
+
+    const evidence = await detectWorkspaceMainCheckoutWork({ rootDir: fixture.rootDir, settings }, activeTask, fixture.repos, []);
+    expect(evidence.violations).toEqual([]);
+    expect(evidence.warnings.filter((warning) => warning.commits.includes(committed))).toEqual([]);
   });
 });
