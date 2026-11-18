@@ -188,7 +188,6 @@ describe("incomplete PG sync-reader stubs (shipped helpers)", () => {
         corruptionDetected: false,
         corruptionErrors: [],
         lastCheckedAt: null,
-        isRunning: false,
       }),
       ...overrides,
     } as unknown as TaskStore;
@@ -235,7 +234,6 @@ describe("incomplete PG sync-reader stubs (shipped helpers)", () => {
         corruptionDetected: true,
         corruptionErrors: ["PostgreSQL backend unreachable: boom"],
         lastCheckedAt: new Date("2026-07-26T00:00:00.000Z"),
-        isRunning: false,
       },
       getDatabaseHealth: undefined as never,
     });
@@ -251,15 +249,21 @@ describe("incomplete PG sync-reader stubs (shipped helpers)", () => {
         corruptionDetected: true,
         corruptionErrors: ["unreachable"],
         lastCheckedAt: checkedAt,
-        isRunning: false,
       },
     }));
+    /*
+    FNXC:PostgresHealth 2026-11-18-02:22 (RUFU-681):
+    Exact-shape lock: the cached snapshot has exactly the four measured members.
+    It used to carry a fifth, `isRunning`, which RUFU-302 deleted from the
+    published contract and RUFU-681 deleted from the internal snapshot after a
+    census proved nothing read it. `toEqual` (not `toMatchObject`) is what makes
+    a reintroduced liveness key fail here, so do not weaken it.
+    */
     expect(health).toEqual({
       healthy: false,
       corruptionDetected: true,
       corruptionErrors: ["unreachable"],
       lastCheckedAt: checkedAt,
-      isRunning: false,
     });
   });
 

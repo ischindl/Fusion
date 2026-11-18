@@ -847,13 +847,23 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   Sync getDatabaseHealth/healthCheck cannot await PostgreSQL. Cache the last
   AsyncDataLayer ping result so self-healing and CLI health probes observe real
   connectivity rather than the always-healthy cutover sentinel.
+
+  FNXC:PostgresHealth 2026-11-18-02:22 (RUFU-681):
+  This cached snapshot is internal-only. It used to carry `isRunning: boolean`
+  ("true while an asynchronous health check is in progress"), which the async
+  refresher wrote around every probe and NOTHING ever read: it guarded no
+  concurrent refresh (overlapping probes were already last-write-wins) and no
+  read path derived a public signal from it. RUFU-302 had already deleted its
+  published twin from the `/api/health` `database` section after the RUFU-301
+  incident read `database.isRunning:false` as proof the database was dead. The
+  field is removed here so the internal shape can never be republished as a
+  liveness claim; the four members below are the whole snapshot.
   */
   public postgresHealthSnapshot: {
     healthy: boolean;
     corruptionDetected: boolean;
     corruptionErrors: string[];
     lastCheckedAt: Date | null;
-    isRunning: boolean;
   } | null = null;
   /*
   FNXC:IncompletePgPorts 2026-07-26-20:35:
@@ -5155,7 +5165,6 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
     corruptionDetected: boolean;
     corruptionErrors: string[];
     lastCheckedAt: Date | null;
-    isRunning: boolean;
   } {
     return getDatabaseHealthImpl(this);
   }

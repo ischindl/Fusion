@@ -33,7 +33,6 @@ function createMockStore(overrides: Record<string, unknown> = {}): TaskStore & E
       corruptionDetected: false,
       corruptionErrors: [],
       lastCheckedAt: null,
-      isRunning: false,
     }),
     recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
     /*
@@ -219,7 +218,6 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
         corruptionDetected: true,
         corruptionErrors: ["bad row", "bad index"],
         lastCheckedAt: new Date("2026-05-20T00:05:00.000Z"),
-        isRunning: false,
       }),
     });
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
@@ -255,7 +253,6 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
         corruptionDetected: true,
         corruptionErrors: ["connection refused"],
         lastCheckedAt: new Date("2026-05-20T00:05:00.000Z"),
-        isRunning: false,
       }),
     });
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
@@ -280,7 +277,6 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
         corruptionDetected: true,
         corruptionErrors: ["bad row"],
         lastCheckedAt: new Date("2026-05-20T00:05:00.000Z"),
-        isRunning: false,
       }),
     });
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
@@ -302,21 +298,18 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
         corruptionDetected: true,
         corruptionErrors: ["first error"],
         lastCheckedAt: new Date("2026-05-20T00:05:00.000Z"),
-        isRunning: false,
       })
       .mockReturnValueOnce({
         healthy: true,
         corruptionDetected: false,
         corruptionErrors: [],
         lastCheckedAt: new Date("2026-05-20T00:15:00.000Z"),
-        isRunning: false,
       })
       .mockReturnValueOnce({
         healthy: false,
         corruptionDetected: true,
         corruptionErrors: ["second error"],
         lastCheckedAt: new Date("2026-05-20T00:25:00.000Z"),
-        isRunning: false,
       });
     const store = createMockStore({ getDatabaseHealth });
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
@@ -351,7 +344,6 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
         corruptionDetected: true,
         corruptionErrors: ["bad row"],
         lastCheckedAt: new Date("2026-05-20T00:05:00.000Z"),
-        isRunning: false,
       }),
     });
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });

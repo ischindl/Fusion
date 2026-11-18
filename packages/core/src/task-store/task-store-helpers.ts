@@ -498,6 +498,18 @@ FNXC:IncompletePgPorts 2026-07-26-20:40:
 Probe AsyncDataLayer.ping + pg_stat_database via checkPostgresHealth and store
 the result on TaskStore.postgresHealthSnapshot for sync getDatabaseHealth /
 healthCheck readers.
+
+FNXC:PostgresHealth 2026-11-18-02:22 (RUFU-681):
+This is the ONLY writer of the snapshot, and it used to pre-write the whole
+snapshot just to flip the transient `isRunning: true` flag before awaiting the
+probe. RUFU-681's census found no reader of that flag, so the pre-write is
+deleted rather than trimmed: it re-stated the four measured fields from the
+existing snapshot unchanged, which means during a probe readers observe either
+the previous snapshot or, on a very first probe, `null`. `getDatabaseHealthImpl`
+answers `null` with the same four optimistic values the pre-write published, so
+removing it leaves getDatabaseHealth()/healthCheck() outputs identical apart
+from the deleted key. Overlapping probes stay last-write-wins, exactly as before
+- the flag never deduped them.
 */
 export async function refreshDatabaseHealthAsyncImpl(store: TaskStore): Promise<ReturnType<TaskStore["getDatabaseHealth"]>> {
     if (!store.asyncLayer) {
@@ -508,13 +520,6 @@ export async function refreshDatabaseHealthAsyncImpl(store: TaskStore): Promise<
       */
       return store.getDatabaseHealth();
     }
-    store.postgresHealthSnapshot = {
-      healthy: store.postgresHealthSnapshot?.healthy ?? true,
-      corruptionDetected: store.postgresHealthSnapshot?.corruptionDetected ?? false,
-      corruptionErrors: store.postgresHealthSnapshot?.corruptionErrors ?? [],
-      lastCheckedAt: store.postgresHealthSnapshot?.lastCheckedAt ?? null,
-      isRunning: true,
-    };
     const { checkPostgresHealth } = await import("../postgres/postgres-health.js");
     const errors = await checkPostgresHealth(store.asyncLayer);
     const now = new Date();
@@ -523,7 +528,6 @@ export async function refreshDatabaseHealthAsyncImpl(store: TaskStore): Promise<
       corruptionDetected: errors.length > 0,
       corruptionErrors: errors.slice(0, 5),
       lastCheckedAt: now,
-      isRunning: false,
     };
     return store.postgresHealthSnapshot;
 }

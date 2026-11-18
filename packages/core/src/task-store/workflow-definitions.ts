@@ -1076,20 +1076,25 @@ export function getDatabaseHealthImpl(store: TaskStore): {
     corruptionDetected: boolean;
     corruptionErrors: string[];
     lastCheckedAt: Date | null;
-    isRunning: boolean;
   } {
     /*
     FNXC:IncompletePgPorts 2026-07-26-20:40:
     Backend mode returns the last refreshDatabaseHealthAsync snapshot. Until the
     first probe runs, report healthy with lastCheckedAt null (unknown, not a
     lie about a successful integrity check).
+
+    FNXC:PostgresHealth 2026-11-18-02:22 (RUFU-681):
+    The null-fallback also used to answer `isRunning: false`, which read as a
+    liveness verdict while proving nothing. RUFU-681 removed the flag from the
+    whole snapshot, so this fallback is what a reader sees during a very first
+    probe (the async refresher no longer pre-writes the snapshot) and it returns
+    exactly the four measured members.
     */
         return store.postgresHealthSnapshot ?? {
       healthy: true,
       corruptionDetected: false,
       corruptionErrors: [],
       lastCheckedAt: null,
-      isRunning: false,
     };
 }
 

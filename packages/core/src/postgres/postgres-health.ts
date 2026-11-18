@@ -42,6 +42,19 @@ import { projectTableNames } from "./schema/project.js";
  * corruption and unreachable-backnet scenarios (both surface the DB corruption
  * banner per VAL-HEALTH-002). `corruptionErrors` lists up to 5 diagnostic
  * messages for the banner.
+ *
+ * FNXC:PostgresHealth 2026-11-18-02:22 (RUFU-681):
+ * This snapshot is INTERNAL store bookkeeping and must never gain a published
+ * liveness field. RUFU-302 removed `database.isRunning` from the published
+ * `/api/health` contract (both producers hardcoded it to `false`, so it was a
+ * constant the RUFU-301 incident report mistook for proof the database was
+ * dead) and deliberately left the store's own copy in place. RUFU-681's census
+ * proved that copy was write-only: the async refresher flipped it true/false
+ * around each probe, no code ever read it to debounce a concurrent refresh, and
+ * the type had zero importers. It is deleted here so a reader can never again
+ * mistake it for a DB-liveness measurement. The four members below are the
+ * closed measured set; the published `database` key set stays locked by
+ * `packages/dashboard/src/routes/__tests__/health-payload-contract.test.ts`.
  */
 export interface PostgresHealthSnapshot {
   /** Overall health: false when the backend is unreachable or corrupt. */
@@ -52,8 +65,6 @@ export interface PostgresHealthSnapshot {
   corruptionErrors: string[];
   /** ISO-8601 timestamp of the last health check, or null if never checked. */
   lastCheckedAt: string | null;
-  /** True while an asynchronous health check is in progress. */
-  isRunning: boolean;
   /** Backend descriptor for operator display (e.g. "external" / "embedded"). */
   backendMode: string | null;
 }
