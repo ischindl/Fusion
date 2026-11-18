@@ -89,6 +89,7 @@
     "i18n:status:report": "i18next-cli status",
     "i18n:lint": "i18next-cli lint",
     "i18n:gen-cli": "pnpm --filter @fusion/i18n gen:cli-catalogs",
+    "check:i18n-extract-clean": "node packages/i18n/scripts/check-i18n-extract-clean.mjs",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "node scripts/release.mjs",

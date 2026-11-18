@@ -18,6 +18,10 @@ as production-quality.
 
 Notes for reviewers:
 
+- Untranslated entries are `""` placeholders, not missing keys. List them per locale and namespace
+  with `pnpm i18n:status:report`; the structural gate (`pnpm i18n:status`) deliberately passes over them,
+  so no board surface shows this debt and only a card that deletes a duplicated group or fills a value
+  changes it.
 - `zh-CN` and `zh-TW` are **independent** catalogs — different script *and*
   vocabulary (e.g. zh-CN 项目/任务/加载 vs zh-TW 專案/工作/載入). Do not machine-convert
   one into the other.

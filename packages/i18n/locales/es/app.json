@@ -1,33 +1,33 @@
 {
   "postMergeEvidence": {
-  "editorInheritOption": "Heredar — el valor predeterminado de la plataforma para este tablero",
-  "statusLead": "El reportero post-fusión de este tablero:",
-  "pipelineAt": "pipeline en",
-  "credentialConfigured": "credencial configurada",
-  "inheritResolves": "Este paso hereda el valor predeterminado de la plataforma del tablero, que se resuelve a",
-  "kind": {
-    "githubActionsFullSuite": "GitHub Actions Suite completa",
-    "integrationOnly": "Solo integración",
-    "onedevPipeline": "Pipeline de OneDev",
-    "gitlabPipeline": "Pipeline de GitLab"
+    "editorInheritOption": "Heredar — el valor predeterminado de la plataforma para este tablero",
+    "statusLead": "El reportero post-fusión de este tablero:",
+    "pipelineAt": "pipeline en",
+    "credentialConfigured": "credencial configurada",
+    "inheritResolves": "Este paso hereda el valor predeterminado de la plataforma del tablero, que se resuelve a",
+    "kind": {
+      "githubActionsFullSuite": "GitHub Actions Suite completa",
+      "integrationOnly": "Solo integración",
+      "onedevPipeline": "Pipeline de OneDev",
+      "gitlabPipeline": "Pipeline de GitLab"
+    },
+    "provider": {
+      "githubActions": "GitHub Actions",
+      "onedev": "OneDev",
+      "gitlab": "GitLab",
+      "none": "Ninguno (sin reportero CI)"
+    },
+    "reason": {
+      "operatorDeclared": "declarado por el operador",
+      "githubRemoteWithWorkflows": "derivado: este repositorio está en GitHub y tiene archivos de workflow",
+      "githubRemoteWithoutWorkflows": "derivado: este repositorio está en GitHub pero no tiene archivos de workflow",
+      "onedevEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de OneDev configurado",
+      "gitlabEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de GitLab configurado",
+      "nonGithubRemote": "derivado: el host remoto no tiene un reportero CI configurado",
+      "noRemote": "derivado: este repositorio no tiene remoto git",
+      "repoFactsUnreadable": "no se pudieron leer los datos del repositorio — la barrera mantiene su contrato histórico"
+    }
   },
-  "provider": {
-    "githubActions": "GitHub Actions",
-    "onedev": "OneDev",
-    "gitlab": "GitLab",
-    "none": "Ninguno (sin reportero CI)"
-  },
-  "reason": {
-    "operatorDeclared": "declarado por el operador",
-    "githubRemoteWithWorkflows": "derivado: este repositorio está en GitHub y tiene archivos de workflow",
-    "githubRemoteWithoutWorkflows": "derivado: este repositorio está en GitHub pero no tiene archivos de workflow",
-    "onedevEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de OneDev configurado",
-    "gitlabEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de GitLab configurado",
-    "nonGithubRemote": "derivado: el host remoto no tiene un reportero CI configurado",
-    "noRemote": "derivado: este repositorio no tiene remoto git",
-    "repoFactsUnreadable": "no se pudieron leer los datos del repositorio — la barrera mantiene su contrato histórico"
-  }
-},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "Editar",
@@ -784,7 +784,8 @@
       "preserveWorkLabel": "Keep the work already produced",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
-      "planSuccess": "Planning will restart in this column."
+      "planSuccess": "Planning will restart in this column.",
+      "refusalFallback": ""
     },
     "notSet": "No configurado",
     "updateFailed": "Error al actualizar {{id}}: {{error}}",
@@ -981,7 +982,25 @@
       "promptMessage": "Motivo para omitir el paso de revisión previo a la fusión fallido (obligatorio, se registra en auditoría):",
       "btn": "Omitir revisión fallida",
       "success": "Revisión fallida omitida para {{id}}",
-      "successUnrun": "Bypassed unrun review gate for {{id}}"
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "btnVerdictless": "",
+      "promptMessageVerdictless": "",
+      "successVerdictless": "",
+      "btnPostMergeUnrun": "",
+      "promptMessagePostMergeUnrun": "",
+      "successPostMergeUnrun": "",
+      "btnPostMergeVerdictless": "",
+      "promptMessagePostMergeVerdictless": "",
+      "successPostMergeVerdictless": "",
+      "decline": {
+        "operatorTaskHold": "",
+        "notInReviewLane": "",
+        "noRefusingGate": "",
+        "postMergeReviewNotOwed": "",
+        "workspaceScopeWithheld": "",
+        "workflowIrUnreadable": "",
+        "unknown": ""
+      }
     },
     "checkoutLink": "checkout {{id}}",
     "retriesLabel": "Reintentos (recuperación / flujo de trabajo / fusión / tarea completada)",
@@ -1302,7 +1321,8 @@
     "summaryRunning_other": "",
     "moveUp": "Mover hacia arriba",
     "modelSettings": "",
-    "aggregateNotFullyExecuted": "Not fully executed"
+    "aggregateNotFullyExecuted": "Not fully executed",
+    "statusWaived": ""
   },
   "runtimes": {
     "nousResearchLogoAlt": ""
@@ -4112,7 +4132,13 @@
       "unplannedForExecution": "",
       "capacityExhausted": "",
       "mergeBlocked": "",
-      "gateEvidenceMissing": ""
+      "gateEvidenceMissing": "",
+      "unplannedForExecutionPlanReviewPending": "",
+      "unplannedForExecutionHumanApprovalPending": "",
+      "unplannedForExecutionPlanningInFlight": "",
+      "unplannedForExecutionNeedsReplan": "",
+      "unplannedForExecutionDuplicateRedirect": "",
+      "unplannedForExecutionSeedPrompt": ""
     },
     "done": "Hecho",
     "workflow": {
@@ -8961,7 +8987,7 @@
       "cpuTrend": "",
       "detailsTitle": ""
     },
-    "llmTelemetry":     {
+    "llmTelemetry": {
       "title": "Telemetría de LLM",
       "window": "Ventana de telemetría de LLM",
       "lane": "Carril",

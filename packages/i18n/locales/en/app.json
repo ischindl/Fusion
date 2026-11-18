@@ -1289,7 +1289,13 @@
       "mergeBlocked": "This task is blocked from completing until its merge step finishes.",
       "gateEvidenceMissing": "This task can't complete yet — a required workflow gate has not reported an approving verdict.",
       "capacityExhausted": "That column is at capacity. Try again when a slot frees up.",
-      "unplannedForExecution": "This task isn't ready for execution yet — planning or plan review is still outstanding."
+      "unplannedForExecution": "This task isn't ready for execution yet — planning or plan review is still outstanding.",
+      "unplannedForExecutionPlanReviewPending": "Plan Review hasn't reported a passing verdict for this plan yet — wait for Plan Review to finish, then move the card again.",
+      "unplannedForExecutionHumanApprovalPending": "This plan is waiting on your approval decision — approve it, or send it back for revision, to release the card.",
+      "unplannedForExecutionPlanningInFlight": "A planner session is writing this plan right now — wait for it to finish, then move the card again.",
+      "unplannedForExecutionNeedsReplan": "This plan was rejected and needs replanning — run Replan on the card before it can be executed.",
+      "unplannedForExecutionDuplicateRedirect": "This card is only a duplicate redirect — resolve it against its canonical card before executing.",
+      "unplannedForExecutionSeedPrompt": "This card hasn't been planned yet — its plan is still just the original request. Plan it first."
     },
     "todo": "To Do",
     "triage": "Planning",

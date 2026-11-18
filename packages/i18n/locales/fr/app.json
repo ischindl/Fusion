@@ -1,33 +1,33 @@
 {
   "postMergeEvidence": {
-  "editorInheritOption": "Hériter — la valeur par défaut de la plateforme pour ce tableau",
-  "statusLead": "Le rapporteur post-fusion de ce tableau :",
-  "pipelineAt": "pipeline à",
-  "credentialConfigured": "identifiant configuré",
-  "inheritResolves": "Cette étape hérite de la valeur par défaut de la plateforme du tableau, qui se résout à",
-  "kind": {
-    "githubActionsFullSuite": "GitHub Actions Suite complète",
-    "integrationOnly": "Intégration uniquement",
-    "onedevPipeline": "Pipeline OneDev",
-    "gitlabPipeline": "Pipeline GitLab"
+    "editorInheritOption": "Hériter — la valeur par défaut de la plateforme pour ce tableau",
+    "statusLead": "Le rapporteur post-fusion de ce tableau :",
+    "pipelineAt": "pipeline à",
+    "credentialConfigured": "identifiant configuré",
+    "inheritResolves": "Cette étape hérite de la valeur par défaut de la plateforme du tableau, qui se résout à",
+    "kind": {
+      "githubActionsFullSuite": "GitHub Actions Suite complète",
+      "integrationOnly": "Intégration uniquement",
+      "onedevPipeline": "Pipeline OneDev",
+      "gitlabPipeline": "Pipeline GitLab"
+    },
+    "provider": {
+      "githubActions": "GitHub Actions",
+      "onedev": "OneDev",
+      "gitlab": "GitLab",
+      "none": "Aucun (pas de rapporteur CI)"
+    },
+    "reason": {
+      "operatorDeclared": "déclaré par l'opérateur",
+      "githubRemoteWithWorkflows": "dérivé : ce dépôt est sur GitHub et contient des fichiers de workflow",
+      "githubRemoteWithoutWorkflows": "dérivé : ce dépôt est sur GitHub mais n'a pas de fichiers de workflow",
+      "onedevEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison OneDev configuré",
+      "gitlabEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison GitLab configuré",
+      "nonGithubRemote": "dérivé : l'hôte distant n'a pas de rapporteur CI configuré",
+      "noRemote": "dérivé : ce dépôt n'a aucune distance git",
+      "repoFactsUnreadable": "impossible de lire les faits du dépôt — la porte conserve son contrat historique"
+    }
   },
-  "provider": {
-    "githubActions": "GitHub Actions",
-    "onedev": "OneDev",
-    "gitlab": "GitLab",
-    "none": "Aucun (pas de rapporteur CI)"
-  },
-  "reason": {
-    "operatorDeclared": "déclaré par l'opérateur",
-    "githubRemoteWithWorkflows": "dérivé : ce dépôt est sur GitHub et contient des fichiers de workflow",
-    "githubRemoteWithoutWorkflows": "dérivé : ce dépôt est sur GitHub mais n'a pas de fichiers de workflow",
-    "onedevEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison OneDev configuré",
-    "gitlabEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison GitLab configuré",
-    "nonGithubRemote": "dérivé : l'hôte distant n'a pas de rapporteur CI configuré",
-    "noRemote": "dérivé : ce dépôt n'a aucune distance git",
-    "repoFactsUnreadable": "impossible de lire les faits du dépôt — la porte conserve son contrat historique"
-  }
-},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "Modifier",
@@ -784,7 +784,8 @@
       "preserveWorkLabel": "Keep the work already produced",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
-      "planSuccess": "Planning will restart in this column."
+      "planSuccess": "Planning will restart in this column.",
+      "refusalFallback": ""
     },
     "notSet": "Non défini",
     "updateFailed": "Échec de la mise à jour de {{id}} : {{error}}",
@@ -981,7 +982,25 @@
       "promptMessage": "Motif du contournement de l'étape de revue pré-fusion échouée (obligatoire, journalisé) :",
       "btn": "Contourner la revue échouée",
       "success": "Revue échouée contournée pour {{id}}",
-      "successUnrun": "Bypassed unrun review gate for {{id}}"
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "btnVerdictless": "",
+      "promptMessageVerdictless": "",
+      "successVerdictless": "",
+      "btnPostMergeUnrun": "",
+      "promptMessagePostMergeUnrun": "",
+      "successPostMergeUnrun": "",
+      "btnPostMergeVerdictless": "",
+      "promptMessagePostMergeVerdictless": "",
+      "successPostMergeVerdictless": "",
+      "decline": {
+        "operatorTaskHold": "",
+        "notInReviewLane": "",
+        "noRefusingGate": "",
+        "postMergeReviewNotOwed": "",
+        "workspaceScopeWithheld": "",
+        "workflowIrUnreadable": "",
+        "unknown": ""
+      }
     },
     "checkoutLink": "checkout {{id}}",
     "retriesLabel": "Nouvelles tentatives (récupération / workflow / fusion / tâche terminée)",
@@ -1302,7 +1321,8 @@
     "summaryRunning_other": "",
     "moveUp": "Déplacer vers le haut",
     "modelSettings": "",
-    "aggregateNotFullyExecuted": "Not fully executed"
+    "aggregateNotFullyExecuted": "Not fully executed",
+    "statusWaived": ""
   },
   "runtimes": {
     "nousResearchLogoAlt": ""
@@ -4112,7 +4132,13 @@
       "unplannedForExecution": "",
       "capacityExhausted": "",
       "mergeBlocked": "",
-      "gateEvidenceMissing": ""
+      "gateEvidenceMissing": "",
+      "unplannedForExecutionPlanReviewPending": "",
+      "unplannedForExecutionHumanApprovalPending": "",
+      "unplannedForExecutionPlanningInFlight": "",
+      "unplannedForExecutionNeedsReplan": "",
+      "unplannedForExecutionDuplicateRedirect": "",
+      "unplannedForExecutionSeedPrompt": ""
     },
     "done": "Terminé",
     "workflow": {
@@ -8961,7 +8987,7 @@
       "cpuTrend": "",
       "detailsTitle": ""
     },
-    "llmTelemetry":     {
+    "llmTelemetry": {
       "title": "Télémétrie LLM",
       "window": "Fenêtre de télémétrie LLM",
       "lane": "Voie",

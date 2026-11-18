@@ -1,33 +1,33 @@
 {
   "postMergeEvidence": {
-  "editorInheritOption": "继承——使用此看板的平台默认值",
-  "statusLead": "此看板的合并后证据报告器：",
-  "pipelineAt": "流水线位于",
-  "credentialConfigured": "已配置凭据",
-  "inheritResolves": "此步骤继承看板的平台默认值，其解析为",
-  "kind": {
-    "githubActionsFullSuite": "GitHub Actions 完整测试套件",
-    "integrationOnly": "仅集成测试",
-    "onedevPipeline": "OneDev 流水线",
-    "gitlabPipeline": "GitLab 流水线"
+    "editorInheritOption": "继承——使用此看板的平台默认值",
+    "statusLead": "此看板的合并后证据报告器：",
+    "pipelineAt": "流水线位于",
+    "credentialConfigured": "已配置凭据",
+    "inheritResolves": "此步骤继承看板的平台默认值，其解析为",
+    "kind": {
+      "githubActionsFullSuite": "GitHub Actions 完整测试套件",
+      "integrationOnly": "仅集成测试",
+      "onedevPipeline": "OneDev 流水线",
+      "gitlabPipeline": "GitLab 流水线"
+    },
+    "provider": {
+      "githubActions": "GitHub Actions",
+      "onedev": "OneDev",
+      "gitlab": "GitLab",
+      "none": "无（不使用 CI 报告器）"
+    },
+    "reason": {
+      "operatorDeclared": "由操作者声明",
+      "githubRemoteWithWorkflows": "派生：此仓库位于 GitHub 且含有工作流文件",
+      "githubRemoteWithoutWorkflows": "派生：此仓库位于 GitHub 但没有工作流文件",
+      "onedevEndpoint": "派生：此仓库的远程与已配置的 OneDev 端点匹配",
+      "gitlabEndpoint": "派生：此仓库的远程与已配置的 GitLab 端点匹配",
+      "nonGithubRemote": "派生：远程主机没有已配置的 CI 报告器",
+      "noRemote": "派生：此仓库没有 git 远程",
+      "repoFactsUnreadable": "无法读取仓库事实——该门禁保持其历史契约"
+    }
   },
-  "provider": {
-    "githubActions": "GitHub Actions",
-    "onedev": "OneDev",
-    "gitlab": "GitLab",
-    "none": "无（不使用 CI 报告器）"
-  },
-  "reason": {
-    "operatorDeclared": "由操作者声明",
-    "githubRemoteWithWorkflows": "派生：此仓库位于 GitHub 且含有工作流文件",
-    "githubRemoteWithoutWorkflows": "派生：此仓库位于 GitHub 但没有工作流文件",
-    "onedevEndpoint": "派生：此仓库的远程与已配置的 OneDev 端点匹配",
-    "gitlabEndpoint": "派生：此仓库的远程与已配置的 GitLab 端点匹配",
-    "nonGithubRemote": "派生：远程主机没有已配置的 CI 报告器",
-    "noRemote": "派生：此仓库没有 git 远程",
-    "repoFactsUnreadable": "无法读取仓库事实——该门禁保持其历史契约"
-  }
-},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "编辑",
@@ -784,7 +784,8 @@
       "preserveWorkLabel": "Keep the work already produced",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
-      "planSuccess": "Planning will restart in this column."
+      "planSuccess": "Planning will restart in this column.",
+      "refusalFallback": ""
     },
     "notSet": "未设置",
     "updateFailed": "更新 {{id}} 失败：{{error}}",
@@ -981,7 +982,25 @@
       "promptMessage": "跳过失败的合并前评审步骤的原因（必填，将被审计记录）：",
       "btn": "跳过失败的评审",
       "success": "已为 {{id}} 跳过失败的评审通道",
-      "successUnrun": "Bypassed unrun review gate for {{id}}"
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "btnVerdictless": "",
+      "promptMessageVerdictless": "",
+      "successVerdictless": "",
+      "btnPostMergeUnrun": "",
+      "promptMessagePostMergeUnrun": "",
+      "successPostMergeUnrun": "",
+      "btnPostMergeVerdictless": "",
+      "promptMessagePostMergeVerdictless": "",
+      "successPostMergeVerdictless": "",
+      "decline": {
+        "operatorTaskHold": "",
+        "notInReviewLane": "",
+        "noRefusingGate": "",
+        "postMergeReviewNotOwed": "",
+        "workspaceScopeWithheld": "",
+        "workflowIrUnreadable": "",
+        "unknown": ""
+      }
     },
     "checkoutLink": "检出 {{id}}",
     "retriesLabel": "重试次数（恢复 / 工作流 / 合并 / 任务完成）",
@@ -1302,7 +1321,8 @@
     "summaryRunning_other": "",
     "moveUp": "向上移动",
     "modelSettings": "",
-    "aggregateNotFullyExecuted": "Not fully executed"
+    "aggregateNotFullyExecuted": "Not fully executed",
+    "statusWaived": ""
   },
   "runtimes": {
     "nousResearchLogoAlt": ""
@@ -4112,7 +4132,13 @@
       "unplannedForExecution": "",
       "capacityExhausted": "",
       "mergeBlocked": "",
-      "gateEvidenceMissing": ""
+      "gateEvidenceMissing": "",
+      "unplannedForExecutionPlanReviewPending": "",
+      "unplannedForExecutionHumanApprovalPending": "",
+      "unplannedForExecutionPlanningInFlight": "",
+      "unplannedForExecutionNeedsReplan": "",
+      "unplannedForExecutionDuplicateRedirect": "",
+      "unplannedForExecutionSeedPrompt": ""
     },
     "done": "完成",
     "workflow": {
@@ -8961,7 +8987,7 @@
       "cpuTrend": "",
       "detailsTitle": ""
     },
-    "llmTelemetry":     {
+    "llmTelemetry": {
       "title": "LLM 遥测",
       "window": "LLM 遥测时间窗",
       "lane": "通道",

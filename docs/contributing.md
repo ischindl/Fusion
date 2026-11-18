@@ -438,7 +438,11 @@ and the terminal UI. English is the source-of-truth; catalogs and shared config
 live in the `@fusion/i18n` package. To translate, add a language, or wire new
 strings, see the [Localization contributor guide](./i18n-contributing.md). When
 adding user-facing copy, prefer `t("namespace:key", "English default")` over a
-hardcoded string and run `pnpm i18n:extract` to register the key.
+hardcoded string, then author the key by hand in `packages/i18n/locales/en/` and
+run `pnpm i18n:sync` and `pnpm i18n:types`. Do not run `pnpm i18n:extract` to
+register a key: extraction is not authoritative over the catalogs and its output
+must never be committed. `pnpm check:i18n-extract-clean` measures what it would
+churn and restores the tree. The measured reasons are in the Localization guide.
 
 ## Dashboard CSS Organization
 

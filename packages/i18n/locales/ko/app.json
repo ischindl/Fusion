@@ -1,33 +1,33 @@
 {
   "postMergeEvidence": {
-  "editorInheritOption": "상속 — 이 보드의 플랫폼 기본값",
-  "statusLead": "이 보드의 병합 후 리포터:",
-  "pipelineAt": "파이프라인 위치",
-  "credentialConfigured": "자격 증명 구성됨",
-  "inheritResolves": "이 단계는 보드의 플랫폼 기본값을 상속하며, 다음으로 해석됩니다:",
-  "kind": {
-    "githubActionsFullSuite": "GitHub Actions 전체 스위트",
-    "integrationOnly": "통합 테스트만",
-    "onedevPipeline": "OneDev 파이프라인",
-    "gitlabPipeline": "GitLab 파이프라인"
+    "editorInheritOption": "상속 — 이 보드의 플랫폼 기본값",
+    "statusLead": "이 보드의 병합 후 리포터:",
+    "pipelineAt": "파이프라인 위치",
+    "credentialConfigured": "자격 증명 구성됨",
+    "inheritResolves": "이 단계는 보드의 플랫폼 기본값을 상속하며, 다음으로 해석됩니다:",
+    "kind": {
+      "githubActionsFullSuite": "GitHub Actions 전체 스위트",
+      "integrationOnly": "통합 테스트만",
+      "onedevPipeline": "OneDev 파이프라인",
+      "gitlabPipeline": "GitLab 파이프라인"
+    },
+    "provider": {
+      "githubActions": "GitHub Actions",
+      "onedev": "OneDev",
+      "gitlab": "GitLab",
+      "none": "없음 (CI 리포터 없음)"
+    },
+    "reason": {
+      "operatorDeclared": "운영자가 선언함",
+      "githubRemoteWithWorkflows": "파생: 이 저장소는 GitHub에 있고 워크플로 파일이 있습니다",
+      "githubRemoteWithoutWorkflows": "파생: 이 저장소는 GitHub에 있지만 워크플로 파일이 없습니다",
+      "onedevEndpoint": "파생: 이 저장소의 원격지가 구성된 OneDev 엔드포인트와 일치합니다",
+      "gitlabEndpoint": "파생: 이 저장소의 원격지가 구성된 GitLab 엔드포인트와 일치합니다",
+      "nonGithubRemote": "파생: 원격지에 구성된 CI 리포터가 없습니다",
+      "noRemote": "파생: 이 저장소에는 git 원격지가 없습니다",
+      "repoFactsUnreadable": "저장소 사실을 읽을 수 없습니다 — 게이트는 기존 계약을 유지합니다"
+    }
   },
-  "provider": {
-    "githubActions": "GitHub Actions",
-    "onedev": "OneDev",
-    "gitlab": "GitLab",
-    "none": "없음 (CI 리포터 없음)"
-  },
-  "reason": {
-    "operatorDeclared": "운영자가 선언함",
-    "githubRemoteWithWorkflows": "파생: 이 저장소는 GitHub에 있고 워크플로 파일이 있습니다",
-    "githubRemoteWithoutWorkflows": "파생: 이 저장소는 GitHub에 있지만 워크플로 파일이 없습니다",
-    "onedevEndpoint": "파생: 이 저장소의 원격지가 구성된 OneDev 엔드포인트와 일치합니다",
-    "gitlabEndpoint": "파생: 이 저장소의 원격지가 구성된 GitLab 엔드포인트와 일치합니다",
-    "nonGithubRemote": "파생: 원격지에 구성된 CI 리포터가 없습니다",
-    "noRemote": "파생: 이 저장소에는 git 원격지가 없습니다",
-    "repoFactsUnreadable": "저장소 사실을 읽을 수 없습니다 — 게이트는 기존 계약을 유지합니다"
-  }
-},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "편집",
@@ -784,7 +784,8 @@
       "preserveWorkLabel": "Keep the work already produced",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
-      "planSuccess": "Planning will restart in this column."
+      "planSuccess": "Planning will restart in this column.",
+      "refusalFallback": ""
     },
     "notSet": "설정되지 않음",
     "updateFailed": "{{id}} 업데이트 실패: {{error}}",
@@ -981,7 +982,25 @@
       "promptMessage": "실패한 병합 전 리뷰 단계를 건너뛰는 이유(필수, 감사 로그에 기록됨):",
       "btn": "실패한 리뷰 건너뛰기",
       "success": "{{id}}의 실패한 리뷰 단계를 건너뛰었습니다",
-      "successUnrun": "Bypassed unrun review gate for {{id}}"
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "btnVerdictless": "",
+      "promptMessageVerdictless": "",
+      "successVerdictless": "",
+      "btnPostMergeUnrun": "",
+      "promptMessagePostMergeUnrun": "",
+      "successPostMergeUnrun": "",
+      "btnPostMergeVerdictless": "",
+      "promptMessagePostMergeVerdictless": "",
+      "successPostMergeVerdictless": "",
+      "decline": {
+        "operatorTaskHold": "",
+        "notInReviewLane": "",
+        "noRefusingGate": "",
+        "postMergeReviewNotOwed": "",
+        "workspaceScopeWithheld": "",
+        "workflowIrUnreadable": "",
+        "unknown": ""
+      }
     },
     "checkoutLink": "{{id}} 체크아웃",
     "retriesLabel": "재시도 (복구 / 워크플로 / 병합 / task_done)",
@@ -1302,7 +1321,8 @@
     "summaryRunning_other": "",
     "moveUp": "위로 이동",
     "modelSettings": "",
-    "aggregateNotFullyExecuted": "Not fully executed"
+    "aggregateNotFullyExecuted": "Not fully executed",
+    "statusWaived": ""
   },
   "runtimes": {
     "nousResearchLogoAlt": ""
@@ -4112,7 +4132,13 @@
       "unplannedForExecution": "",
       "capacityExhausted": "",
       "mergeBlocked": "",
-      "gateEvidenceMissing": ""
+      "gateEvidenceMissing": "",
+      "unplannedForExecutionPlanReviewPending": "",
+      "unplannedForExecutionHumanApprovalPending": "",
+      "unplannedForExecutionPlanningInFlight": "",
+      "unplannedForExecutionNeedsReplan": "",
+      "unplannedForExecutionDuplicateRedirect": "",
+      "unplannedForExecutionSeedPrompt": ""
     },
     "done": "완료",
     "workflow": {
@@ -8961,7 +8987,7 @@
       "cpuTrend": "",
       "detailsTitle": ""
     },
-    "llmTelemetry":     {
+    "llmTelemetry": {
       "title": "LLM 찰레머트리",
       "window": "LLM 찰레머트리 창",
       "lane": "레인",

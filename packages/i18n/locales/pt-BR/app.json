@@ -1,33 +1,33 @@
 {
   "postMergeEvidence": {
-  "editorInheritOption": "Herdar — o padrão de plataforma deste painel",
-  "statusLead": "O relator pós-fusão deste painel:",
-  "pipelineAt": "pipeline em",
-  "credentialConfigured": "credencial configurada",
-  "inheritResolves": "Esta etapa herda o padrão de plataforma do painel, que resolve para",
-  "kind": {
-    "githubActionsFullSuite": "GitHub Actions Suíte completa",
-    "integrationOnly": "Somente integração",
-    "onedevPipeline": "Pipeline OneDev",
-    "gitlabPipeline": "Pipeline GitLab"
+    "editorInheritOption": "Herdar — o padrão de plataforma deste painel",
+    "statusLead": "O relator pós-fusão deste painel:",
+    "pipelineAt": "pipeline em",
+    "credentialConfigured": "credencial configurada",
+    "inheritResolves": "Esta etapa herda o padrão de plataforma do painel, que resolve para",
+    "kind": {
+      "githubActionsFullSuite": "GitHub Actions Suíte completa",
+      "integrationOnly": "Somente integração",
+      "onedevPipeline": "Pipeline OneDev",
+      "gitlabPipeline": "Pipeline GitLab"
+    },
+    "provider": {
+      "githubActions": "GitHub Actions",
+      "onedev": "OneDev",
+      "gitlab": "GitLab",
+      "none": "Nenhum (sem relator de CI)"
+    },
+    "reason": {
+      "operatorDeclared": "declarado pelo operador",
+      "githubRemoteWithWorkflows": "derivado: este repositório está no GitHub e tem arquivos de workflow",
+      "githubRemoteWithoutWorkflows": "derivado: este repositório está no GitHub mas não tem arquivos de workflow",
+      "onedevEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint OneDev configurado",
+      "gitlabEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint GitLab configurado",
+      "nonGithubRemote": "derivado: o host remoto não tem um relator de CI configurado",
+      "noRemote": "derivado: este repositório não tem remoto git",
+      "repoFactsUnreadable": "não foi possível ler os fatos do repositório — a barreira mantém seu contrato histórico"
+    }
   },
-  "provider": {
-    "githubActions": "GitHub Actions",
-    "onedev": "OneDev",
-    "gitlab": "GitLab",
-    "none": "Nenhum (sem relator de CI)"
-  },
-  "reason": {
-    "operatorDeclared": "declarado pelo operador",
-    "githubRemoteWithWorkflows": "derivado: este repositório está no GitHub e tem arquivos de workflow",
-    "githubRemoteWithoutWorkflows": "derivado: este repositório está no GitHub mas não tem arquivos de workflow",
-    "onedevEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint OneDev configurado",
-    "gitlabEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint GitLab configurado",
-    "nonGithubRemote": "derivado: o host remoto não tem um relator de CI configurado",
-    "noRemote": "derivado: este repositório não tem remoto git",
-    "repoFactsUnreadable": "não foi possível ler os fatos do repositório — a barreira mantém seu contrato histórico"
-  }
-},
   "taskDocuments": {
     "documentsSubheading": "Documentos da tarefa",
     "edit": "Editar",
@@ -784,7 +784,8 @@
       "preserveWorkLabel": "Keep the work already produced",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
       "genericConfirmMessage": "Repeat the current stage and keep this card in its current column.",
-      "planSuccess": "Planning will restart in this column."
+      "planSuccess": "Planning will restart in this column.",
+      "refusalFallback": ""
     },
     "notSet": "Não definido",
     "updateFailed": "Falha ao atualizar {{id}}: {{error}}",
@@ -981,7 +982,25 @@
       "promptMessage": "Motivo para ignorar a etapa de revisão pré-merge com falha (obrigatório, registrado em auditoria):",
       "btn": "Ignorar revisão com falha",
       "success": "Revisão com falha ignorada para {{id}}",
-      "successUnrun": "Bypassed unrun review gate for {{id}}"
+      "successUnrun": "Bypassed unrun review gate for {{id}}",
+      "btnVerdictless": "",
+      "promptMessageVerdictless": "",
+      "successVerdictless": "",
+      "btnPostMergeUnrun": "",
+      "promptMessagePostMergeUnrun": "",
+      "successPostMergeUnrun": "",
+      "btnPostMergeVerdictless": "",
+      "promptMessagePostMergeVerdictless": "",
+      "successPostMergeVerdictless": "",
+      "decline": {
+        "operatorTaskHold": "",
+        "notInReviewLane": "",
+        "noRefusingGate": "",
+        "postMergeReviewNotOwed": "",
+        "workspaceScopeWithheld": "",
+        "workflowIrUnreadable": "",
+        "unknown": ""
+      }
     },
     "checkoutLink": "checkout {{id}}",
     "retriesLabel": "Tentativas (recuperação / fluxo de trabalho / merge / task_done)",
@@ -1302,7 +1321,8 @@
     "summaryRunning_other": "{{count}} em execução",
     "moveUp": "Mover para cima",
     "modelSettings": "Configurações do modelo",
-    "aggregateNotFullyExecuted": "Not fully executed"
+    "aggregateNotFullyExecuted": "Not fully executed",
+    "statusWaived": ""
   },
   "runtimes": {
     "nousResearchLogoAlt": "Nous Research"
@@ -4112,7 +4132,13 @@
       "unplannedForExecution": "Esta tarefa ainda não está pronta para execução — o planejamento ou a revisão do plano ainda está pendente.",
       "capacityExhausted": "Essa coluna está com capacidade esgotada. Tente novamente quando uma vaga se abrir.",
       "mergeBlocked": "Esta tarefa está bloqueada para conclusão até que sua etapa de merge termine.",
-      "gateEvidenceMissing": ""
+      "gateEvidenceMissing": "",
+      "unplannedForExecutionPlanReviewPending": "",
+      "unplannedForExecutionHumanApprovalPending": "",
+      "unplannedForExecutionPlanningInFlight": "",
+      "unplannedForExecutionNeedsReplan": "",
+      "unplannedForExecutionDuplicateRedirect": "",
+      "unplannedForExecutionSeedPrompt": ""
     },
     "done": "Concluída",
     "workflow": {
@@ -8961,7 +8987,7 @@
       "cpuTrend": "CPU ao longo do tempo",
       "detailsTitle": "Detalhes do runtime"
     },
-    "llmTelemetry":     {
+    "llmTelemetry": {
       "title": "Telemetria de LLM",
       "window": "Janela de telemetria de LLM",
       "lane": "Faixa",
