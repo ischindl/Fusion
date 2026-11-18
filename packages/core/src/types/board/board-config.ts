@@ -134,6 +134,27 @@ export interface DeliveryUnprovenMarker {
   refusalRecorded: true;
 }
 
+/**
+ * FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+ * The only thing a default-branch landing-proof refusal may put on a merge result. Same contract as
+ * `DeliveryUnprovenMarker` beside it, for the same reason: `MergeResult` must not gain a `status`, because a
+ * new terminal-looking value re-opens the `merge-failed` path (retry budgets, failed badges, `merge-failed`
+ * routing) that a git-fact refusal must never spend. `worktreePathPreserved` is asserted rather than hoped
+ * for — refusing about a landing while deleting the tree it was refusing about destroys the evidence.
+ */
+export interface LandingUnprovenMarker {
+  /** Which closed refusal code produced the refusal. */
+  refusalCode: string;
+  /** The resolved integration branch the claim was measured against. */
+  integrationBranch: string;
+  /** Whether the ancestry / content probes could read the integration ref at all. */
+  integrationRefReadable: boolean;
+  /** The card's worktree path survived the refusal (never deleted, never reset). */
+  worktreePathPreserved: true;
+  /** A durable row-visible hold was written. `true` always — an unwitnessed refusal is not this marker. */
+  refusalRecorded: true;
+}
+
 export interface MergeResult extends MergeDetails {
   task: Task;
   branch: string;
@@ -141,6 +162,15 @@ export interface MergeResult extends MergeDetails {
   noOp?: boolean;
   /** Present when automatic finalization was REFUSED for unproven content delivery. Never a `status`. */
   deliveryUnproven?: DeliveryUnprovenMarker;
+  /**
+   * Present when automatic finalization was REFUSED because the resolved DEFAULT branch cannot show the
+   * recorded landing (RUFU-702). Parallel to `deliveryUnproven` and governed by the same rule: it is a WAIT
+   * marker, never a `status`, so no retry budget is spent and no `merge-failed` badge appears. The two
+   * markers answer different questions — `deliveryUnproven` asks whether content existed to deliver, this
+   * one asks whether the recorded commit reached the integration branch — and RUFU-294 passed the first
+   * while failing the second, which is why they are not one field.
+   */
+  landingUnproven?: LandingUnprovenMarker;
   ok?: true;
   reason?: string;
   worktreeRemoved: boolean;

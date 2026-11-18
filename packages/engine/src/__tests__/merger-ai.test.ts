@@ -37,7 +37,7 @@ import {
 import { EXECUTOR_FAILED_INCOMPLETE_REASON } from "../overseer/planner-overseer.js";
 import { finalizeProvenAutoMergeTask } from "../merge/auto-merge-finalization.js";
 import { WorkflowGraphTaskRunner } from "../workflows/workflow-graph-task-runner.js";
-import { getBuiltinWorkflow } from "@fusion/core";
+import { getBuiltinWorkflow, LANDING_PROOF_UNPROVEN_ERROR_PREFIX } from "@fusion/core";
 import { resolveAiMergeRootPath, resolveLegacyAiMergeRootPath } from "../worktree/worktree-paths.js";
 import { withBranchWriteProvenance } from "./branch-write-provenance-store-stub.js";
 
@@ -1794,6 +1794,38 @@ describe("runAiMerge", () => {
     // release advanced, main did not.
     expect(git(dir, "rev-parse release")).not.toBe(releaseBefore);
     expect(git(dir, "rev-parse main")).toBe(mainBefore);
+  });
+
+  /*
+  FNXC:DefaultBranchLandingProof 2026-11-18-14:58 (RUFU-702, operator decision 2026-11-17T23:2xZ):
+  The declared-target proof kind has to be observable at the FINALIZE seam, not only inside the door. What the
+  operator asked for is lane behaviour: a card pointed at its own declared target (`release`) finishes there —
+  it reaches its complete lane — and nothing walks it back toward planning over a commit `main` legitimately
+  never received. `default-branch-landing-proof-door.test.ts` pins the door's verdict; this pins what the card
+  looks like afterwards. A wrongly-fired refusal would leave the card in review carrying the machine-matchable
+  `LANDING_PROOF_UNPROVEN:` hold, so the row state below is the requirement, asserted as state and never as
+  log prose.
+  */
+  it("finalizes a card that landed on its own declared target branch, with no hold and no backward move", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    git(dir, "branch release");
+    const mainBefore = git(dir, "rev-parse main");
+    const { store, task } = makeStore(dir, { baseBranch: "release" });
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: vi.fn(async () => "REVIEW_VERDICT: approve"),
+    });
+
+    expect(result.merged).toBe(true);
+    // Delivery reached the card's own target and nowhere else; `main` holding nothing of it is legitimate.
+    expect(git(dir, "rev-parse main")).toBe(mainBefore);
+    expect(task.mergeDetails?.mergeTargetBranch).toBe("release");
+    expect(task.mergeDetails?.mergeTargetSource).toBe("task-base-branch");
+    // The observable contract: terminal lane, no unproven-delivery hold, and no re-plan charge.
+    expect(task.column).toBe("done");
+    expect(String(task.error ?? "")).not.toContain(LANDING_PROOF_UNPROVEN_ERROR_PREFIX);
+    expect(task.status).not.toBe("needs-replan");
   });
 
   /*

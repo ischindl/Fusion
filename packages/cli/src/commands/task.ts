@@ -1433,8 +1433,20 @@ async function runTaskShowWithStore(id: string, store: TaskStore) {
   }
 }
 
+/*
+FNXC:LandedTruthReopen 2026-11-06-10:20 (RUFU-702):
+Parsed argv for `fn task reconcile <id> [--reopen]`. Kept as a pure function (the same shape
+`parseChatCliArgs` uses) so the flag's meaning is testable without booting the CLI: the only thing the
+bin layer may decide from argv is WHETHER the operator asked for the reopen — what a reopen does is the
+engine seam's decision, and it refuses `proven` and `deferred` cards there.
+*/
+export function parseTaskReconcileArgs(args: string[]): { id: string | null; reopen: boolean } {
+  const id = args[0]?.trim() || null;
+  return { id, reopen: args.slice(1).includes("--reopen") };
+}
+
 /** Reconcile an in-review card after its already-landed branch was deliberately cleaned up. */
-export async function runTaskReconcile(id: string, projectName?: string) {
+export async function runTaskReconcile(id: string, projectName?: string, options: { reopen?: boolean } = {}) {
   const context = await resolveBoardContext(projectName, id, "resolve project");
   try {
     /*
@@ -1452,6 +1464,30 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     completing the card. Report that recovery as success so the CLI does not misclassify it as an error.
     */
     const manager = new SelfHealingManager(context.store, { rootDir: context.projectPath });
+    /*
+    FNXC:LandedTruthReopen 2026-11-06-10:20 (RUFU-702):
+    The two landed-truth surfaces, both keyed to the SAME classifier the automatic census uses, so the
+    sentence printed here is the sentence `--reopen` would have acted on.
+
+    `--reopen` acts on exactly one named card and nothing else; the automatic census stays report-only
+    because lifecycle containment (FN-207/FN-217) forbids an automatic move backward out of a terminal lane.
+    Without the flag, a card already sitting in a terminal lane is asked the delivery question before it is
+    reconciled, because `reconcileLandedReviewTask` would otherwise answer `already-complete` for a card the
+    repository says was never delivered — the exact disagreement RUFU-702 exists to close. A verdict this
+    process cannot measure (`deferred`, or a store too thin to resolve the lane vocabulary) changes nothing:
+    the command behaves as it did before this flag existed.
+    */
+    if (options.reopen) {
+      await reportLandingProofReopen(manager, id, context);
+      return;
+    }
+    const truth = await manager.describeLandedTruth(id).catch(() => ({ state: "unknown" as const }));
+    if (truth.state === "refused") {
+      console.error(`${id}: ${truth.sentence}`);
+      console.error(`Nothing was reconciled or moved — a card whose own default branch refuses its recorded delivery is not a landed card. Reopen exactly this card with: fn task reconcile ${id} --reopen`);
+      await closeBoardContextAndExit(context, 1);
+      return;
+    }
     const result = await manager.reconcileLandedReviewTask(id, { source: "manual", requireAutoMergeEligible: false });
     if (result.outcome === "reconciled") {
       console.log(`Reconciled ${id}: landed ${result.sha} via ${result.strategy} on ${result.baseBranch}; card moved to complete.`);
@@ -1564,6 +1600,51 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     await closeBoardContextAndExit(context, 1);
   } finally {
     await closeProjectStore(context).catch(() => undefined);
+  }
+}
+
+/*
+FNXC:LandedTruthReopen 2026-11-06-10:20 (RUFU-702):
+Reports `fn task reconcile <id> --reopen`, which reopens exactly one card whose recorded delivery its own
+default branch refuses. Every arm states what the repository measured, because the operator's judgement is
+the only authority this move has: `proven` means the board is right and the card stays closed, `deferred`
+means git could not be consulted — which is never evidence of a false landing — and only a refusal moves
+anything. Exit codes follow the rest of the command: 0 when the command did what was asked or proved there
+was nothing to do, 1 when the card was not reopened.
+*/
+async function reportLandingProofReopen(
+  manager: SelfHealingManager,
+  id: string,
+  context: ProjectContext,
+): Promise<void> {
+  const result = await manager.reopenUnprovenLandedTask(id);
+  switch (result.outcome) {
+    case "reopened": {
+      console.log(`Reopened ${id}: ${result.fromColumn} → ${result.toColumn}. Its recorded delivery is not substantiated by \`${result.integrationBranch}\` (${result.refusalCode}${result.conflictCount !== null ? `, ${result.conflictCount} merge conflicts against it` : ""}); the work stays on \`${result.branchRef ?? "no recorded branch"}\` for re-delivery.`);
+      await closeBoardContextAndExit(context, 0);
+      return;
+    }
+    case "proven":
+      console.log(`${id} stays closed: its recorded commit IS on \`${result.integrationBranch}\` (proof: ${result.proofKind}). Nothing was reopened.`);
+      await closeBoardContextAndExit(context, 0);
+      return;
+    case "deferred":
+      console.error(`Cannot reopen ${id}: the landing could not be measured (${result.reason}). A deferral is not evidence of a false landing, so nothing was moved.`);
+      await closeBoardContextAndExit(context, 1);
+      return;
+    case "refused": {
+      const sentences: Record<string, string> = {
+        "not-found": `${id} was not found on this board.`,
+        "not-in-complete-lane": `${id} is not in a completed lane, so there is no landed claim to reopen. Use \`fn task reconcile ${id}\` to reconcile a review-lane card.`,
+        "no-landing-claim": `${id} records no landed commit, so there is no delivery claim to disprove and nothing to reopen.`,
+        "engine-paused": "The engine is paused; nothing was moved.",
+        "no-reopen-target": "This card's workflow declares no planning lane to reopen into, so the move has no legal target.",
+        "move-rejected": `The board refused the move${result.detail ? `: ${result.detail}` : ""}.`,
+      };
+      console.error(`Cannot reopen ${id}: ${sentences[result.reason] ?? result.reason}`);
+      await closeBoardContextAndExit(context, 1);
+      return;
+    }
   }
 }
 

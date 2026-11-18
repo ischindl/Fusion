@@ -148,6 +148,22 @@ main, i.e. a positive observation, not a claim of emptiness. It exists so the le
 already-on-main lane keeps finalizing (OD req 4) without becoming the loophole — a bare `noOpMerge`
 flag set by the finalizing lane still proves nothing.
 */
+/*
+FNXC:DefaultBranchLandingProof 2026-11-05-18:40 (RUFU-702):
+WHAT THIS PREDICATE PROVES IS THAT A CLAIM IS *RECORDED*, NOT THAT IT IS TRUE. It answers "did a lane
+write down a landing?" — a durable-claim census — and every consumer must treat the answer as the start
+of the delivery question, never the end of it. RUFU-294 is the measurement: its row carried
+`commitSha = 62804b4340…`, `landedFiles` for 1 459 files, and `mergeConfirmed: true`, so this predicate
+returned `proven / durable-commit-sha` for a commit that `git merge-base --is-ancestor <sha> main` says is
+NOT on `main` and whose named test files do not exist on `main`. The existing exclusions below
+(`mergeConfirmed`, `noOpMerge`) stay exactly as written — they stop a lane approving itself from an
+emptiness claim — but they were never sufficient, because a `commitSha` written by a lane that advanced a
+sibling task branch is just as much a self-authored claim as a boolean.
+
+The truth question is `evaluateDefaultBranchLandingProof` in `./default-branch-landing-proof.ts`, keyed to
+the RESOLVED integration branch. Any new finalize lane that consults this predicate must also consult
+that one; `hasDurableLandingProof` alone must never move a card into a complete-role lane.
+*/
 export function hasDurableLandingProof(
   mergeDetails:
     | Pick<MergeDetails, "commitSha" | "landedBranchTipSha" | "landedFiles" | "filesChanged" | "noOpVerifiedShortCircuit" | "workspaceLandedFiles" | "noOpReason" | "workspaceCommitFreeBasis" | "workspaceCommitFreeBranchTipShas">

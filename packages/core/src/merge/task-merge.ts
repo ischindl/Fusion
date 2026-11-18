@@ -1,4 +1,11 @@
 import { isBranchGroupMemberLanded } from "../branch/branch-group-completion.js";
+/*
+FNXC:TaskBranchTargetGuard 2026-11-05-18:40 (RUFU-702):
+The task-branch ref-shape predicate is shared with the default-branch landing-proof door so the merge-target
+resolver and the delivery door can never disagree about what counts as a Fusion task branch. One-directional
+import: `default-branch-landing-proof.ts` reads only `../types.js`, so this edge closes no cycle.
+*/
+import { isFusionTaskBranchRefName } from "./default-branch-landing-proof.js";
 import { taskHasManualOpenPullRequest } from "../tasks/task-helpers.js";
 import type { BranchGroup, Settings, Task, WorkflowStepResult } from "../types.js";
 import type { MergeContentDescriptor } from "./merge-content-descriptor.js";
@@ -83,15 +90,29 @@ export interface MergeTargetResolverOptions {
 }
 
 /**
- * Sibling task branches (`fusion/fn-<id>`) MUST NOT be used as merge targets.
+ * Sibling task branches MUST NOT be used as merge targets.
  * They are start-point/rebase anchors, not destinations: landing a squash onto
  * a sibling branch strands the commit on a feature ref instead of advancing
  * the project integration branch (root cause of FN-5233/FN-5530 lost-on-main).
+ *
+ * FNXC:TaskBranchTargetGuard 2026-11-05-18:40 (RUFU-702):
+ * The pattern used to be `^fusion/fn-`, which silently limited this guard to `FN-` boards. On an
+ * `RUFU-` board the resolver therefore handed RUFU-294 the SIBLING branch `fusion/rufu-293` as its merge
+ * target (`mergeTargetSource: "task-base-branch"`), the lane advanced that ref, and the card finalized
+ * `done` on a commit that is not on `main` and whose named files do not exist on `main`. The shape is now
+ * board-prefix independent: `fusion/<BOARD-PREFIX>-<number>` plus the `-stranded` recovery-ref family,
+ * from the shared `isFusionTaskBranchRefName` predicate the landing-proof door also reads, so the
+ * resolver and the door cannot disagree about what a task branch is. `fusion/groups/<slug>` stays a
+ * sanctioned intermediate (it has a second path segment) and a human branch that merely shares the
+ * prefix (`fusion/release-1.0`) keeps its current behavior.
+ *
+ * `deriveTaskIdFromFusionBranch` in `packages/engine/src/execution/branch-conflicts.ts` stays FN-only by
+ * operator ruling — its consumers gate git DELETION, and widening it grants reclaim authority rather
+ * than restoring information. This guard only ever REFUSES a target and falls through to the project
+ * default, so widening it restores information without granting any destructive authority.
  */
-const FUSION_SIBLING_BRANCH_RE = /^fusion\/fn-/i;
-
 export function isFusionSiblingBranch(branch: string): boolean {
-  return FUSION_SIBLING_BRANCH_RE.test(branch);
+  return isFusionTaskBranchRefName(branch);
 }
 
 /**

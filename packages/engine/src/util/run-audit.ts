@@ -1383,6 +1383,33 @@ export type DatabaseMutationType =
   | "task:zero-commit-landing-proof-deferred"
   /** FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274): a re-probe showed the cause of a durable uncommitted-work hold is gone and the hold was cleared. Metadata is { taskId, source, priorCode } only. */
   | "task:zero-commit-landing-proof-cleared"
+  /**
+   * FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+   * A landing authority refused to finalize a card whose recorded delivery its resolved DEFAULT branch
+   * cannot substantiate. Metadata is { taskId, source, integrationBranch, recordedSha, refusalCode,
+   * conflictCount, ancestryOutcome, patchEquivalentOutcome } — ids/counts/fixed enums only; the refusal
+   * sentence lives on the card's History row, review findings and diff content never enter run-audit.
+   */
+  | "task:finalization-landing-proof-refused"
+  /** FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702): integration ref or landing evidence unreadable, so the door deferred rather than refusing. Metadata is { taskId, source, integrationBranch, integrationRefReadable, recordedSha, reason } only. */
+  | "task:finalization-landing-proof-deferred"
+  /**
+   * FNXC:LandedTruthCensus 2026-11-05-16:44 (RUFU-702):
+   * The startup + periodic census found a card sitting in a complete-role lane whose delivery the
+   * default branch cannot substantiate. Metadata is { taskId, integrationBranch, recordedSha,
+   * branchRef, refusalCode, proofKind, conflictCount, landedShaOnIntegration, repairExecuted, repair }
+   * — ids/counts/fixed enums only; commit subjects, touched files, and task prose never enter run-audit.
+   */
+  | "task:done-landing-unproven"
+  /**
+   * FNXC:LandedTruthReopen 2026-11-06-09:55 (RUFU-702):
+   * An operator reopened exactly ONE card out of a terminal lane through the landing-proof seam, after the
+   * default branch refused its recorded delivery. The only backward move this family can make, and it is
+   * human-attributed — lifecycle containment (FN-207/FN-217) forbids an automatic one. Metadata is
+   * { taskId, fromColumn, toColumn, integrationBranch, recordedSha, branchRef, refusalCode, conflictCount,
+   * outcome } — ids/columns/fixed enums/counts only; the refusal sentence lives on the card's History row.
+   */
+  | "task:landing-unproven-reopened"
   /** FNXC:MergeExecutionExclusion 2026-08-23-08:25: FN-180 records live-execution admission deferrals with ids and fixed signal/source/outcome enums only. */
   | "task:merge-admission-deferred-live-execution"
   /**

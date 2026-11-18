@@ -504,13 +504,42 @@ describe("resolveTaskMergeTarget", () => {
     });
   });
 
-  it("does not reject non-fusion branches that happen to share a prefix", () => {
-    // `fusion/release-1.0` is a legitimate human-chosen base; only the
-    // canonical `fusion/fn-<id>` pattern is a sibling-task marker.
+  it("does not reject human branches that merely share the fusion/ prefix", () => {
+    /*
+    FNXC:TaskBranchTargetGuard 2026-11-05-18:40 (RUFU-702):
+    This case's ORIGINAL rationale ("only the canonical `fusion/fn-<id>` pattern is a sibling-task marker")
+    is what lost RUFU-294's work: on an `RUFU-` board the resolver offered `fusion/rufu-293` as a merge
+    target, so the guard that was supposed to refuse it never fired. The assertion here stays true and
+    stays load-bearing — a human-chosen base like `fusion/release-1.0` is still legitimate — but the rule
+    it was an exception to is now the structural task-branch shape `fusion/<PREFIX>-<number>`, so the
+    positive and negative halves are both pinned below.
+    */
     expect(resolveTaskMergeTarget({ baseBranch: "fusion/release-1.0", branchContext: undefined })).toEqual({
       branch: "fusion/release-1.0",
       source: "task-base-branch",
     });
+  });
+
+  it.each(["fusion/rufu-293", "fusion/sane-430", "fusion/kb-001", "fusion/rufu-294-stranded"])(
+    "rejects %s as a base branch on a non-FN board and falls through to the project default",
+    (baseBranch) => {
+      // RUFU-294's exact shape: a non-`FN` board whose baseBranch names a SIBLING card's task branch.
+      const result = resolveTaskMergeTarget({ baseBranch, branchContext: undefined }, { projectDefaultBranch: "main" });
+      expect(result.branch).toBe("main");
+      expect(result.source).toBe("project-default");
+      expect(result.rejected).toEqual({ branch: baseBranch, source: "task-base-branch", reason: "fusion-sibling-branch" });
+    },
+  );
+
+  it("keeps a shared group branch a sanctioned intermediate target rather than a sibling refusal", () => {
+    // `fusion/groups/<slug>` has a second path segment: it is a group integration ref, not a task branch.
+    const result = resolveTaskMergeTarget(
+      { baseBranch: undefined, branchContext: { groupId: "G-9", source: "planning", assignmentMode: "shared" } },
+      { branchGroup: { branchName: "fusion/groups/planning-x" }, projectDefaultBranch: "main" },
+    );
+    expect(result.branch).toBe("fusion/groups/planning-x");
+    expect(result.source).toBe("branch-group-integration");
+    expect(result.rejected).toBeUndefined();
   });
 });
 

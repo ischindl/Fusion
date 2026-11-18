@@ -86,6 +86,11 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   resolveEngineNodeId,
   classifyTaskBranchOrigin,
   isFusionDeletableBranch,
+  /* RUFU-702: the landed-truth census re-proves a done card's delivery against the resolved default branch
+   * and writes the operator-facing sentence through the SAME decision the finalize door uses, so a census
+   * row and a refusal can never disagree about what the reason was. */
+  describeDefaultBranchLandingRefusal,
+  DASHBOARD_USER_ID,
   isTaskExternallyBlocked,
   isTaskLogWriteRefusal,
   hasNonTerminalSteps,
@@ -185,6 +190,14 @@ import { deriveStaleReviewCallbackAttemptId, finalizePlanningSegment, isLegacyWo
 /* RUFU-200: holder-side checkout-emptiness proof for dormant file-scope lease classification. */
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
+/* RUFU-702: the census consumes the landing door's own measurement seam (integration-branch resolution
+ * included) and its idempotent-notice key, so the census and the finalize gate cannot diverge about which
+ * branch is the yardstick or how often the operator is told. */
+import { measureDefaultBranchLandingProof, enforceDefaultBranchLandingProof, clearDefaultBranchLandingProofHold, isDefaultBranchLandingProofHold, landingProofNoticeKey, LANDING_PROOF_NOTICE_COOLDOWN_MS } from "./merge/default-branch-landing-proof-evidence.js";
+/* RUFU-702 code-review P1: the census's PR-backed suppression consults the ONE PR-vehicle predicate the
+ * landing doors use, imported from its owner in core rather than through the door module. */
+import { resolveTaskLandingPrVehicleOpen } from "@fusion/core";
+import { deliverMailboxMessageOnce } from "./notification/mailbox-delivery.js";
 import type { WorkspaceLandIntent } from "@fusion/core";
 import { prefetchWorkflowSelections, type WorkflowSelectionCache,
   completeReviewerRunForTask,
@@ -943,6 +956,20 @@ export interface SelfHealingOptions {
   reconcileFreshExternalPrs?: () => Promise<number>;
   /** Injected only by tests; production uses exact profile + daemon-ancestry discovery. */
   reapExpiredFusionBrowserLeases?: () => Promise<number>;
+  /**
+   * FNXC:LandedTruthCensus 2026-11-06-10:40 (RUFU-702):
+   * Test seam for the landed-truth census's per-pass git probe budget (default
+   * `LANDED_TRUTH_PROBE_BUDGET`). Production never sets it; a test that wants to watch the rotation
+   * cursor and the deferral path would otherwise have to build a hundred real repositories.
+   */
+  landedTruthProbeBudget?: number;
+  /*
+   * FNXC:LandedTruthCensus 2026-11-17-20:23 (RUFU-702, code-review P1):
+   * Test seam for the per-pass cap on how many cards the census may put on the operator's surfaces
+   * (default `LANDED_TRUTH_REPORT_BUDGET`). The probe budget bounds what a pass can learn; this bounds what
+   * it can say, and a pass that runs out rewinds the rotating cursor rather than skipping the remainder.
+   */
+  landedTruthReportBudget?: number;
   /*
    * FNXC:PlanReviewLease 2026-07-26-20:30:
    * This engine's cluster node id, matching what the graph stamps into
@@ -1244,6 +1271,92 @@ const ORPHANED_EXECUTION_RECOVERY_GRACE_MS = 60_000;
  * reapable column (todo/triage) shorter than this is left alone, so the reaper
  * never races a task mid-transition out of in-progress.
  */
+/*
+FNXC:LandedTruthCensus 2026-11-06-09:41 (RUFU-702):
+Per-pass cap on the landed-truth census's git measurements. One measurement is not one command: the
+shared probe reads the toplevel, resolves the integration ref, runs `merge-base --is-ancestor`,
+`git cherry`, two batched `ls-tree` content calls and a `merge-tree` conflict count (~7 bounded
+subprocesses), and a refusal additionally reads the ownership proof. A `done` lane holding hundreds of
+cards would therefore turn one maintenance tick into a git storm on the same checkout every other lane
+is using — the sweep that exists to check delivery quietly becomes the thing that slows it down.
+
+The cap is a COST bound, never a verdict: a candidate the budget never reached is unmeasured, which is
+neither `proven` nor `refused`, so it gets no finding, no notice, and no audit row. Fairness comes from
+the rotating cursor below — candidates are ordered by id and each pass starts where the last one
+stopped, so a bounded pass cannot starve the tail of the lane forever.
+*/
+const LANDED_TRUTH_PROBE_BUDGET = 50;
+
+/*
+FNXC:LandedTruthCensus 2026-11-17-20:23 (RUFU-702, code-review P1):
+Per-pass cap on the census's DURABLE WRITES, which is a different resource from the probes above.
+
+A probe costs CPU; a finding costs a History row, a run-audit row, and a mailbox hand-off, and on the first
+pass after this sweep ships the population being walked is *every* card in the complete lane. Bounding only
+the probes therefore bounded reads and left the writes unbounded: the review that found this measured one
+tick able to emit one History row plus one audit row per unproven card, every tick, forever, because the
+notice was deduped per episode window while the row and the History line were not deduped at all. So a pass
+may put at most this many cards on the operator's surfaces; the rest are re-walked on a later pass by the
+same rotating cursor that bounds the probes, and a card that was never announced is not a card that was
+refuted.
+*/
+const LANDED_TRUTH_REPORT_BUDGET = 20;
+
+/**
+ * A durable census observation of one card, written KEY-level under `sourceMetadata` (RUFU-246/273/393/395's
+ * channel — no new column, and the other provenance keys survive). It is what makes "report once per
+ * episode" a fact the next pass can read instead of a promise, and it is what lets a re-probe of an
+ * already-announced card cost nothing on the operator's surfaces.
+ */
+export interface LandedTruthCensusEpisode {
+  /** What was announced: `reported:<refusalCode>`, `suppressed:<reason>`. A change here re-announces. */
+  signature: string;
+  firstAt: string;
+  lastAt: string;
+  /** How many reports this card has accumulated from this sweep. `firstAt` names the CURRENT signature's window. */
+  reportCount: number;
+}
+
+/** Parse only the shape this sweep authors; anything else is treated as no episode, never as a guess. */
+export function readLandedTruthCensusEpisode(
+  task: Pick<Task, "sourceMetadata">,
+): LandedTruthCensusEpisode | null {
+  const raw = (task.sourceMetadata as Record<string, unknown> | undefined)?.landedTruthCensus as
+    Partial<LandedTruthCensusEpisode> | undefined;
+  if (!raw || typeof raw.signature !== "string") return null;
+  if (typeof raw.lastAt !== "string" || Number.isNaN(Date.parse(raw.lastAt))) return null;
+  return {
+    signature: raw.signature,
+    firstAt: typeof raw.firstAt === "string" ? raw.firstAt : raw.lastAt,
+    lastAt: raw.lastAt,
+    reportCount: typeof raw.reportCount === "number" && raw.reportCount > 0 ? raw.reportCount : 1,
+  };
+}
+
+/**
+ * Whether a live episode already carries this same signature inside the refresh floor. Deliberately the same
+ * window as the mailbox cooldown, so one number bounds the History row, the audit row, and the notice —
+ * three surfaces quoting one measurement, and none of them able to out-announce the others.
+ */
+export function isLandedTruthEpisodeLive(
+  episode: LandedTruthCensusEpisode | null,
+  signature: string,
+  now: number,
+  floorMs: number,
+): boolean {
+  if (!episode || episode.signature !== signature) return false;
+  return now - Date.parse(episode.lastAt) < floorMs;
+}
+
+/** Why the census declines to judge a card at all — a fixed vocabulary, so `suppressed` is queryable. */
+export type LandedTruthSuppressionReason =
+  /** The card opted out of automatic merging, so its terminal lane is a human contract (FN-5147). */
+  | "human-terminal-auto-merge-off"
+  /** An operator froze the card; nothing automated may call its delivery claim actionable. */
+  | "operator-held"
+  /** Its landing vehicle is a live pull request, so the HOST owes the content on its base branch. */
+  | "pr-backed";
+
 const STALLED_CARD_WATCHDOG_MS = 30 * 60_000;
 const LEAKED_WORKTREE_SLOT_GRACE_MS = 60_000;
 /*
@@ -1673,7 +1786,67 @@ export type LandedReviewReconcileResult =
   no surface has to collapse the verdict to one opaque word. The four `workspace-*` / shared-group
   reasons name the arm-level gates that refused BEFORE any per-repo proof could speak.
   */
-  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "complete-lane-gate-evidence" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group"; repos?: LandedReviewWorkspaceRepoDetail[] };
+  /*
+  FNXC:DefaultBranchLandingProof 2026-11-17-19:28 (RUFU-702, code-review P2):
+  `landing-proof-unproven` is the shared mover's refusal surfacing through `reconcile-absent-branch`. It is
+  an `ineligible` and never a failure: the door writes no `status` and spends no `mergeRetries`, so the
+  arm reports that it withheld, and the operator remedy is the same `fn task reconcile <id> --reopen` the
+  landed-truth census names. Without this reason the arm would have had to report `raced` or `not-landed`
+  for a refusal whose cause it actually knows.
+  */
+  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "complete-lane-gate-evidence" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group" | "landing-proof-unproven"; repos?: LandedReviewWorkspaceRepoDetail[] };
+
+/*
+FNXC:LandedTruthReopen 2026-11-06-10:05 (RUFU-702):
+The shared classification behind both operator surfaces of the landed-truth door: the read-only sentence
+`fn task reconcile <id>` prints for a card already in a terminal lane, and the move
+`fn task reconcile <id> --reopen` performs. ONE classifier so the CLI can never print a verdict different
+from the one its own `--reopen` flag would have acted on. `state` is a closed set; `sentence` is the fixed
+refusal wording (`describeDefaultBranchLandingRefusal`) and is the only prose in the shape — it goes to the
+operator's terminal and the card's History, never into run-audit.
+*/
+export type LandedTruthVerdict =
+  | { state: "no-claim" }
+  | { state: "not-in-complete-lane"; column: string }
+  | { state: "deferred"; reason: string }
+  | { state: "proven"; integrationBranch: string; proofKind: string }
+  | {
+      state: "refused";
+      sentence: string;
+      integrationBranch: string;
+      recordedSha: string | null;
+      branchRef: string | null;
+      refusalCode: string;
+      conflictCount: number | null;
+    };
+
+/*
+FNXC:LandedTruthReopen 2026-11-06-09:55 (RUFU-702):
+Result of the operator's explicit reopen of ONE card whose delivery claim its own default branch refuses
+(`SelfHealingManager.reopenUnprovenLandedTask`). The three measurement arms are separate outcomes rather
+than one boolean because the operator's next action differs: `proven` means the board is right and the
+card must stay closed; `deferred` means the repository could not be read, which is NOT evidence of a false
+landing and therefore never reopens anything; only `refused` moves a card. `refused` reasons name the
+eligibility fence that stopped the move so a retry has a concrete next step.
+*/
+export type LandedTruthReopenResult =
+  | {
+      outcome: "reopened";
+      fromColumn: string;
+      toColumn: string;
+      integrationBranch: string;
+      recordedSha: string | null;
+      branchRef: string | null;
+      refusalCode: string;
+      conflictCount: number | null;
+    }
+  | { outcome: "proven"; integrationBranch: string; proofKind: string }
+  | { outcome: "deferred"; reason: string }
+  | {
+      outcome: "refused";
+      reason: "not-found" | "not-in-complete-lane" | "no-landing-claim" | "engine-paused" | "no-reopen-target" | "move-rejected";
+      detail?: string;
+    };
 
 /*
 FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
@@ -1761,6 +1934,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * breach already survives, since a breach that never self-heals repeats forever by definition.
    */
   private longTermMemoryOverBudgetAuditState = new Map<string, number>();
+  /**
+   * FNXC:LandedTruthCensus 2026-11-06-09:41 (RUFU-702): rotating start index for the census's bounded
+   * probe budget. Instance state is enough — nothing correctness-bearing reads it; it only decides which
+   * slice of an id-ordered candidate list the NEXT pass measures, so the tail of a large `done` lane is
+   * reached instead of starved. A restart simply begins again at the head of the lane.
+   */
+  private landedTruthProbeCursor = 0;
 
   // ── Event listener cleanup ──────────────────────────────────────────
   private settingsListener: ((data: { settings: Settings; previous: Settings }) => void) | null = null;
@@ -3047,6 +3227,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       `globalPause || enginePaused`), which is why the body carries no pause gate of its own.
       */
       { name: "reconcile-terminal-branch-conflict-parks", fn: () => this.reconcileTerminalBranchConflictParks().then(() => undefined) },
+      /* RUFU-702: re-prove already-`done` delivery claims at startup too — a card finalized by an older
+       * build on a branch-ref advance is the exact population this census exists for, and it must be named
+       * the moment the engine comes up rather than on the first maintenance tick. */
+      { name: "reconcile-landed-truth", fn: () => this.reconcileLandedTruth().then(() => undefined) },
       /*
       FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
       BOOT OWNER FOR ROWS NO CONSUMER WILL TAKE. The startup twin matters here more than for most sweeps:
@@ -4078,13 +4262,70 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   moving a single-repository landed task. Preserved content remains logged and completes normally;
   only the shared helper may clear the singular worktree pointer.
   */
+  /*
+  FNXC:DefaultBranchLandingProof 2026-11-17-19:28 (RUFU-702, code-review P2):
+  This mover is a landing authority, not just a mover: it carries `mergeDetails` and performs the terminal
+  `moveTask` into a `complete`-trait lane, and SEVEN recovery arms reach `done` through it
+  (`self-healing-finalize-no-op-review`, `recover-interrupted-merging`, `recover-stuck-merge-deadlocks`,
+  `recover-orphan-only-scope-violations`, `recover-already-merged-review`, `reconcile-absent-branch`,
+  `recover-branch-misbound-in-review`). It used to move first and never ask, so the invariant this card
+  exists to install was reachable while bypassed.
+
+  The exposure is not hypothetical on two of those arms: they take `baseBranch` from
+  `resolveSelfHealingMergeTarget`, whose non-group fallback is
+  `task.baseBranch || task.executionStartBranch || projectDefaultBranch` — a ref that can itself name a
+  Fusion task branch. Their premise (`findAlreadyMergedTaskCommit`) re-verifies OWNERSHIP, which proves an
+  owned commit exists on THAT ref and says nothing about the default branch, so an owned-but-not-on-main
+  tip finalizes the card exactly the way RUFU-294 was finalized. Measuring here, against
+  `resolveIntegrationBranch`, closes all seven arms at once and refuses by the shared yardstick rather than
+  by the arm's own.
+
+  Disposition contract, deliberately identical to the three authorities wired in Steps 3-4:
+  - `refused` → no move, and the door has already left the shared `LANDING_PROOF_UNPROVEN:` hold, the
+    History row, one bounded audit row and one mailbox notice. Returns `null` so no caller can emit
+    `taskMerged`, log "auto-finalized", or count a `recovered++` for a card that did not land. A silent
+    `Task` return would launder the refusal into the arms' own success accounting.
+    **Callers test `movedTask === null`, never `!movedTask`.** `null` is the refusal token this function
+    authors; falsiness is not. A lightweight store whose `moveTask` resolves `undefined` (the shape the
+    legacy in-memory recovery fakes use) is a successful move wearing no coat, and a falsy check silently
+    turned those seven arms' successes into refusals — the card did reach `done`, while the arm's own
+    `task:auto-recover-finalize-already-on-main` audit row and its `recovered++` vanished, which is exactly
+    the unannounced-accounting shape this guard exists to prevent. Measured: 6 failures in
+    `self-healing-already-merged.real-git` / `self-healing-absent-branch-landed.real-git`.
+  - `deferred` → moves. An unreadable repository must not become a delivery failure for every hosted card.
+  - `proven` → moves, and a hold this door left on an earlier pass is cleared as stale, because the
+    repository now substantiates the claim the hold disputed.
+
+  The workspace exemption is explicit, not an oversight: a workspace card's delivery is proved per
+  repository (`workspaceLandedFiles` carries file sets, not shas, so no per-repo ancestry is derivable
+  here) and the workspace land lane owns that proof. Asking the singular probe about a multi-repo delivery
+  would manufacture a refusal out of a fact the probe cannot see, so the mover defers for those cards and
+  `reconcileLandedTruth` remains their only re-check.
+  */
   private async moveToCompleteLaneAfterLandedCleanup(
     task: Task,
     completeLane: string,
     source: string,
     mergeDetails?: MergeDetails,
-  ): Promise<Task> {
+  ): Promise<Task | null> {
     const landedMergeDetails = mergeDetails ?? task.mergeDetails;
+    if (!isWorkspaceTask(task)) {
+      const landingTruth = await enforceDefaultBranchLandingProof({
+        store: this.store,
+        task,
+        repoDir: this.options.rootDir,
+        mergeDetails: landedMergeDetails ?? null,
+        source: "self-healing-complete-lane-move",
+        messageStore: this.options.messageStore,
+      });
+      if (landingTruth.disposition === "refused") {
+        await this.store.logEntry(
+          task.id,
+          `Complete-lane move withheld by the landing-proof door [${source}]: ${landingTruth.refusal}`,
+        ).catch(() => undefined);
+        return null;
+      }
+    }
     if (landedMergeDetails?.mergeConfirmed === true) {
       const audit = createRunAuditor(this.store, {
         runId: generateSyntheticRunId("self-heal", task.id),
@@ -4108,7 +4349,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         },
       });
     }
-    return await this.store.moveTask(task.id, completeLane);
+    const moved = await this.store.moveTask(task.id, completeLane);
+    /*
+    The card is in the terminal lane now, so this door's own hold is discharged evidence, not a finding.
+    Only this prefix is touched and only through the CAS-fenced clearer, so a foreign error sentence or a
+    hold another lane just re-armed survives.
+    */
+    await clearDefaultBranchLandingProofHold(this.store, moved).catch(() => false);
+    return moved;
   }
 
   /*
@@ -4479,6 +4727,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           sustained finding stays countable without becoming one row per pass.
           */
           { name: COMPLETE_LANE_EVIDENCE_SWEEP_NAME, fn: () => this.reconcileCompleteLaneGateEvidence() },
+          // RUFU-702: the landed-truth census, same registration in both passes (see startup note).
+          { name: "reconcile-landed-truth", fn: () => this.reconcileLandedTruth() },
           // FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): steady-state twin of the startup
           // registration above — a card can be parked by the pre-fix classifier without a restart, and
           // the same ordering applies (frees the card before the revival lanes classify it).
@@ -11668,6 +11918,553 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   }
 
   /**
+   * FNXC:LandedTruthCensus 2026-11-05-16:44 (RUFU-702):
+   * Re-prove the delivery claim of every card already sitting in a complete-role lane, and name the ones
+   * the default branch cannot substantiate.
+   *
+   * WHY THIS SWEEP EXISTS. Before this card the board had two delivery oracles and nobody compared them.
+   * One was `mergeDetails` — what a landing lane WROTE ABOUT ITSELF — and the other was the repository.
+   * RUFU-294 is the measurement where they disagreed: its row says `commitSha: 62804b4340…`,
+   * `mergeConfirmed: true`, 1 459 landed files, and its History says `in-review → done (forward)`; `main`
+   * says the commit is not there, the two test files its own commit message names do not exist there, and
+   * `merge-tree` reports 238 conflicts against it. Nothing re-examined that claim after the move, so the
+   * card stayed `done` for three weeks and the only surface that could have caught it was a manual
+   * `git merge-base` by a human. This sweep is the automated reconciliation of the two oracles.
+   *
+   * IT REPORTS BEFORE IT HEALS, AND IT MAY ONLY HEAL FORWARD. The arm is report-only by project policy,
+   * not by caution: lifecycle containment (FN-207/FN-217) forbids an automatic move backward out of a
+   * terminal lane — only a review `REVISE` may do that — so a census that re-queued a `done` card would be
+   * a second, worse defect dressed as a fix. What it DOES do automatically is the forward direction, where
+   * a card carries this door's `LANDING_PROOF_UNPROVEN:` hold while the repository has since come to agree
+   * that its work IS on the default branch: the stale hold is cleared, because leaving it would assert a
+   * delivery failure git no longer reports. That is also the only case with `repairExecuted: true`.
+   *
+   * SQUASH SAFETY IS THE LOAD-BEARING CONSTRAINT, because the population is every delivered card. Under
+   * the project default `always-squash` the landed sha is a NEW commit on `main` and the branch head
+   * legitimately differs from it; `git cherry` compares per-commit patch-ids, which a squash rewrites, so
+   * it reports every commit `+` on an already-delivered branch (RUFU-450's erratum measured exactly that).
+   * The decider is therefore ancestry of the RECORDED sha plus post-image blob identity — see
+   * `@fusion/core/merge/default-branch-landing-proof-probe.ts`. A card whose content is genuinely on `main`
+   * measures `proven` here and emits no row at all, which is what "never mass-reopen" means in practice.
+   *
+   * UNREADABLE IS NOT UNDELIVERED. A `deferred` verdict (no resolvable integration ref, a repository this
+   * process cannot inspect) writes no finding and no notice: on a fleet where most repositories are fine,
+   * a bare or mid-rebase checkout must not manufacture a finding per hosted card. Only a positive `refused`
+   * is a finding.
+   *
+   * THE ZERO-OWN-COMMIT VETO IS INHERITED, NOT RE-DERIVED. A base-branch message grep is not delivery
+   * proof in EITHER direction — a squash stamps every concatenated message, so an id can appear on commits
+   * that belong to another card (RUFU-396) — so the count published here comes from
+   * `baseDeliveryEvidence`, the re-verified ownership proof, and a null (unreadable) proof publishes `null`
+   * rather than `0`. `null` means "not probed", `0` means "probed and none", and collapsing them is the
+   * error RUFU-690 measured at 211 false findings in one window.
+   *
+   * Candidate shape: a `complete`-role lane (resolved by role, never the `"done"` literal — a renamed board
+   * would match nothing) + a `mergeDetails` that names a commit. Workspace cards are HELD: their landing
+   * happened per repository in member checkouts this pass cannot enumerate, so measuring at the root would
+   * be an absence of looking. Discovery pages fully before any write, because `updateTask` bumps
+   * `updatedAt` unconditionally and a write mid-paging shifts the window it reads through. Probes are
+   * bounded per pass by `LANDED_TRUTH_PROBE_BUDGET` with a rotating start index, so a large `done` lane is
+   * walked across passes instead of storming git in one tick; a card the budget never reached stays
+   * unmeasured and gets no finding.
+   * Metadata: { taskId, integrationBranch, recordedSha, branchRef, refusalCode, proofKind, conflictCount,
+   * landedShaOnIntegration, repairExecuted, repair } — ids/counts/fixed enums only. Commit subjects, touched
+   * paths, task prose, and the refusal sentence never enter run-audit; the sentence goes on the History row.
+   */
+  async reconcileLandedTruth(): Promise<number> {
+    try {
+      const completeColumns = await resolveProjectColumnsForRoles(this.store, TERMINAL_ROLES);
+      if (completeColumns.size === 0) {
+        log.debug("reconcileLandedTruth: no complete-role column resolved — holding every candidate");
+        return 0;
+      }
+
+      // ── Phase 1: discovery only. No row is touched until every page has been read. ──
+      const pageSize = 500;
+      const candidateIds: string[] = [];
+      const seen = new Set<string>();
+      for (const column of completeColumns) {
+        let offset = 0;
+        for (;;) {
+          const page = await this.store.listTasks({ column, slim: true, excludeLog: true, limit: pageSize, offset });
+          for (const task of page) {
+            if (seen.has(task.id)) continue;
+            seen.add(task.id);
+            // Page-cheap pre-filter: a card with no named commit carries no claim to disprove.
+            const details = task.mergeDetails;
+            if (!details?.commitSha && !details?.landedBranchTipSha) continue;
+            candidateIds.push(task.id);
+          }
+          if (page.length < pageSize) break;
+          offset += page.length;
+        }
+      }
+      if (candidateIds.length === 0) return 0;
+
+      /*
+      COST BOUND, NOT A VERDICT (RUFU-702 Step 6). A `done` lane is the largest lane on a mature board, and
+      this measurement is the expensive kind (several bounded git subprocesses per card), so a pass may
+      probe at most `LANDED_TRUTH_PROBE_BUDGET` cards. Ordering is by id and the start index rotates, so
+      successive passes walk the whole lane rather than re-measuring one head slice. A candidate the budget
+      never reached is UNMEASURED — it is not refuted, so it earns no finding, no notice, and no audit row;
+      the deferral is reported once per pass through the sweep's own log line, exactly like the other
+      bounded evidence-exhaustion seams (`evidence-unavailable` family).
+      */
+      const ordered = candidateIds.slice().sort();
+      /*
+      FNXC:LandedTruthCensus 2026-11-18-22:24 (RUFU-702 merge onto main): this local is deliberately NOT
+      named `cap`. `enforceWorktreeCap` binds a local `cap` off `settings.maxWorktrees`, and the
+      `maxWorktrees` ratchet in `worktree-capacity-limit.test.ts` collects alias names PER FILE and then
+      flags any identifier of that name that feeds a comparison — so a same-named, worktree-unrelated local
+      here tripped the admission-bound ratchet as a new unaudited `maxWorktrees` bound. Renaming keeps the
+      ratchet's alias hop honest instead of widening the allowlist with an entry whose reason would be a lie.
+      */
+      const probeBudget = this.options.landedTruthProbeBudget ?? LANDED_TRUTH_PROBE_BUDGET;
+      const reportBudget = this.options.landedTruthReportBudget ?? LANDED_TRUTH_REPORT_BUDGET;
+      let rotationStart = 0;
+      let measured: string[];
+      if (ordered.length <= probeBudget) {
+        measured = ordered;
+        this.landedTruthProbeCursor = 0;
+      } else {
+        rotationStart = this.landedTruthProbeCursor % ordered.length;
+        measured = [...ordered.slice(rotationStart), ...ordered.slice(0, rotationStart)].slice(0, probeBudget);
+        this.landedTruthProbeCursor = (rotationStart + probeBudget) % ordered.length;
+        log.log(`reconcileLandedTruth: probe budget of ${probeBudget} reached — ${ordered.length - measured.length} card(s) deferred to a later pass (probe-budget-deferred)`);
+      }
+
+      /*
+      WRITE BOUND, ALSO NOT A VERDICT (RUFU-702 code-review). The probe budget caps what this pass can
+      *learn*; this one caps what it can *say*. When it runs out the cursor is rewound to the card that was
+      refused a voice, so the rest of the lane is re-walked on a later pass instead of being silently
+      skipped — a card nobody announced is unannounced, never acquitted and never accused.
+      */
+      let findings = 0;
+      let reported = 0;
+      let suppressedCount = 0;
+      let deduped = 0;
+      for (let position = 0; position < measured.length; position += 1) {
+        const candidateId = measured[position];
+        if (reported >= reportBudget) {
+          this.landedTruthProbeCursor = (rotationStart + position) % ordered.length;
+          log.log(`reconcileLandedTruth: report budget of ${reportBudget} reached — remaining candidates deferred to a later pass (report-budget-deferred)`);
+          break;
+        }
+        // Re-read fresh: the page is a snapshot, and a card that moved in between is another sweep's case.
+        const fresh = await this.store.getTask(candidateId).catch(() => null);
+        if (!fresh) continue;
+        if (!completeColumns.has(fresh.column)) continue;
+        if (isWorkspaceTask(fresh)) continue;
+        const mergeDetails = fresh.mergeDetails;
+        if (!mergeDetails?.commitSha && !mergeDetails?.landedBranchTipSha) continue;
+
+        /*
+        SUPPRESSED BEFORE THE PROBE (RUFU-702 code-review P1). Three cards must never be told their delivery
+        is unproven, because for each of them “the default branch does not hold it” is not a finding:
+        a human-terminal card (`autoMerge: false`, FN-5147) is closed by a person, an operator-held card is
+        frozen mid-flight, and a PR-backed card's content is owed by the HOST on its base branch, which this
+        pass never fetches. Judging them would be the mass false alarm the census's own squash-safety rule
+        exists to prevent, so they are classified before any git runs — which also keeps a large suppressed
+        population from spending probe budget it cannot use.
+        */
+        const suppression = await this.classifyLandedTruthSuppression(fresh);
+        if (suppression) {
+          const suppressionSignature = `suppressed:${suppression}`;
+          if (isLandedTruthEpisodeLive(readLandedTruthCensusEpisode(fresh), suppressionSignature, Date.now(), LANDING_PROOF_NOTICE_COOLDOWN_MS)) {
+            deduped += 1;
+            continue;
+          }
+          /*
+          One row per (card, reason), never a notice: a suppressed card is not actionable, and a History line
+          would read as an accusation on a card whose remedy is a human decision the census may not pre-empt.
+          */
+          await emitBoundedRunAudit(this.store, {
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("done-landing-unproven", fresh.id),
+            taskId: fresh.id,
+            domain: "database",
+            mutationType: "task:done-landing-unproven",
+            target: fresh.id,
+            metadata: {
+              taskId: fresh.id,
+              integrationBranch: null,
+              recordedSha: mergeDetails.commitSha?.trim() || mergeDetails.landedBranchTipSha?.trim() || null,
+              branchRef: fresh.branch ?? null,
+              refusalCode: null,
+              proofKind: null,
+              conflictCount: null,
+              landedShaOnIntegration: null,
+              suppressionReason: suppression,
+              // Nothing was measured, so nothing was repaired and nothing was moved.
+              repairExecuted: false,
+              repair: "suppressed",
+            },
+          }, { log });
+          await this.writeLandedTruthEpisode(fresh, suppressionSignature);
+          suppressedCount += 1;
+          reported += 1;
+          continue;
+        }
+
+        const measurement = await measureDefaultBranchLandingProof({
+          repoDir: this.options.rootDir,
+          mergeDetails,
+        });
+        const verdict = measurement.verdict;
+        const recordedSha = mergeDetails.commitSha?.trim() || mergeDetails.landedBranchTipSha?.trim() || null;
+
+        if (verdict.disposition === "deferred") {
+          // Not a finding and not a refutation — an unreadable repository is silence, and silence is
+          // countable from the sweep's own debug line without a row per hosted card.
+          log.debug(`reconcileLandedTruth: ${fresh.id} deferred (${verdict.reason}) — no finding recorded`);
+          continue;
+        }
+
+        if (verdict.disposition === "proven") {
+          /*
+          The one automatic repair, and it is forward-only: the hold this door can leave on a card whose
+          landing was unmeasurable at the time is stale the moment the repository agrees the commit is on
+          the default branch. Clearing it asserts nothing about delivery — the repository does — and writes
+          no column move, so lifecycle containment is untouched.
+          */
+          if (!isDefaultBranchLandingProofHold(fresh)) continue;
+          /*
+          FNXC:DefaultBranchLandingProof 2026-11-17-19:28 (RUFU-702, code-review P2):
+          The clear now runs through the shared `clearDefaultBranchLandingProofHold`, which carries the same
+          live-row CAS fence this block used to hand-roll. Two lanes implementing one clear is how they
+          drift apart, and the mover needs the identical rule (it discharges its own hold after a proven
+          move), so the predicate, the fence, and the "did it actually clear?" answer live in exactly one
+          place. `cleared` still decides whether the History line and the audit row are owed: a clear that
+          did not happen must not be narrated as if it had.
+          */
+          const cleared = await clearDefaultBranchLandingProofHold(this.store, fresh).catch((error: unknown) => {
+            log.warn(`reconcileLandedTruth: hold clear failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+          });
+          if (!cleared) continue;
+          await this.store.logEntry(
+            fresh.id,
+            `Landed-truth census cleared a stale unproven-landing hold: the recorded commit is reachable from \`${measurement.integrationBranch}\`, so the delivery claim this card carried is now substantiated by the repository.`,
+          ).catch(() => undefined);
+          await emitBoundedRunAudit(this.store, {
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("done-landing-unproven", fresh.id),
+            taskId: fresh.id,
+            domain: "database",
+            mutationType: "task:done-landing-unproven",
+            target: fresh.id,
+            metadata: {
+              taskId: fresh.id,
+              integrationBranch: measurement.integrationBranch,
+              recordedSha,
+              branchRef: fresh.branch ?? null,
+              refusalCode: null,
+              proofKind: verdict.proofKind,
+              conflictCount: measurement.conflictCount,
+              landedShaOnIntegration: null,
+              suppressionReason: null,
+              repairExecuted: true,
+              repair: "stale-hold-cleared",
+            },
+          }, { log });
+          findings += 1;
+          reported += 1;
+          continue;
+        }
+
+        // ── A positive refusal: name it where the operator reads, and where it is countable. ──
+        const refusal = describeDefaultBranchLandingRefusal(verdict, {
+          taskId: fresh.id,
+          integrationBranch: measurement.integrationBranch,
+          recordedSha,
+        });
+        /*
+        ONE REPORT PER EPISODE (RUFU-702 code-review P1). The mailbox notice was already deduped per window
+        while the History row and the audit row were written on EVERY pass that re-measured the same refusal —
+        so a 100-card `done` lane produced 100 History rows plus 100 audit rows per maintenance tick, forever,
+        with no event behind them (this sweep dispatches no `NotificationService` wedge for a finding, so the
+        notice cooldown was the only bound anyone thought was acting). The episode below collapses that to one
+        report per window across all three surfaces, and it is checked BEFORE the ownership proof so a deduped
+        card costs no git either. The signature carries the refusal code, so a card whose diagnosis CHANGES —
+        a re-recorded sha, an absence that turned into a patch-equivalence win — is announced again at once
+        instead of being swallowed by its own earlier row.
+        */
+        const signature = `reported:${verdict.refusalCode}`;
+        if (isLandedTruthEpisodeLive(readLandedTruthCensusEpisode(fresh), signature, Date.now(), LANDING_PROOF_NOTICE_COOLDOWN_MS)) {
+          deduped += 1;
+          continue;
+        }
+        /*
+        The verified ownership proof, reached so the finding can say whether the card has ANY content of its
+        own on the base branch. A null here means the proof could not be read, which publishes `null` — an
+        unprobed card must not read as a card with zero delivered commits.
+        */
+        let landedShaOnIntegration: number | null = null;
+        try {
+          const effectiveWriteScope = typeof this.store.parseFileScopeFromPrompt === "function"
+            ? await this.store.parseFileScopeFromPrompt(fresh.id).catch(() => undefined)
+            : undefined;
+          const declaredScope = await this.declaredFileScopeForTask(fresh, effectiveWriteScope);
+          const delivery = await this.baseDeliveryEvidence({
+            task: fresh,
+            baseBranch: measurement.integrationBranch,
+            declaredScope,
+          });
+          landedShaOnIntegration = delivery ? delivery.ownLandedCommitCount : null;
+        } catch {
+          landedShaOnIntegration = null;
+        }
+
+        await this.store.logEntry(fresh.id, `[landed-truth-census] ${refusal}`).catch(() => undefined);
+        await emitBoundedRunAudit(this.store, {
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("done-landing-unproven", fresh.id),
+          taskId: fresh.id,
+          domain: "database",
+          mutationType: "task:done-landing-unproven",
+          target: fresh.id,
+          metadata: {
+            taskId: fresh.id,
+            integrationBranch: measurement.integrationBranch,
+            recordedSha,
+            branchRef: fresh.branch ?? null,
+            refusalCode: verdict.refusalCode,
+            proofKind: null,
+            conflictCount: measurement.conflictCount,
+            landedShaOnIntegration,
+            suppressionReason: null,
+            // Report-only by lifecycle containment: a census may not move a card out of a terminal lane.
+            repairExecuted: false,
+            repair: "reported",
+          },
+        }, { log });
+
+        await deliverMailboxMessageOnce(
+          this.options.messageStore,
+          {
+            fromId: "system",
+            fromType: "system",
+            toId: DASHBOARD_USER_ID,
+            toType: "user",
+            type: "system",
+            content: `Landed-truth census: ${refusal}\n\nThe card is still marked done, so this is a report, not a move — reopening it is an operator decision.\nBranch: \`${fresh.branch ?? "unrecorded"}\``,
+            metadata: {
+              kind: "landed-truth-unproven",
+              taskId: fresh.id,
+              refusalCode: verdict.refusalCode,
+              integrationBranch: measurement.integrationBranch,
+              recordedSha,
+              conflictCount: measurement.conflictCount,
+              landedShaOnIntegration,
+            },
+          },
+          landingProofNoticeKey(fresh.id, `census:${verdict.refusalCode}`, Date.now()),
+        );
+        // The episode marker goes last: a report whose writes failed must be re-announceable on the next pass.
+        await this.writeLandedTruthEpisode(fresh, signature);
+        findings += 1;
+        reported += 1;
+      }
+
+      if (findings > 0 || suppressedCount > 0 || deduped > 0) {
+        log.log(`reconcileLandedTruth: ${findings} landed-truth finding(s), ${suppressedCount} suppressed (human-terminal / operator-held / PR-backed), ${deduped} already announced in this episode window`);
+      }
+      return findings;
+    } catch (error: unknown) {
+      log.error(`reconcileLandedTruth failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+   * Why this card is NOT the census's case, decided BEFORE any git runs (RUFU-702 code-review P1). Each class
+   * is a card whose "the default branch does not hold this commit" is true-but-not-a-finding, so announcing it
+   * would be the mass false alarm the census's squash-safety rule exists to prevent:
+   *
+   * - `human-terminal-auto-merge-off`: `autoMerge: false` on the CARD (FN-5147) makes its terminal lane a
+   *   human contract. Project-level auto-merge is deliberately NOT consulted — on a human-merge board every
+   *   done card would be suppressed and the invariant would be dead, while the per-card flag is exactly the
+   *   "a person closes this one" statement.
+   * - `operator-held`: an operator froze the card (bare pause with no automated reason), so its delivery
+   *   claim is under that person's review, not the repository's.
+   * - `pr-backed`: the landing vehicle is a live pull request, so the HOST owes the content on its base
+   *   branch and this pass never fetches. Resolution is the door's own predicate, so the census and the door
+   *   cannot disagree about which cards the host is on the hook for.
+   */
+  private async classifyLandedTruthSuppression(task: Task): Promise<LandedTruthSuppressionReason | null> {
+    if (task.autoMerge === false) return "human-terminal-auto-merge-off";
+    if (task.userPaused === true || (task.paused === true && !task.pausedReason)) return "operator-held";
+    const mergeDetails = task.mergeDetails ?? null;
+    const claimedPrNumber = typeof mergeDetails?.prNumber === "number" ? mergeDetails.prNumber : null;
+    if (await resolveTaskLandingPrVehicleOpen(this.store, task, mergeDetails?.mergeTargetSource ?? null, claimedPrNumber)) {
+      return "pr-backed";
+    }
+    return null;
+  }
+
+  /**
+   * Stamp the card with what this pass just announced, so the next pass can honour "once per episode".
+   *
+   * KEY-level `sourceMetadataPatch` only (RUFU-246/273/393/395's channel): no column, no status, no pause, no
+   * new column on the schema, and the other provenance keys on the same jsonb survive. Written LAST in a
+   * report, because a marker set before the writes land would silence a report that never happened; a marker
+   * that fails to write costs one duplicate announcement on the next pass, which is the cheaper direction.
+   */
+  private async writeLandedTruthEpisode(task: Task, signature: string): Promise<void> {
+    const now = new Date().toISOString();
+    const previous = readLandedTruthCensusEpisode(task);
+    // A signature change starts a fresh window but keeps the running total: `firstAt` answers "how long has
+    // THIS diagnosis been standing", `reportCount` answers "how many times has this card needed a report".
+    const continuing = previous !== null && previous.signature === signature;
+    await this.store.updateTask(task.id, {
+      sourceMetadataPatch: {
+        landedTruthCensus: {
+          signature,
+          firstAt: continuing ? previous!.firstAt : now,
+          lastAt: now,
+          reportCount: (previous?.reportCount ?? 0) + 1,
+        } satisfies LandedTruthCensusEpisode,
+      },
+    }).then(() => undefined).catch((error: unknown) => {
+      // The episode is an announce bound, never a lifecycle dependency: a card whose marker could not be
+      // written is re-announced on a later pass, which is amplification bounded by the write failure.
+      log.debug(`reconcileLandedTruth: episode marker failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  async describeLandedTruth(taskId: string): Promise<LandedTruthVerdict | { state: "not-found" }> {
+    const task = await this.store.getTask(taskId).catch(() => null);
+    if (!task) return { state: "not-found" };
+    const completeColumns = await resolveProjectColumnsForRoles(this.store, TERMINAL_ROLES);
+    if (!completeColumns.has(task.column)) return { state: "not-in-complete-lane", column: task.column };
+    return this.classifyLandedTruthClaim(task);
+  }
+
+  /**
+   * The measurement half of the landed-truth surfaces, shared by `describeLandedTruth` (read-only) and
+   * `reopenUnprovenLandedTask` (the operator move) so the sentence an operator reads is the sentence the
+   * reopen would have acted on. Callers must have established the card is in a complete-role lane.
+   */
+  private async classifyLandedTruthClaim(task: Task): Promise<LandedTruthVerdict> {
+    const mergeDetails = task.mergeDetails;
+    if (!mergeDetails?.commitSha && !mergeDetails?.landedBranchTipSha) return { state: "no-claim" };
+    const measurement = await measureDefaultBranchLandingProof({ repoDir: this.options.rootDir, mergeDetails });
+    const verdict = measurement.verdict;
+    const recordedSha = mergeDetails.commitSha?.trim() || mergeDetails.landedBranchTipSha?.trim() || null;
+    if (verdict.disposition === "deferred") return { state: "deferred", reason: verdict.reason };
+    if (verdict.disposition === "proven") {
+      return { state: "proven", integrationBranch: measurement.integrationBranch, proofKind: verdict.proofKind };
+    }
+    return {
+      state: "refused",
+      sentence: describeDefaultBranchLandingRefusal(verdict, {
+        taskId: task.id,
+        integrationBranch: measurement.integrationBranch,
+        recordedSha,
+      }),
+      integrationBranch: measurement.integrationBranch,
+      recordedSha,
+      branchRef: task.branch ?? null,
+      refusalCode: verdict.refusalCode,
+      conflictCount: measurement.conflictCount,
+    };
+  }
+
+  /**
+   * FNXC:LandedTruthReopen 2026-11-06-09:55 (RUFU-702):
+   * The operator's hand on the landed-truth census: reopen exactly ONE named card whose delivery claim the
+   * resolved default branch refuses to substantiate.
+   *
+   * WHY IT IS EXPLICIT AND EXACTLY-ONE. Lifecycle containment (FN-207/FN-217) forbids an automatic move
+   * backward out of a terminal lane — only a review `REVISE` may do that — so the census reports and THIS
+   * seam acts, on a human instruction. No card other than the one named is touched. A card whose work IS
+   * on the default branch cannot be reopened through this door at all, and neither can a card whose
+   * repository could not be read: `proven` and `deferred` both refuse, because "git would not answer" is
+   * not evidence that a card was never delivered. That asymmetry is the same one the enforcement door uses.
+   *
+   * WHY THE TARGET IS THE PLANNING LANE, NOT REVIEW. The transition contract's only backward edge out of a
+   * terminal lane runs to `hold`/`intake` (`ROLE_TRANSITIONS.complete`; `VALID_TRANSITIONS.done` for the
+   * default board) — `complete → review` has never been a legal move on any board, and widening that
+   * contract for one repair path would be a larger change than the repair. The planning lane is also the
+   * lane that can actually re-deliver the work: the card re-runs the ordinary release → execute → review →
+   * merge route, and the landing door this card added is what refuses a repeat false landing. `parkOnHold:
+   * false` states RELEASE intent — the same intent an explicit operator Retry carries (RUFU-261) — because
+   * the operator is asking for the work to run again, not parking it.
+   *
+   * WHAT THE MOVE DOES NOT PRESERVE. Reopen entry effects clear the row's completion fields, including the
+   * false `mergeDetails` claim, so the durable record of WHY the card came back is written HERE and nowhere
+   * else: one History line carrying the same refusal sentence the census publishes, plus one bounded
+   * run-audit row. The work itself lives on the card's branch ref, which no part of this arm deletes.
+   */
+  async reopenUnprovenLandedTask(taskId: string): Promise<LandedTruthReopenResult> {
+    const task = await this.store.getTask(taskId).catch(() => null);
+    if (!task) return { outcome: "refused", reason: "not-found" };
+    const completeColumns = await resolveProjectColumnsForRoles(this.store, TERMINAL_ROLES);
+    if (!completeColumns.has(task.column)) return { outcome: "refused", reason: "not-in-complete-lane" };
+    const settings = await this.store.getSettings();
+    if (settings.globalPause || settings.enginePaused) return { outcome: "refused", reason: "engine-paused" };
+
+    const truth = await this.classifyLandedTruthClaim(task);
+    if (truth.state === "no-claim") return { outcome: "refused", reason: "no-landing-claim" };
+    if (truth.state === "not-in-complete-lane") return { outcome: "refused", reason: "not-in-complete-lane" };
+    if (truth.state === "deferred") return { outcome: "deferred", reason: truth.reason };
+    if (truth.state === "proven") {
+      return { outcome: "proven", integrationBranch: truth.integrationBranch, proofKind: truth.proofKind };
+    }
+
+    const lifecycle = await resolveTaskLifecycleColumns(this.store, taskId).catch(() => undefined);
+    const target = lifecycle?.hold ?? lifecycle?.intake ?? null;
+    if (!target) return { outcome: "refused", reason: "no-reopen-target" };
+
+    let reopened: Task;
+    try {
+      reopened = await this.store.moveTask(taskId, target as Task["column"], {
+        moveSource: "user",
+        parkOnHold: false,
+      });
+    } catch (error: unknown) {
+      // The store's own transition guards stay in force; this seam never moves a card the graph forbids.
+      return { outcome: "refused", reason: "move-rejected", detail: error instanceof Error ? error.message : String(error) };
+    }
+
+    await this.store.logEntry(
+      taskId,
+      `[landing-proof-reopen] ${truth.sentence}\n\nReopened on operator request from \`${task.column}\` to \`${reopened.column}\` so the work can be re-delivered; the delivery claim this card carried was not substantiated by \`${truth.integrationBranch}\`, and the reopen hooks cleared it. Work remains on \`${task.branch ?? "no recorded branch"}\`.`,
+    ).catch(() => undefined);
+
+    await emitBoundedRunAudit(this.store, {
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("landing-unproven-reopened", taskId),
+      taskId,
+      domain: "database",
+      mutationType: "task:landing-unproven-reopened",
+      target: taskId,
+      metadata: {
+        taskId,
+        fromColumn: task.column,
+        toColumn: reopened.column,
+        integrationBranch: truth.integrationBranch,
+        recordedSha: truth.recordedSha,
+        branchRef: task.branch ?? null,
+        refusalCode: truth.refusalCode,
+        conflictCount: truth.conflictCount,
+        outcome: "reopened",
+      },
+    }, { log });
+
+    return {
+      outcome: "reopened",
+      fromColumn: task.column,
+      toColumn: reopened.column,
+      integrationBranch: truth.integrationBranch,
+      recordedSha: truth.recordedSha,
+      branchRef: task.branch ?? null,
+      refusalCode: truth.refusalCode,
+      conflictCount: truth.conflictCount,
+    };
+  }
+
+  /**
    * FNXC:TerminalBranchConflictPark 2026-11-02-15:11 (RUFU-439):
    * Is the premise of a `branch-conflict-unrecoverable` park still alive? Tri-state on purpose: the
    * caller may clear on `dead` ONLY. `present` (the branch ref exists) or a registered worktree is
@@ -15832,6 +16629,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
         const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
         const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "self-healing-finalize-no-op-review", confirmedMergeDetails);
+        // The landing-proof door withheld the move: nothing reached the integration branch, so this
+        // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+        if (movedTask === null) continue;
         this.emitTaskMerged(movedTask, { mergeConfirmed: true });
         recovered++;
       }
@@ -19311,6 +20111,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "recover-interrupted-merging");
             const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
             const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "recover-interrupted-merging", mergeDetails);
+            // The landing-proof door withheld the move: nothing reached the integration branch, so this
+            // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+            if (movedTask === null) continue;
             this.emitTaskMerged(movedTask, { mergeConfirmed: true });
             await this.cleanupInterruptedMergeArtifacts(task);
             await this.store.logEntry(
@@ -21126,6 +21929,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "recover-stuck-merge-deadlocks");
             const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
             const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "recover-stuck-merge-deadlocks", mergeDetails);
+            // The landing-proof door withheld the move: nothing reached the integration branch, so this
+            // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+            if (movedTask === null) continue;
             this.emitTaskMerged(movedTask, { mergeConfirmed: true });
             await this.cleanupInterruptedMergeArtifacts(task);
 
@@ -21375,6 +22181,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "recover-orphan-only-scope-violations");
           const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
           const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "recover-orphan-only-scope-violations", mergeDetails);
+          // The landing-proof door withheld the move: nothing reached the integration branch, so this
+          // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+          if (movedTask === null) continue;
           this.emitTaskMerged(movedTask, { mergeConfirmed: true });
           await this.store.logEntry(
             task.id,
@@ -21649,6 +22458,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "recover-already-merged-review");
           const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
           const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "recover-already-merged-review", mergeDetails);
+          // The landing-proof door withheld the move: nothing reached the integration branch, so this
+          // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+          if (movedTask === null) continue;
           this.emitTaskMerged(movedTask, { mergeConfirmed: true });
           await this.store.logEntry(
             task.id,
@@ -22753,6 +23565,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "reconcile-absent-branch");
     const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
     const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "reconcile-absent-branch", mergeDetails);
+    // The landing-proof door withheld the move: nothing reached the integration branch, so this
+    // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+    if (movedTask === null) return { outcome: "ineligible", reason: "landing-proof-unproven" };
     this.emitTaskMerged(movedTask, { mergeConfirmed: true });
     await this.store.logEntry(task.id, `Auto-reconciled: absent branch with landed content on ${mergeTarget.branch} at ${check.landed.sha.slice(0, 8)} via ${check.landed.strategy}`);
     await this.reconcileCompletedTask(task.id, { worktreeHint: task.worktree ?? undefined });
@@ -23576,6 +24391,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           await this.recordSelfHealingBranchGroupMemberLanding(task, mergeTarget, "recover-branch-misbound-in-review");
           const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
           const movedTask = await this.moveToCompleteLaneAfterLandedCleanup(task, completeLane, "recover-branch-misbound-in-review", mergeDetails);
+          // The landing-proof door withheld the move: nothing reached the integration branch, so this
+          // arm must not announce a merge, spend its cleanup, or count a recovery it did not perform.
+          if (movedTask === null) continue;
           this.emitTaskMerged(movedTask, { mergeConfirmed: true });
           await this.clearCompletionBranchIfSubsumed(task, branch).catch(() => false);
           await this.store.logEntry(

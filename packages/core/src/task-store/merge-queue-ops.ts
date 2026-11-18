@@ -22,6 +22,9 @@ import {appendTaskStepReport} from "../workflows/task-step-reports.js";
 import {buildStepLedgerReopenLog, evaluateStepLedgerSeal, STEP_LEDGER_REFUSAL_MARKER_PREFIX} from "./step-ledger-seal.js";
 import {validateStepDependencies} from "../tasks/step-parsers.js";
 import {copyPromptSteps, shouldWarnPromptParseFailure} from "./task-artifacts-ops.js";
+import {measureDefaultBranchLandingProofWithRunner, createArgvGitLandingRunner} from "../merge/default-branch-landing-proof-probe.js";
+import {describeDefaultBranchLandingRefusal, LANDING_PROOF_UNPROVEN_ERROR_PREFIX} from "../merge/default-branch-landing-proof.js";
+import {resolveTaskLandingPrVehicleOpen} from "../merge/landing-pr-vehicle.js";
 
 export type StepStartDisposition = "started" | "resumed" | "blocked" | "terminal";
 
@@ -639,6 +642,78 @@ export async function mergeTaskImpl(store: TaskStore, id: string): Promise<Merge
           task.modifiedFiles = mergeDetails.landedFiles;
         }
         Object.assign(result, mergeDetails);
+
+        /*
+        FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+        Ask the default branch before this door claims delivery. This queue path is the third landing
+        authority (dashboard manual merge, `fn task merge`, `finalizeAlreadyReviewedTask`, self-healing) and
+        until now it wrote `mergeDetails` after a squash it had just performed and moved the card to its
+        completion lane having checked only that the merge command exited 0 — while the target it merged
+        INTO came from `resolveTaskMergeTarget`, the same resolver that offered RUFU-294's lane
+        `fusion/rufu-293` as an integration branch. So the check is against the RESOLVED project default
+        computed above, never against `mergeTarget.branch`.
+
+        Placement is load-bearing: it runs BEFORE worktree removal and branch deletion, so a refusal cannot
+        destroy the tree it is refusing about, and before the completion move, so the card keeps its review
+        lane. A refusal is a WAIT — the row error carries the shared machine-matchable prefix and no status
+        is written; only a positive refusal stops, while an unreadable repository proceeds on today's rules
+        rather than wedging every card a bare or mid-rebase checkout hosts.
+        */
+        const landingTruth = await measureDefaultBranchLandingProofWithRunner({
+          /*
+          FNXC:DefaultBranchLandingProof 2026-11-17-20:23 (RUFU-702, code-review P0):
+          This call site used to hand the probe a shell string — `git ${args.map(a => `"${a}"`).join(" ")}` into
+          `store.runGitCommand`, which spawns with `shell: true`. Double quotes do not stop a POSIX shell from
+          expanding `$(…)`/`$VAR` inside them, and one of those argv elements is a path read back from
+          `git show --name-only` on the commit this lane just made, so a committed filename carried code into
+          the project checkout. It now injects the same argv-only runner the engine lanes use, so no landing
+          lane executes a shell at all.
+          */
+          runGit: createArgvGitLandingRunner({ cwd: store.rootDir }),
+          integrationBranch: projectDefaultBranch || "main",
+          recordedSha: mergeDetails.commitSha ?? null,
+          landedBranchTipSha: mergeDetails.landedBranchTipSha ?? null,
+          mergeTargetBranch: mergeDetails.mergeTargetBranch ?? null,
+          mergeTargetSource: mergeDetails.mergeTargetSource ?? null,
+          prNumber: mergeDetails.prNumber ?? null,
+          // Reachable now (code-review P1): an open PR entity is the sanctioned landing vehicle, so the door
+          // must know whether it is watching a direct merge or a hosted one. Resolved through the ONE
+          // predicate the engine's finalize door uses — a card whose PR-backed status differed by lane would
+          // be the same two-oracles defect this card exists to remove.
+          prStateOpen: await resolveTaskLandingPrVehicleOpen(
+            store,
+            task,
+            mergeDetails.mergeTargetSource ?? null,
+            mergeDetails.prNumber ?? null,
+          ),
+          noOpVerified: mergeDetails.noOpVerifiedShortCircuit === true,
+          reportsNoOp: mergeDetails.noOpMerge === true,
+        });
+        if (landingTruth.verdict.disposition === "refused") {
+          const refusal = describeDefaultBranchLandingRefusal(landingTruth.verdict, {
+            taskId: id,
+            integrationBranch: landingTruth.integrationBranch,
+            recordedSha: mergeDetails.commitSha ?? null,
+          });
+          task.error = `${LANDING_PROOF_UNPROVEN_ERROR_PREFIX} ${refusal}`;
+          task.updatedAt = new Date().toISOString();
+          await store.atomicWriteTaskJson(dir, task);
+          if (store.isWatching) store.taskCache.set(id, { ...task });
+          store.emit("task:updated", task);
+          await store.logEntry?.(id, `[merge-runner] REFUSED (${landingTruth.verdict.refusalCode}) integration=${landingTruth.integrationBranch} — ${refusal}`);
+          result.error = `${LANDING_PROOF_UNPROVEN_ERROR_PREFIX} ${refusal}`;
+          result.landingUnproven = {
+            refusalCode: landingTruth.verdict.refusalCode,
+            integrationBranch: landingTruth.integrationBranch,
+            integrationRefReadable: landingTruth.integrationRefReadable,
+            // True by construction: this refusal returns before step 3 (worktree removal) and step 4
+            // (branch deletion) ever run, so nothing this verdict concerns was destroyed.
+            worktreePathPreserved: true,
+            refusalRecorded: true,
+          };
+          store.emit("task:merged", result);
+          return result;
+        }
       } else {
         // Squash conflict — reset and report
         await store.runGitCommand("git reset --merge");

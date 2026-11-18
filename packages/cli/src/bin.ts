@@ -124,7 +124,7 @@ async function loadCommandHandlers() {
   This line retired task archiving (only `fn goals archive` remains), and `commands/task.ts` exports neither handler,
   so keeping canonical's names would destructure `undefined` and re-add a dead dispatch. Ours + canonical's addition.
   */
-  const { runTaskCreate, runTaskList, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
+  const { runTaskCreate, runTaskList, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, parseTaskReconcileArgs, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup, runPrMergeability } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
@@ -178,6 +178,7 @@ async function loadCommandHandlers() {
     runTaskRename,
     runTaskMerge,
     runTaskReconcile,
+    parseTaskReconcileArgs,
     runTaskUpdate,
     runTaskDeps,
     runTaskLog,
@@ -348,7 +349,7 @@ Usage:
   fn task deps <op> <id> ...        Add/remove/replace/set task dependencies
   fn task log <id> <message>          Add a log entry
   fn task merge <id>                  Merge an in-review task and close it
-  fn task reconcile <id>              Reconcile a proven already-landed review task
+  fn task reconcile <id> [--reopen]   Reconcile a proven already-landed review task; --reopen reopens exactly this one card when its own default branch refuses its recorded delivery
   fn task duplicate <id>              Duplicate a task (creates copy in triage)
   fn task refine <id> [opts]          Create a refinement task from done/in-review
   fn task delete <id> [--force] [--allow-resurrection]
@@ -840,6 +841,7 @@ export async function main() {
     runTaskRename,
     runTaskMerge,
     runTaskReconcile,
+    parseTaskReconcileArgs,
     runTaskUpdate,
     runTaskDeps,
     runTaskLog,
@@ -1521,9 +1523,17 @@ export async function main() {
             break;
           }
           case "reconcile": {
-            const id = args[2];
-            if (!id) { console.error("Usage: fn task reconcile <id>"); process.exit(1); }
-            await runTaskReconcile(id, projectName);
+            const { id, reopen } = parseTaskReconcileArgs(args.slice(2));
+            if (!id) { console.error("Usage: fn task reconcile <id> [--reopen]"); process.exit(1); }
+            /*
+            FNXC:LandedTruthReopen 2026-11-06-10:20 (RUFU-702):
+            `--reopen` is the operator's hand on the landed-truth census, and it is deliberately opt-in and
+            single-card. The automatic census may only report — lifecycle containment forbids an automatic move
+            backward out of a terminal lane — so without this flag a card the repository says was never delivered
+            would stay `done` with no way to put it back on a path. Absent the flag the command behaves exactly
+            as it did before.
+            */
+            await runTaskReconcile(id, projectName, { reopen });
             break;
           }
           case "duplicate": {

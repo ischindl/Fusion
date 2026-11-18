@@ -52,6 +52,24 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:zero-commit-landing-proof-deferred",
   "task:zero-commit-landing-proof-cleared",
   /*
+  FNXC:LandedTruthCensus 2026-11-05-17:40 (RUFU-702):
+  The default-branch landing-proof family. RUFU-294 finalized `done` on `mergeDetails.commitSha`
+  62804b4340 while that commit sat on the SIBLING task branch and its named files did not exist on `main`,
+  because the only git check downstream consumed `mergeDetails.mergeTargetBranch` — the target the merging
+  lane itself wrote. These three are the trail every landing authority and the reconciliation census now
+  write, so a `done` badge and the repository can no longer disagree silently.
+  */
+  "task:finalization-landing-proof-refused",
+  "task:finalization-landing-proof-deferred",
+  "task:done-landing-unproven",
+  /*
+  FNXC:LandedTruthReopen 2026-11-06-09:55 (RUFU-702):
+  The operator's half of the census above. The census may only report (lifecycle containment forbids an
+  automatic move backward out of a terminal lane), so the row that records the card actually being put back
+  on a path where its work can still land is authored by the explicit `fn task reconcile --reopen` seam.
+  */
+  "task:landing-unproven-reopened",
+  /*
   FNXC:EmptyLandEvidence 2026-09-25-10:55 (RUFU-293):
   The evidence gate beside the guard above: it fires when the empty-land claim is CONTRADICTED by
   branch content, i.e. the opposite finding from a proven net-zero refusal. Sibling event, same
@@ -162,6 +180,14 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "A finalization lane deferred on a zero-commit card because zero-ness or checkout content could not be proven, instead of finalizing on a guess (RUFU-274). Metadata is ids/counts/fixed enums only.",
   "task:zero-commit-landing-proof-cleared":
     "A re-probe proved the cause of a durable uncommitted-work hold is gone and the hold was cleared (RUFU-274). Metadata is the task ID, lane and prior reason code only.",
+  "task:finalization-landing-proof-refused":
+    "A landing authority refused to record a delivery or finalize a card because the resolved default/integration branch cannot substantiate its recorded commit (RUFU-702). The card stays where it is with no status write and no retry burn. Metadata is ids/counts/fixed enums only — never diff, paths, commit subjects, or the refusal sentence.",
+  "task:finalization-landing-proof-deferred":
+    "A landing authority could not read the integration branch or the delivery evidence and proceeded unchanged rather than refuse, because an unreadable repository must never mass-fail real deliveries (RUFU-702). Metadata is ids/fixed enums only.",
+  "task:done-landing-unproven":
+    "The landed-truth census re-proved a complete-role card's delivery claim against the default branch and it failed, or a proven card's stale unproven-landing hold was cleared, or the card was classified `suppressed` (human-terminal, operator-held, or PR-backed) and recorded without an accusation (RUFU-702). `repairExecuted`/`repair` distinguish what it did from what it only observed; one card is announced at most once per episode window, and the census never moves a card out of a terminal lane. Metadata is ids/counts/fixed enums only.",
+  "task:landing-unproven-reopened":
+    "An operator reopened exactly one named card out of a terminal lane because its own default branch refuses its recorded delivery (RUFU-702). Human-attributed on purpose — the automatic census only reports. Metadata is the task ID, the two columns, the integration branch, the recorded sha, the branch ref, the fixed refusal code and a conflict count only.",
   "task:empty-land-contradiction-detected":
     "An empty-land verdict was contradicted by branch evidence (unapplied content remains); the merge lane malfunctioned (RUFU-293).",
   "task:finalize-unproven-blocked":

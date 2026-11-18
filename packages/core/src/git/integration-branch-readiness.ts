@@ -1,4 +1,4 @@
-import { isFusionSiblingBranch } from "../merge/task-merge.js";
+import { isFusionTaskBranchRefName } from "../merge/default-branch-landing-proof.js";
 import type { GitRepositoryCommandRunner } from "./git-repository.js";
 
 export const WELL_KNOWN_INTEGRATION_BRANCHES = ["main", "master", "trunk", "develop"] as const;
@@ -54,6 +54,19 @@ function firstWellKnownBranch(branches: readonly string[]): string | null {
  * a remote name; remote tiers only recover the old blind-main failure state where
  * local inference found nothing. Fusion sibling branches are task start points, not
  * project integration targets, and are excluded from inferred local and remote tiers.
+ *
+ * FNXC:LandedTruthCensus 2026-11-05-18:20 (RUFU-702):
+ * That exclusion was `^fusion/fn-`, which silently restricted it to FN- boards. On this `RUFU-` board a
+ * task branch was therefore a legal INTEGRATION branch candidate through the `current-head`, `sole-local`
+ * and remote-tracking tiers — and this resolver is the inference tier of `resolveIntegrationBranch`, which
+ * RUFU-702's landing door asks for its yardstick. A door measuring delivery against `fusion/rufu-293`
+ * would certify RUFU-294's own refusal as a success: the same self-referential target that produced the
+ * defect, arriving from the opposite direction. The exclusion now uses the shared structural task-branch
+ * predicate, so resolver, door, and readiness agree on what a task branch IS. Consequence for a bare
+ * repository whose only branch is a task branch: inference yields nothing and the door DEFERS
+ * (`integration-ref-unreadable`) rather than inventing a yardstick — silence, never a false delivery claim
+ * in either direction. `fusion/groups/<slug>` is untouched (a sanctioned intermediate, not a task branch)
+ * and `release/1.0` keeps resolving exactly as before.
  */
 export function selectIntegrationBranch(
   inputs: IntegrationBranchSelectionInput,
@@ -69,17 +82,25 @@ export function selectIntegrationBranch(
   if (wellKnownLocal) return { branch: wellKnownLocal, source: "well-known-local" };
 
   const currentBranch = normalizedBranch(inputs.currentBranch);
-  if (currentBranch && localBranches.includes(currentBranch) && !isFusionSiblingBranch(currentBranch)) {
+  if (currentBranch && localBranches.includes(currentBranch) && !isFusionTaskBranchRefName(currentBranch)) {
     return { branch: currentBranch, source: "current-head" };
   }
 
-  const inferredLocalBranches = localBranches.filter((branch) => !isFusionSiblingBranch(branch));
+  const inferredLocalBranches = localBranches.filter((branch) => !isFusionTaskBranchRefName(branch));
   if (inferredLocalBranches.length === 1) {
     return { branch: inferredLocalBranches[0], source: "sole-local" };
   }
 
+  /*
+  FNXC:LandedTruthCensus 2026-11-05-18:35 (RUFU-702):
+  Remote candidates are tested with the same structural predicate as local ones. Callers pass bare tracked
+  names (`listBranchRefs(rootDir, "refs/remotes/origin/", true)` strips the ref prefix), so no prefix
+  stripping is needed here — and that same `refs/remotes/origin/` scoping is why a stranded task branch on a
+  SECONDARY remote (RUFU-702 found its unlanded commit held only by `remotes/lan/fusion/rufu-293`) can never
+  be inferred as an integration branch by either spelling.
+  */
   const remoteBranches = normalizedBranches(inputs.remoteBranches)
-    .filter((branch) => !isFusionSiblingBranch(branch));
+    .filter((branch) => !isFusionTaskBranchRefName(branch));
   const wellKnownRemote = firstWellKnownBranch(remoteBranches);
   if (wellKnownRemote) return { branch: wellKnownRemote, source: "remote-tracking" };
 

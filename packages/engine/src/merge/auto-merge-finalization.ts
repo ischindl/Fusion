@@ -61,6 +61,11 @@ a confirmed no-op claim while its deliverable sat uncommitted in the worktree. T
 therefore asked separately, and before any cleanup, because a cleanup would destroy the evidence it reads.
 */
 import { enforceZeroCommitLandingProof } from "./zero-commit-finalization-guard.js";
+import {
+  enforceDefaultBranchLandingProof,
+  LANDING_PROOF_UNPROVEN_ERROR_PREFIX,
+  measureDefaultBranchLandingProof,
+} from "./default-branch-landing-proof-evidence.js";
 import { resumeMissingPostMergeGate } from "./post-merge-gate-reseed.js";
 import { isBoundedFinalizationRefusal, shouldRecordFinalizationRefusal } from "./finalization-refusal-notice.js";
 
@@ -844,6 +849,56 @@ export async function finalizeProvenAutoMergeTask({
   }
 
   /*
+  FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+  The TRUTH half of the door beside the durability half above, and the check RUFU-294 defeatively lacked.
+  Note which ref the guard above was handed: `mergeDetails.mergeTargetBranch`, the field the landing lane
+  writes about ITSELF. RUFU-294 recorded `fusion/rufu-293` there, so that probe measured the branch-ref
+  advance it was being asked to validate and found nothing wrong — a durability proof measured against the
+  claim it is meant to test. This door therefore resolves the integration branch from the repository and
+  project settings and NEVER from `mergeDetails`, which is the difference between "a write happened"
+  (RUFU-294's `mergeConfirmed: true`, 1 459 landed files) and "`main` can show this card's work".
+
+  Only a REFUSAL withholds the move. `deferred` (no readable integration ref, no recorded claim, a
+  repository this process cannot inspect) keeps today's behavior and records a diagnostic row: demanding
+  positive proof-of-main before finalizing would wedge every card hosted by a bare repo, a mid-rebase
+  worktree, or a board with no `origin/HEAD` — the mass-refusal failure this card must not introduce. A
+  refusal is a WAIT, not a failure: like the neighbouring blockers it returns `blocked` and the door writes
+  no `status` and never touches `mergeRetries`, so the card stays in review without spending a budget. The
+  History row, audit row, and operator notice are written inside the door; this lane only stops.
+  */
+  if (rootDir) {
+    const landingTruth = await enforceDefaultBranchLandingProof({
+      store,
+      task: latest,
+      repoDir: rootDir,
+      mergeDetails,
+      source: "finalize-proven-auto-merge",
+      messageStore,
+    });
+    if (landingTruth.disposition === "deferred") {
+      await log?.(`Auto-merge finalization proceeding on unmeasurable landing truth for ${taskId} (${landingTruth.reason})`);
+    }
+    if (landingTruth.disposition === "refused") {
+      await recordFinalizationAudit({
+        store,
+        audit,
+        task: latest,
+        type: "task:auto-merge-finalize-column-mismatch-no-action",
+        reason: `${LANDING_PROOF_UNPROVEN_ERROR_PREFIX} ${landingTruth.refusalCode}`,
+        auditAgentId,
+        auditPhase,
+      });
+      await log?.(`Auto-merge finalization withheld for ${taskId}: ${landingTruth.refusal}`);
+      return {
+        outcome: "blocked",
+        task: await store.getTask(taskId).catch(() => latest) ?? latest,
+        previousColumn: latest.column,
+        reason: landingTruth.refusal,
+      };
+    }
+  }
+
+  /*
   FNXC:ConfirmedMergeFinalization 2026-08-23-07:25:
   FN-180 forbids re-running the pre-merge checklist after durable merge proof.
   A concurrent review bounce can leave that checklist stale, so reconcile it
@@ -927,6 +982,20 @@ export async function finalizeProvenAutoMergeTask({
         error: undefined,
       });
       if (finalizationBlocker) return false;
+      /*
+      FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+      The fence is the last authority before the terminal move, so it re-measures the git fact rather than
+      trusting the pre-move verdict — the same reason RUFU-430 re-reads post-merge evidence here. Measure
+      only, and refuse only on a positive `refused`: the durable hold, History row, and notice were already
+      written by the door above, and an unmeasurable repository must not block the move.
+      */
+      if (rootDir) {
+        const liveLanding = await measureDefaultBranchLandingProof({ repoDir: rootDir, mergeDetails: liveMergeDetails });
+        if (liveLanding.verdict.disposition === "refused") {
+          finalizationBlocker = `${LANDING_PROOF_UNPROVEN_ERROR_PREFIX} ${liveLanding.verdict.refusalCode}`;
+          return false;
+        }
+      }
       const liveProofVerdict = await validateWorkflowDoneMergeProof({ ...live, mergeDetails: liveMergeDetails } as Task, {
         result,
         checkWorkflowSteps: false,

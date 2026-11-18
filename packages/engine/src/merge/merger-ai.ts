@@ -104,6 +104,10 @@ import {
   type ZeroCommitGuardSource,
 } from "./zero-commit-finalization-guard.js";
 import {
+  enforceDefaultBranchLandingProof,
+  LANDING_PROOF_UNPROVEN_ERROR_PREFIX,
+} from "./default-branch-landing-proof-evidence.js";
+import {
   assertMergeGenerationOwned,
   createMergeWriteFence,
   isMergeAbortedError,
@@ -5004,6 +5008,61 @@ export async function finalizeMerged(
   landing produced a real commit, otherwise a no-op-finalized shared-group member would also be
   reported as not-landed forever.
   */
+  /*
+  FNXC:DefaultBranchLandingProof 2026-11-05-16:44 (RUFU-702):
+  The refusal every landing authority asks for, placed HERE because this function is the single writer of
+  `mergeDetails` on the AI-merge lane — the write RUFU-294 completed with `mergeConfirmed: true` and 1 459
+  landed files for a commit that is not on `main`.
+
+  The claim is measured as the lane is ABOUT to record it (`landedSha` + the lane's own `mergeTarget`),
+  because the whole defect is that the lane's self-report is the thing under test. Note what `integrationBranch`
+  means in this file: `const integrationBranch = mergeTarget.branch` (line ~1832), so on the RUFU-294 shape
+  the lane's "integration branch" WAS `fusion/rufu-293`. The door therefore measures against
+  `resolveIntegrationBranch`, never against this parameter, and a `mergeTarget` naming a Fusion task branch
+  can no longer satisfy it even if an older resolver version produced one.
+
+  A refusal returns the WAIT shape beside it (`merged: false`, no `status`, no branch or worktree deletion)
+  so the evidence an operator needs survives and no retry budget is spent. A verified no-op carries no
+  delivery claim at all and defers by construction, which keeps today's no-op behavior byte-identical.
+  */
+  if (!opts.empty && landedSha) {
+    const landingTruth = await enforceDefaultBranchLandingProof({
+      store,
+      task,
+      repoDir: projectRootDir,
+      mergeDetails: {
+        ...(task.mergeDetails ?? {}),
+        commitSha: landedSha,
+        ...(opts.expectedBranchTipSha ? { landedBranchTipSha: opts.expectedBranchTipSha } : {}),
+        merged: true,
+        mergedAt: task.mergeDetails?.mergedAt ?? new Date().toISOString(),
+        ...(mergeTarget ? { mergeTargetBranch: mergeTarget.branch, mergeTargetSource: mergeTarget.source } : {}),
+      } as MergeDetails,
+      source: "ai-merge-finalize",
+    });
+    if (landingTruth.disposition === "refused") {
+      await log(`AI merge: refusing to finalize ${taskId} — ${landingTruth.refusal}`);
+      return {
+        task,
+        branch,
+        merged: false,
+        noOp: false,
+        ok: true,
+        reason: landingTruth.refusal,
+        error: `${LANDING_PROOF_UNPROVEN_ERROR_PREFIX} ${landingTruth.refusal}`,
+        worktreeRemoved: false,
+        branchDeleted: false,
+        landingUnproven: {
+          refusalCode: landingTruth.refusalCode,
+          integrationBranch: landingTruth.measurement.integrationBranch,
+          integrationRefReadable: landingTruth.measurement.integrationRefReadable,
+          worktreePathPreserved: true,
+          refusalRecorded: true,
+        },
+      };
+    }
+  }
+
   const mergeTargetPatch: Pick<MergeDetails, "mergeTargetBranch" | "mergeTargetSource"> | undefined = mergeTarget
     ? { mergeTargetBranch: mergeTarget.branch, mergeTargetSource: mergeTarget.source }
     : undefined;

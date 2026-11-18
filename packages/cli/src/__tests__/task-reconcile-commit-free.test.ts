@@ -72,6 +72,14 @@ beforeEach(() => {
   });
   reconcileManagerCtor.mockImplementation(function (this: Record<string, unknown>) {
     this.reconcileLandedReviewTask = reconcileLandedReviewTask;
+    /*
+    FNXC:LandedTruthReopen 2026-11-06-10:45 (RUFU-702):
+    `fn task reconcile` now asks the landed-truth question before it reconciles, so the fake manager has to
+    answer it. Every case in this file is a REVIEW-lane card, whose honest answer is `not-in-complete-lane` —
+    the arm that changes nothing, which is exactly what these sentences pin. The landed-truth arms are the
+    subject of `bin-task-reconcile.test.ts`.
+    */
+    this.describeLandedTruth = vi.fn(async () => ({ state: "not-in-complete-lane", column: "in-review" }));
   });
 });
 

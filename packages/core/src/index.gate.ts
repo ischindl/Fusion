@@ -1055,6 +1055,11 @@ lane with a TypeError instead of a verdict.
 */
 export { evaluateZeroCommitLandingProof, hasDurableLandingProof, classifyCommitFreeWorkspaceDelivery, COMMIT_FREE_DELIVERY_REASON_PREFIX, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL } from "./merge/zero-commit-landing-proof.js";
 export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, CommitFreeWorkspaceDeliveryRecord, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
+export { evaluateDefaultBranchLandingProof, describeDefaultBranchLandingRefusal, isFusionTaskBranchRefName, isPrInfoLandingVehicleOpen, LANDING_PROOF_UNPROVEN_ERROR_PREFIX, LANDING_PROOF_REFUSAL_CODES, LANDING_PROOF_DEFERRAL_REASONS } from "./merge/default-branch-landing-proof.js";
+export { measureDefaultBranchLandingProofWithRunner, createArgvGitLandingRunner, LANDING_PROBE_GIT_TIMEOUT_MS, LANDING_PROBE_GIT_MAX_BUFFER } from "./merge/default-branch-landing-proof-probe.js";
+export type { LandingProofGitRunner, DefaultBranchLandingProofProbeInput, DefaultBranchLandingProofObservation, ArgvGitLandingRunnerOptions } from "./merge/default-branch-landing-proof-probe.js";
+export type { DefaultBranchLandingProofInput, DefaultBranchLandingProofVerdict, DefaultBranchProofKind, IntegrationAncestryOutcome, PatchEquivalenceOutcome, LandingProofRefusalCode, LandingProofDeferralReason } from "./merge/default-branch-landing-proof.js";
+export { resolveTaskLandingPrVehicleOpen, type LandingPrVehicleReader } from "./merge/landing-pr-vehicle.js";
 export {
   __getDeterministicGuardMutexSize,
   deterministicGuardLocks,
