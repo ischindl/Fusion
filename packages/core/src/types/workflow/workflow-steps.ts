@@ -328,8 +328,26 @@ export interface CustomProvider {
    * engine's per-session in-memory pi SettingsManager (pi.ts) and (2) the per-origin
    * idle timeouts of the engine-installed global undici dispatcher
    * (http-idle-timeouts.ts), where the most-permissive value wins on a shared origin.
+   *
+   * FNXC:CustomProviderVision 2026-11-18-17:06:
+   * Origin: operator report — "Fusion says the model has no Vision, the model does have it".
+   * Per-model `supportsImages` opt-in. Before this the registry builder stamped `input: ["text"]` on
+   * EVERY
+   * custom-provider model with no branch and no setting, so a vision-capable model behind a custom
+   * gateway (measured: `dsai1` → LiteLLM `deepseek-v4`) was declared text-only to the pi runtime and
+   * the UI reported no vision. It is not a missing checkbox — the settings schema had no modality
+   * field at all, so no operator could declare it.
+   *
+   * Why opt-in instead of auto-detected: measured on that same gateway, `GET /v1/models` returns only
+   * `{id, object, created, owned_by}` and `GET /model/info` answers `supports_vision: null` with
+   * every other `supports_*` and cost field null too. Auto-detection would therefore read `null` and
+   * silently keep the model text-only, which is the exact bug being fixed. A transport-level probe
+   * (two solid-colour PNGs) did return the correct colour, so the capability is real while the
+   * metadata is not — the operator has to say it. Default absent/false keeps every existing
+   * registration byte-identical, and the field is additive in a plain JSON settings array (no
+   * migration, schema or store change).
    */
-  models?: { id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }[];
+  models?: { id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean; supportsImages?: boolean }[];
 }
 
 export interface WorkflowStepInput {

@@ -5525,6 +5525,7 @@
     "failedDetect": "Error al detectar modelos",
     "modelRow": {
       "noThinkingParams": "No thinking params",
+      "supportsImages": "Acepta imágenes",
       "thinkingFormat": "Thinking format",
       "thinkingFormatDefault": "Default"
     },

@@ -172,6 +172,9 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
         // opt-out wins, so a flagged model with reasoning: false sends only reasoning.
         ...(model.reasoning !== false && model.thinkingFormat ? { thinkingFormat: model.thinkingFormat } : {}),
         ...(model.reasoning === false ? { reasoning: false } : {}),
+        // FNXC:CustomProviderVision 2026-11-18-17:06: same conditional-spread rule — only an explicit
+        // true writes the key, so a default row's payload stays byte-identical to a pre-change save.
+        ...(model.supportsImages === true ? { supportsImages: true } : {}),
       })),
     });
   }
@@ -294,6 +297,22 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
                   disabled={saving}
                 />{" "}
                 {t("providers.modelRow.noThinkingParams", "No thinking params")}
+              </label>
+              {/*
+              FNXC:CustomProviderVision 2026-11-18-17:06:
+              The declaration is offered on BOTH model editors (this onboarding form and Settings →
+              Custom Providers) — shipping it on one surface only is the mistake that made the
+              per-model timeout field unreachable at first. Reuses the row-checkbox styling.
+              */}
+              <label className="custom-provider-form__model-row-no-thinking">
+                <input
+                  type="checkbox"
+                  aria-label={`${t("providers.modelRow.supportsImages", "Accepts images")} ${index + 1}`}
+                  checked={model.supportsImages === true}
+                  onChange={(e) => updateModel(index, { supportsImages: e.target.checked ? true : undefined })}
+                  disabled={saving}
+                />{" "}
+                {t("providers.modelRow.supportsImages", "Accepts images")}
               </label>
               <button
                 type="button"

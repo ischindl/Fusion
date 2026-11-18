@@ -174,12 +174,26 @@ export function buildCustomProviderModels(
   */
   return (provider.models ?? []).map((model) => {
     const reasoningEnabled = model.reasoning !== false;
+    /*
+    FNXC:CustomProviderVision 2026-11-18-17:06:
+    Origin: operator report — a vision-capable model behind a custom gateway was reported as having no
+    vision. This one line was the whole cause: it stamped `input: ["text"]` unconditionally, so the pi
+    runtime never learned the model accepts image parts. Measured on `dsai1` → LiteLLM `deepseek-v4`:
+    the gateway accepts `image_url` parts and answered two solid-colour PNGs correctly (red→"Red",
+    blue→"Blue"), so the capability existed while our declaration denied it.
+    Opt-in only, default text-only: the gateway cannot tell us (its `/v1/models` lists no modality and
+    `/model/info` answers `supports_vision: null` with every other `supports_*` null too), so guessing
+    here would either lie or silently start sending image parts to gateways that reject them. See the
+    `CustomProvider.models` doc for the measurement. `providersDiffer` serializes this builder's output,
+    so toggling the flag also refreshes an already-registered provider without extra wiring.
+    */
+    const inputModalities: ("text" | "image")[] = model.supportsImages === true ? ["text", "image"] : ["text"];
     return {
       id: model.id,
       name: model.name,
       reasoning: reasoningEnabled,
       ...(reasoningEnabled ? { thinkingLevelMap: { xhigh: "xhigh", max: "max" } } : {}),
-      input: ["text" as const],
+      input: inputModalities,
       cost: {
         input: 0,
         output: 0,

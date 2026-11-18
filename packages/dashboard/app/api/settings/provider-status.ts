@@ -815,6 +815,12 @@ export interface CustomProviderModelInput {
   thinkingFormat?: CustomProviderThinkingFormat;
   /** FNXC:CustomProviderThinkingFormat 2026-08-21-05:48: RUFU-143 strict boolean; false opts out of all thinking params. */
   reasoning?: boolean;
+  /**
+   * FNXC:CustomProviderVision 2026-11-18-17:06: per-model vision opt-in; true registers the model with
+   * `["text","image"]`. See CustomProvider.models in @fusion/core for why this is opt-in and never
+   * auto-detected. Absent keeps the payload byte-identical to a pre-change row.
+   */
+  supportsImages?: boolean;
 }
 
 export interface CustomProviderConfig {

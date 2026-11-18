@@ -5525,6 +5525,7 @@
     "failedDetect": "检测模型失败",
     "modelRow": {
       "noThinkingParams": "No thinking params",
+      "supportsImages": "接受图像",
       "thinkingFormat": "Thinking format",
       "thinkingFormatDefault": "Default"
     },

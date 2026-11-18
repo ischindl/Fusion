@@ -5525,6 +5525,7 @@
     "failedDetect": "모델 감지 실패",
     "modelRow": {
       "noThinkingParams": "No thinking params",
+      "supportsImages": "이미지 지원",
       "thinkingFormat": "Thinking format",
       "thinkingFormatDefault": "Default"
     },

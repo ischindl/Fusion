@@ -198,6 +198,30 @@ describe("mergeRefreshedCustomProviderModels: refresh carry-over (all per-model 
     expect(merged[0].timeoutSeconds).toBe(600);
   });
 
+  /*
+  FNXC:CustomProviderVision 2026-11-18-17:06:
+  Same deletion class as the timeout case above: this function rebuilds every entry from probe output,
+  so a per-model field that is not named here is destroyed by the operator pressing "Refresh models".
+  Probes cannot report modality at all (measured on LiteLLM: `/v1/models` returns only
+  `{id, object, created, owned_by}`), so the persisted declaration is the only possible source.
+  */
+  it("carries the declared vision opt-in across a refresh", () => {
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "deepseek-v4", name: "DeepSeek V4" }],
+      [{ id: "deepseek-v4", name: "DeepSeek V4", supportsImages: true }],
+    );
+    expect(merged).toEqual([{ id: "deepseek-v4", name: "DeepSeek V4", supportsImages: true }]);
+  });
+
+  it("never invents the vision flag from a probe", () => {
+    // A gateway that lists no modality must not gain an image declaration because of a refresh.
+    const merged = mergeRefreshedCustomProviderModels(
+      [{ id: "plain", name: "Plain", contextWindow: 131072 }],
+      [{ id: "plain", name: "Plain" }],
+    );
+    expect(merged[0]).not.toHaveProperty("supportsImages");
+  });
+
   it("drops models that no longer exist (list replacement semantics)", () => {
     const merged = mergeRefreshedCustomProviderModels(
       [{ id: "kept", name: "Kept" }],

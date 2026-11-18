@@ -7175,6 +7175,7 @@
     "apiTypeInvalid": "API type is invalid.",
     "modelRow": {
       "noThinkingParams": "No thinking params",
+      "supportsImages": "Accepts images",
       "thinkingFormat": "Thinking format",
       "thinkingFormatDefault": "Default"
     },

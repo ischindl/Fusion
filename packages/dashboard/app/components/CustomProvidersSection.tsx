@@ -34,7 +34,7 @@ type LegacyProvider = {
   // timeout too; normalizeProviders must carry it through as well. fetchCustomProviders always
   // returns the legacy shape, so EVERY provider record flows through this conversion branch —
   // dropping the field here silently emptied the row editor (and the next save wiped the value).
-  models?: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: string; reasoning?: boolean }>;
+  models?: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: string; reasoning?: boolean; supportsImages?: boolean }>;
 };
 
 function normalizeProviders(result: Awaited<ReturnType<typeof fetchCustomProviders>>): CustomProvider[] {
@@ -76,6 +76,11 @@ function normalizeProviders(result: Awaited<ReturnType<typeof fetchCustomProvide
         // legacy record type is string-typed; the route is the authority for the literal union.
         ...(typeof model.thinkingFormat === "string" && model.thinkingFormat.length > 0 ? { thinkingFormat: model.thinkingFormat as CustomProviderThinkingFormat } : {}),
         ...(model.reasoning === false ? { reasoning: false } : {}),
+        // FNXC:CustomProviderVision 2026-11-18-17:06: carry the per-model vision opt-in through the
+        // legacy normalize for the same reason the timeout flags are carried: fetchCustomProviders
+        // always returns the legacy shape, so every record passes here — dropping it would empty the
+        // row and the next save would wipe the stored value.
+        ...(model.supportsImages === true ? { supportsImages: true } : {}),
       })),
     } satisfies CustomProvider;
   });
@@ -119,10 +124,18 @@ type ModelRow = {
   thinkingFormat: string;
   /** True = send reasoning: false (opt out of all thinking params; wins over thinkingFormat). */
   noThinkingParams: boolean;
+  /**
+   * FNXC:CustomProviderVision 2026-11-18-17:06:
+   * Origin: operator report — a vision-capable custom-gateway model was reported as having no vision,
+   * because the registry emitted `input: ["text"]` for every custom-provider model with nothing to
+   * override it. Checked = the model is declared image-capable to the pi runtime. Unchecked is the
+   * default and emits no key at all, so existing rows save byte-identically.
+   */
+  supportsImages: boolean;
 };
 
 function emptyModelRow(): ModelRow {
-  return { id: "", name: "", contextWindow: "", maxTokens: "", timeoutSeconds: "", thinkingFormat: "", noThinkingParams: false };
+  return { id: "", name: "", contextWindow: "", maxTokens: "", timeoutSeconds: "", thinkingFormat: "", noThinkingParams: false, supportsImages: false };
 }
 
 function isPositiveTokenValue(value: unknown): value is number {
@@ -149,7 +162,7 @@ function parseNonNegativeTimeoutValue(value: string): number | undefined {
   return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function modelRowFromModel(model: { id: string; name?: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: string; reasoning?: boolean }): ModelRow {
+function modelRowFromModel(model: { id: string; name?: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: string; reasoning?: boolean; supportsImages?: boolean }): ModelRow {
   return {
     id: model.id,
     name: model.name ?? model.id,
@@ -162,13 +175,16 @@ function modelRowFromModel(model: { id: string; name?: string; contextWindow?: n
     // only reasoning === false counts as opted out (true/absent = presumed thinking-capable).
     thinkingFormat: typeof model.thinkingFormat === "string" ? model.thinkingFormat : "",
     noThinkingParams: model.reasoning === false,
+    // FNXC:CustomProviderVision 2026-11-18-17:06: only an explicit true pre-fills the checkbox;
+    // absent/false both render unchecked, matching the registry's text-only default.
+    supportsImages: model.supportsImages === true,
   };
 }
 
 function isEmptyModelRow(row: ModelRow): boolean {
   return row.id.trim() === "" && row.name.trim() === "" && row.contextWindow.trim() === "" && row.maxTokens.trim() === "" &&
     row.timeoutSeconds.trim() === "" &&
-    row.thinkingFormat.trim() === "" && !row.noThinkingParams;
+    row.thinkingFormat.trim() === "" && !row.noThinkingParams && !row.supportsImages;
 }
 
 interface ModelRowsEditorProps {
@@ -288,6 +304,22 @@ function ModelRowsEditor({ rows, onChange, onDetect, detecting, canDetect, canAd
               disabled={disabled}
             />{" "}
             {t("providers.modelRow.noThinkingParams", "No thinking params")}
+          </label>
+          {/*
+          FNXC:CustomProviderVision 2026-11-18-17:06:
+          The vision declaration has to be editable where providers are actually edited, not only in
+          onboarding — the same surface gap that made the per-model HTTP timeout field useless the
+          first time it shipped (it landed on the modal only). Reuses the row-checkbox styling.
+          */}
+          <label className="custom-provider-model-row-no-thinking">
+            <input
+              type="checkbox"
+              aria-label={`${t("providers.modelRow.supportsImages", "Accepts images")} ${index + 1}`}
+              checked={row.supportsImages}
+              onChange={(event) => updateRow(index, { supportsImages: event.target.checked })}
+              disabled={disabled}
+            />{" "}
+            {t("providers.modelRow.supportsImages", "Accepts images")}
           </label>
           <button
             type="button"

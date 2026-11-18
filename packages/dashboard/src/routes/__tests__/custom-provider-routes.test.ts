@@ -118,6 +118,85 @@ describe("custom provider routes", () => {
     expect(res.body).toEqual([]);
   });
 
+  /*
+  FNXC:CustomProviderVision 2026-11-18-17:06:
+  Origin: operator report — a vision-capable model behind a custom gateway was reported as having no
+  vision. The declaration has to survive the settings write path, so the validator is tested at its
+  three distinct outcomes: accept the opt-in, keep an undeclared row key-free (the no-behaviour-change
+  guarantee for every provider configured before this change), and refuse a non-boolean instead of
+  coercing it — coercion would flip request shape for a model nobody declared image-capable. The GET
+  half is the other silent-loss seam: `sanitizeProvider` spreads the record, and a future field-by-field
+  rewrite there would otherwise drop the flag with no error anywhere.
+  */
+  it("POST /custom-providers persists the per-model vision opt-in", async () => {
+    const updates: Array<Partial<GlobalSettings>> = [];
+    const app = createApp(settings, (patch) => updates.push(patch));
+
+    const res = await REQUEST(app, "POST", "/api/custom-providers", {
+      name: "Vision Gateway",
+      apiType: "openai-compatible",
+      baseUrl: "https://gateway.example.com/v1",
+      models: [{ id: "deepseek-v4", name: "DeepSeek V4", supportsImages: true }],
+    });
+
+    expect(res.status).toBe(201);
+    const persisted = updates[0].customProviders as CustomProvider[];
+    expect(persisted[0]?.models?.[0]).toEqual({ id: "deepseek-v4", name: "DeepSeek V4", supportsImages: true });
+  });
+
+  it("POST /custom-providers leaves an undeclared model payload key-free", async () => {
+    const updates: Array<Partial<GlobalSettings>> = [];
+    const app = createApp(settings, (patch) => updates.push(patch));
+
+    const res = await REQUEST(app, "POST", "/api/custom-providers", {
+      name: "Plain Gateway",
+      apiType: "openai-compatible",
+      baseUrl: "https://gateway.example.com/v1",
+      models: [{ id: "plain-model", name: "Plain Model" }],
+    });
+
+    expect(res.status).toBe(201);
+    const persisted = updates[0].customProviders as CustomProvider[];
+    expect(persisted[0]?.models?.[0]).not.toHaveProperty("supportsImages");
+  });
+
+  it("POST /custom-providers rejects a non-boolean vision flag instead of coercing it", async () => {
+    const updates: Array<Partial<GlobalSettings>> = [];
+    const app = createApp(settings, (patch) => updates.push(patch));
+
+    const res = await REQUEST(app, "POST", "/api/custom-providers", {
+      name: "Bad Flag Gateway",
+      apiType: "openai-compatible",
+      baseUrl: "https://gateway.example.com/v1",
+      models: [{ id: "m", name: "M", supportsImages: "yes" }],
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain("models[0].supportsImages");
+    expect(updates).toHaveLength(0);
+  });
+
+  it("GET /custom-providers returns the stored vision flag", async () => {
+    settings.customProviders = [
+      {
+        id: "cp-vision",
+        name: "Vision Gateway",
+        apiType: "openai-compatible",
+        baseUrl: "https://gateway.example.com/v1",
+        apiKey: "sk-vision-secret-1234",
+        models: [{ id: "deepseek-v4", name: "DeepSeek V4", supportsImages: true }],
+      },
+    ];
+    const app = createApp(settings);
+
+    const res = await REQUEST(app, "GET", "/api/custom-providers");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]?.models?.[0]?.supportsImages).toBe(true);
+    // The key is masked by the same sanitizer, so both must survive one response.
+    expect(res.body[0]?.apiKey).not.toContain("vision-secret");
+  });
+
   it("GET /custom-providers masks API keys", async () => {
     settings.customProviders = [
       {

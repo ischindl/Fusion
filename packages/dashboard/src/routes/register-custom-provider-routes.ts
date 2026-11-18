@@ -162,7 +162,7 @@ function assertReasoning(value: unknown, fieldName: string): boolean {
  */
 function validateModels(
   value: unknown,
-): Array<{ id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }> | undefined {
+): Array<{ id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean; supportsImages?: boolean }> | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -177,7 +177,7 @@ function validateModels(
     }
 
     const row = entry as Record<string, unknown>;
-    const model: { id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean } = {
+    const model: { id: string; name: string; contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean; supportsImages?: boolean } = {
       id: assertNonEmptyString(row.id, `models[${index}].id`),
       name: assertNonEmptyString(row.name, `models[${index}].name`),
     };
@@ -215,6 +215,19 @@ function validateModels(
     }
     if (row.reasoning !== undefined) {
       model.reasoning = assertReasoning(row.reasoning, `models[${index}].reasoning`);
+    }
+    /*
+    FNXC:CustomProviderVision 2026-11-18-17:06:
+    Per-model vision opt-in (see CustomProvider.models). Accepted only as a real boolean and only when
+    present, so an absent key stays absent and the payload of every pre-existing row is byte-identical.
+    A non-boolean is a 400 naming the field path rather than a silent coercion: a truthy string here
+    would make the registry emit image parts for a model the operator never declared vision-capable.
+    */
+    if (row.supportsImages !== undefined) {
+      if (typeof row.supportsImages !== "boolean") {
+        throw badRequest(`models[${index}].supportsImages must be a boolean`);
+      }
+      model.supportsImages = row.supportsImages;
     }
     return model;
   });
@@ -900,6 +913,7 @@ export function mergeRefreshedCustomProviderModels(
     timeoutSeconds?: number;
     thinkingFormat?: CustomProviderThinkingFormat;
     reasoning?: boolean;
+    supportsImages?: boolean;
   }>,
 ): Array<{
   id: string;
@@ -909,10 +923,11 @@ export function mergeRefreshedCustomProviderModels(
   timeoutSeconds?: number;
   thinkingFormat?: CustomProviderThinkingFormat;
   reasoning?: boolean;
+  supportsImages?: boolean;
 }> {
   const persistedModelFieldsById = new Map<
     string,
-    { contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean }
+    { contextWindow?: number; maxTokens?: number; timeoutSeconds?: number; thinkingFormat?: CustomProviderThinkingFormat; reasoning?: boolean; supportsImages?: boolean }
   >();
   for (const model of priorModels) {
     if (
@@ -920,7 +935,8 @@ export function mergeRefreshedCustomProviderModels(
       model.maxTokens !== undefined ||
       model.timeoutSeconds !== undefined ||
       model.thinkingFormat !== undefined ||
-      model.reasoning === false
+      model.reasoning === false ||
+      model.supportsImages === true
     ) {
       persistedModelFieldsById.set(model.id, {
         contextWindow: model.contextWindow,
@@ -928,6 +944,7 @@ export function mergeRefreshedCustomProviderModels(
         timeoutSeconds: model.timeoutSeconds,
         thinkingFormat: model.thinkingFormat,
         reasoning: model.reasoning,
+        supportsImages: model.supportsImages,
       });
     }
   }
@@ -941,6 +958,7 @@ export function mergeRefreshedCustomProviderModels(
       timeoutSeconds?: number;
       thinkingFormat?: CustomProviderThinkingFormat;
       reasoning?: boolean;
+      supportsImages?: boolean;
     } = {
       id: model.id,
       name: model.name,
@@ -974,6 +992,18 @@ export function mergeRefreshedCustomProviderModels(
     }
     if (prior?.reasoning === false) {
       entry.reasoning = false;
+    }
+    /*
+    FNXC:CustomProviderVision 2026-11-18-17:06:
+    Same class as the timeout and thinking flags above: a probe cannot report this one either — the
+    gateway that needs the declaration answers `/v1/models` with only `{id, object, created, owned_by}`
+    and `/model/info` with `supports_vision: null`. Because this function REBUILDS the model entries
+    from probe results plus an explicit field list, a field missing here is silently deleted by the
+    operator's own "Refresh models" click. Ticking "Accepts images" and then refreshing must not lose
+    it, so the persisted value is the only source, carried only when it is the explicit `true`.
+    */
+    if (prior?.supportsImages === true) {
+      entry.supportsImages = true;
     }
     /*
     FNXC:CustomProviderModelWindows 2026-08-20-22:27: RUFU-145 PR #3493 review
