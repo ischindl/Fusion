@@ -24,8 +24,13 @@ import { existsSync } from "node:fs";
 import {
   ensureOpenClawMemoryFiles,
   memoryLongTermPath,
+  readProjectMemoryFile,
   resolveMemoryBackend,
+  searchMemoryFiles,
   MEMORY_BACKEND_SETTINGS_KEYS,
+  MEMORY_DREAMS_FILENAME,
+  MEMORY_LONG_TERM_FILENAME,
+  MEMORY_WORKSPACE_PATH,
   DEFAULT_MEMORY_BACKEND,
   scheduleQmdInstallAndRefresh,
   type MemorySearchOptions,
@@ -369,6 +374,122 @@ export function resolveMemorySearchTopic(focus: string | null | undefined): stri
   return trimmed;
 }
 
+// ── Durable File-Layer Search Lane (RUFU-1010) ─────────────────────────
+
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:25 (RUFU-1010):
+Single named site deciding WHICH resolved backend needs the durable layered memory files served
+as a search lane. Measured, not inferred: the Stash index has NEVER contained them — every writer
+of `.fusion/memory/**` refreshes only the qmd index (`scheduleQmdProjectMemoryRefresh` and the
+agent-memory equivalent are the only index refreshes), while Stash is POSTed session transcripts,
+the bootstrap scaffold, and dashboard saves truncated to 4000 chars. The four built-ins:
+- "file" and "qmd": answer for the corpus themselves (file search / qmd index with file fallback)
+  → no lane, and a lane would double every row;
+- "readonly": excluded BY DESIGN — it has no search surface and its `get` is a NOT_FOUND throw
+  by contract, so it must never start serving disk content;
+- "stash": the violation this card closes — remote transcript rows only, no file corpus.
+The gate keys on the EXACT built-in type string, deliberately NOT "not file and not qmd": the
+registered test backends (`stash-topic`, `stash-boom`, `stash-no-get`, `perturn-fake`, ...) must
+keep today's byte-identical behavior, which is what keeps the existing suite free of fixture churn.
+RESIDUAL RISK (accepted, and the reason this is one named site): a future backend that also lacks
+the corpus inherits the gap until it is added here — adding a type to this list is a deliberate,
+reviewable act, never an accident of a broadened negation.
+*/
+export function searchesDurableMemoryFileLayer(backendType: string): boolean {
+  return backendType === "stash";
+}
+
+/**
+ * Code-owned guarantee behind AC1: when the file lane produced hits but the merged page kept
+ * none, ONE slot is reserved for the top file hit. Load-bearing, not cosmetic: the file lane
+ * scores a raw matched-term count (one term → 1) while the Stash keyword lane's tier-3 first
+ * hit scores 2.0, so a plain merge reproduces the measured outcome of 20 slots and none of them
+ * the file. At `limit` 1 nothing is reserved — the caller keeps its backend slot.
+ */
+export const MEMORY_FILE_LAYER_RESERVED_SLOTS = 1;
+
+/**
+ * Deterministic two-lane merge for memory search: cap each lane at `limit`, sort by score
+ * descending with a stable path-then-lineStart tie-break, slice to `limit`, then apply the
+ * one-slot file-layer reservation. Two calls with the same inputs return the same ordering.
+ * Cross-scope ranking (the `+ 1000` agent-memory offset in the engine tool) is RUFU-665's
+ * subject, not this merge's; this helper only merges the remote and file lanes of ONE scope.
+ */
+export function mergeMemoryFileLayerHits(
+  remoteHits: MemorySearchResult[],
+  fileHits: MemorySearchResult[],
+  limit: number,
+): MemorySearchResult[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(Number(limit)) || 5, 20));
+  const remote = remoteHits.slice(0, boundedLimit);
+  if (fileHits.length === 0) {
+    // No file content to reserve for → the page is exactly today's remote-only result.
+    return remote;
+  }
+  const file = fileHits.slice(0, boundedLimit);
+  const merged = [...remote, ...file].sort(
+    (a, b) =>
+      (b.score ?? 0) - (a.score ?? 0) ||
+      a.path.localeCompare(b.path) ||
+      (a.lineStart ?? 0) - (b.lineStart ?? 0),
+  );
+  const page = merged.slice(0, boundedLimit);
+  const fileKeys = new Set(file.map((h) => `${h.path}\u0000${h.lineStart}`));
+  const fileSurvived = page.some((h) => fileKeys.has(`${h.path}\u0000${h.lineStart}`));
+  if (
+    !fileSurvived &&
+    boundedLimit >= 1 + MEMORY_FILE_LAYER_RESERVED_SLOTS &&
+    page.length === boundedLimit
+  ) {
+    page[page.length - 1] = file[0];
+  }
+  return page;
+}
+
+/** Effective search-page size shared by the two-lane callers (matches the file scorer's clamp). */
+function memorySearchLimit(limit: number | undefined): number {
+  return Math.max(1, Math.min(limit ?? 5, 20));
+}
+
+/** Daily-layer filename shape, mirroring the file scorer's private DAILY_MEMORY_RE. */
+const CANONICAL_DAILY_MEMORY_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+
+/**
+ * Is `rawPath` one of the canonical layered memory paths (long-term MEMORY.md, DREAMS.md, or a
+ * daily YYYY-MM-DD.md under .fusion/memory/)? Used to bound the disk fallback in
+ * `getProjectMemory`: ONLY these paths may be served from disk when the resolved backend stubs
+ * the window - any other request (a bare `.env`, an arbitrary project file) keeps the backend's
+ * own honest answer, so the fallback can never widen `fn_memory_get` into a general file reader.
+ */
+export function isCanonicalLayeredMemoryPath(rawPath: string): boolean {
+  const normalized = rawPath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!normalized.startsWith(`${MEMORY_WORKSPACE_PATH}/`)) return false;
+  const leaf = normalized.slice(MEMORY_WORKSPACE_PATH.length + 1);
+  if (leaf.includes("/")) return false;
+  return (
+    leaf === MEMORY_LONG_TERM_FILENAME ||
+    leaf === MEMORY_DREAMS_FILENAME ||
+    CANONICAL_DAILY_MEMORY_RE.test(leaf)
+  );
+}
+
+/**
+ * The file lane: the deterministic layered-file scorer, run for backends whose own index does
+ * not carry the corpus. Fail-closed to [] like every other memory read path; a lane, never a
+ * failure fallback - it runs whether the remote lane answered or refused.
+ */
+export async function searchDurableMemoryFileLayer(
+  rootDir: string,
+  options: MemorySearchOptions,
+  backendType: string,
+): Promise<MemorySearchResult[]> {
+  try {
+    return (await searchMemoryFiles(rootDir, options, backendType)) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 // FNXC:MemorySearchTopic 2026-08-13-16:35: (RUFU-035/RUFU-068) search can be
 // scoped to an optional read-time focus/topic. Corrected by RUFU-172: the topic is
 // honored only by topic-aware backends and is INERT for Stash — RUFU-121 removed the
@@ -400,6 +521,22 @@ export async function searchProjectMemory(
       ? { ...options, topic: topic.trim() }
       : options;
   try {
+    /*
+    FNXC:MemoryFileLayerSearch 2026-11-18-17:35 (RUFU-1010):
+    Second lane for backends that never received the durable layered memory corpus (gate: one
+    named predicate; today that is `stash` only). The remote lane failing (refusal already answers
+    [], a transport throw is caught here) contributes an empty list to its own lane; it does NOT
+    gate the file lane, which runs whether the remote answered or refused. The RUFU-994 refusal
+    reporting in the finally is byte-identical - this lane changes which rows come back, never
+    what the outcome code records. Non-lane backends keep the exact pre-existing single-call path.
+    */
+    if (searchesDurableMemoryFileLayer(backend.type)) {
+      const [remote, fileHits] = await Promise.all([
+        backend.search(rootDir, searchOptions).then((r) => r ?? []).catch(() => []),
+        searchDurableMemoryFileLayer(rootDir, searchOptions, backend.type),
+      ]);
+      return mergeMemoryFileLayerHits(remote, fileHits, memorySearchLimit(options.limit));
+    }
     return await backend.search(rootDir, searchOptions);
   } catch {
     // FNXC:MemoryResilience 2026-08-13-16:35: (RUFU-068) fail closed to empty —
@@ -431,7 +568,31 @@ export async function getProjectMemory(
     throw new Error(`Memory backend '${backend.type}' does not support memory_get`);
   }
   try {
-    return await backend.get(rootDir, options);
+    const result = await backend.get(rootDir, options);
+    /*
+    FNXC:MemoryFileLayerSearch 2026-11-18-17:50 (RUFU-1010):
+    The `fn_memory_get` description promises a search hit can be read back; under `stash` that
+    was false twice over - search never produced file rows (fixed by the search lane) AND the
+    windowed read was a pure empty-window stub, so the operator's proposed fallback ("read the
+    index with fn_memory_get") was itself broken. When the backend's own window holds no content
+    and the backend is one that does not serve the layered files (the same one named predicate;
+    `readonly` throws NOT_FOUND before reaching here, so its catch-and-empty contract stays
+    closed), serve the requested window of a CANONICAL layered memory path from disk and report
+    the backend that actually answered ("file"). A path with no disk content falls through to the
+    backend's empty window; a non-canonical path never takes this branch at all.
+    */
+    if (
+      (!result || result.content === "") &&
+      searchesDurableMemoryFileLayer(backend.type) &&
+      isCanonicalLayeredMemoryPath(options.path)
+    ) {
+      try {
+        return await readProjectMemoryFile(rootDir, options);
+      } catch {
+        return result;
+      }
+    }
+    return result;
   } catch {
     // FNXC:MemoryResilience 2026-08-13-16:35: (RUFU-068) degrade a remote
     // backend read/parse failure (e.g. Stash down) to an empty window so
@@ -494,16 +655,33 @@ export async function buildProactiveMemoryCueBlock(
     const limit = opts?.limit ?? 5;
     // RUFU-035 Step 3: when the enclosing conversation/task carries an active
     // topic, carry it into the search options. RUFU-172 correction: this is NOT a
-    // within-project read filter — Stash never received it (RUFU-121 removed the
+    // within-project read filter - Stash never received it (RUFU-121 removed the
     // &topic= push-down; the route accepts q+limit only) and no backend performs
     // SQL-side topic filtering. Topic-aware backends may use it as a hint;
-    // undefined/'all'/empty → whole-project scope.
+    // undefined/'all'/empty -> whole-project scope.
     const topic = opts?.topic?.trim();
-    const results = await backend.search(rootDir, {
+    const searchOptions = {
       query,
       limit,
       ...(topic && topic !== "all" && topic !== "*" ? { topic } : {}),
-    });
+    };
+    /*
+    FNXC:MemoryFileLayerSearch 2026-11-18-17:35 (RUFU-1010):
+    The executor's session-start cue is the third direct backend.search caller; fixing only
+    searchProjectMemory would leave this surface reporting the same empty project memory it
+    reports today. Same lane and same merge policy as `searchProjectMemory`; the formatter below
+    is untouched, so a lane row renders as `- .fusion/memory/MEMORY.md (score N): snippet`.
+    */
+    let results: MemorySearchResult[];
+    if (searchesDurableMemoryFileLayer(backend.type)) {
+      const [remote, fileHits] = await Promise.all([
+        backend.search(rootDir, searchOptions).then((r) => r ?? []).catch(() => []),
+        searchDurableMemoryFileLayer(rootDir, searchOptions, backend.type),
+      ]);
+      results = mergeMemoryFileLayerHits(remote, fileHits, memorySearchLimit(limit));
+    } else {
+      results = await backend.search(rootDir, searchOptions);
+    }
     if (!results || results.length === 0) return "";
     const items = results
       .slice(0, limit)

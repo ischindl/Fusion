@@ -8,7 +8,20 @@ import {
   stashBaseUrlFromSettings,
   type StashReadStoreHost,
 } from "../memory-backend-stash.js";
-import { resolveMemorySearchTopic } from "../project-memory.js";
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:40 (RUFU-1010):
+The per-turn cue is one of the three surfaces that read the same corpus; the report's
+warning was precisely that fixing only searchProjectMemory leaves THIS surface broken. The
+file-lane helpers live in project-memory.ts (the lane's single home) and arrive through the
+existing per-turn -> project-memory import edge; the union happens before selectByScore and
+before the (path, lineStart) dedup and the 800-char whole-entry-drop budget, so cue-level
+dedup, lane-T-wins shadowing, and the length cap keep working unchanged over the wider input.
+*/
+import {
+  resolveMemorySearchTopic,
+  searchDurableMemoryFileLayer,
+  searchesDurableMemoryFileLayer,
+} from "../project-memory.js";
 import type { Settings } from "../../types/settings/settings-scope.js";
 
 /*
@@ -420,10 +433,27 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   const laneTQuery = focus ? buildFocusRecallQuery(focus) : "";
 
   // ── Lane P: project-keyword search (today's contract) ──
+  /*
+  FNXC:MemoryFileLayerSearch 2026-11-18-17:40 (RUFU-1010):
+  For backends whose index never received the durable layered memory corpus (gate: the one
+  named predicate in project-memory.ts; today `stash` only), the file scorer runs beside the
+  remote search of the SAME query and its rows join the lane's input BEFORE selectByScore -
+  so ranking, the topK slice, the (path, lineStart) dedup and the char budget all still decide
+  as today. Lane P's reject contract is unchanged (a transport throw still yields ""); the
+  401-refused case never threw anyway - it answers [] and is exactly the state where the file
+  lane now carries the cue. Non-lane backends (including every registered fake type) run the
+  byte-identical single-search path.
+  */
+  const fileLayerLane = searchesDurableMemoryFileLayer(backend.type);
   let projectHits: MemorySearchResult[];
   try {
-    const results = await backend.search(options.rootDir, { query, limit });
-    projectHits = results ?? [];
+    const [results, fileHits] = await Promise.all([
+      backend.search(options.rootDir, { query, limit }),
+      fileLayerLane
+        ? searchDurableMemoryFileLayer(options.rootDir, { query, limit }, backend.type)
+        : Promise.resolve([] as MemorySearchResult[]),
+    ]);
+    projectHits = [...(results ?? []), ...fileHits];
   } catch {
     reportStashReadOutcome(options.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
     return "";
@@ -435,8 +465,13 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   const laneT: MemorySearchResult[] = [];
   if (laneTQuery !== "") {
     try {
-      const topicResults = await backend.search(options.rootDir, { query: laneTQuery, limit });
-      laneT.push(...selectByScore(topicResults ?? [], topK));
+      const [topicResults, fileHitsT] = await Promise.all([
+        backend.search(options.rootDir, { query: laneTQuery, limit }),
+        fileLayerLane
+          ? searchDurableMemoryFileLayer(options.rootDir, { query: laneTQuery, limit }, backend.type)
+          : Promise.resolve([] as MemorySearchResult[]),
+      ]);
+      laneT.push(...selectByScore([...(topicResults ?? []), ...fileHitsT], topK));
     } catch {
       // Lane T failure must never suppress lane P — it simply contributes nothing.
     }

@@ -16,6 +16,9 @@ import {
   getProjectMemory,
   resolveMemoryInstructionContext,
   buildProactiveMemoryCueBlock,
+  isCanonicalLayeredMemoryPath,
+  mergeMemoryFileLayerHits,
+  searchesDurableMemoryFileLayer,
 } from "../memory/project-memory.js";
 import {
   registerMemoryBackend,
@@ -947,5 +950,186 @@ describe("project-memory", () => {
         expect(call[1].topic).toBeUndefined();
       }
     });
+  });
+});
+
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:30 (RUFU-1010):
+Unit coverage for the one merge policy shared by all three memory search surfaces. Synthetic hit
+arrays only - no network, no disk. The score facts these tests encode are the measured ones: the
+file lane scores a raw matched-term count (one term -> 1) while the Stash keyword tier-3 first hit
+scores 2.0, so the one-slot reservation is what makes a file row survive a full remote page.
+*/
+describe("RUFU-1010 mergeMemoryFileLayerHits + file-lane predicate", () => {
+  type Hit = { path: string; lineStart: number; lineEnd: number; snippet: string; score: number; backend: string };
+  const hit = (path: string, lineStart: number, score: number): Hit => ({
+    path,
+    lineStart,
+    lineEnd: lineStart,
+    snippet: `${path}:${lineStart}`,
+    score,
+    backend: path.startsWith("stash://") ? "stash" : "file",
+  });
+  const remoteRows = (count: number, score: number): Hit[] =>
+    Array.from({ length: count }, (_, i) => hit(`stash://session/ses-${i + 1}`, 1, score));
+  const keys = (rows: Hit[]) => rows.map((r) => `${r.path}:${r.lineStart}`);
+
+  it("the predicate names exactly the stash built-in as needing the file lane", () => {
+    expect(searchesDurableMemoryFileLayer("stash")).toBe(true);
+    // file/qmd answer for the corpus themselves; readonly is excluded by design.
+    expect(searchesDurableMemoryFileLayer("file")).toBe(false);
+    expect(searchesDurableMemoryFileLayer("qmd")).toBe(false);
+    expect(searchesDurableMemoryFileLayer("readonly")).toBe(false);
+    // Registered test backends keep today's behavior (exact-type gate, not a broadened negation).
+    expect(searchesDurableMemoryFileLayer("stash-topic")).toBe(false);
+    expect(searchesDurableMemoryFileLayer("stash-boom")).toBe(false);
+    expect(searchesDurableMemoryFileLayer("perturn-fake")).toBe(false);
+  });
+
+  it("an empty file lane leaves the output identical to the remote lane", () => {
+    const remote = remoteRows(3, 2.0);
+    expect(mergeMemoryFileLayerHits(remote, [], 5)).toEqual(remote);
+  });
+
+  it("a remote-full page plus a populated file lane reserves exactly one slot", () => {
+    const remote = remoteRows(5, 2.0);
+    const file = [hit(".fusion/memory/MEMORY.md", 617, 1), hit(".fusion/memory/MEMORY.md", 401, 1)];
+    const merged = mergeMemoryFileLayerHits(remote, file, 5);
+    expect(merged).toHaveLength(5);
+    expect(merged.filter((r) => r.path === ".fusion/memory/MEMORY.md")).toHaveLength(1);
+    // The reserved slot is the LAST one; the higher-ranked remote rows keep their slots.
+    expect(keys(merged.slice(0, 4))).toEqual(keys(remote.slice(0, 4)));
+    expect(keys(merged)[4]).toBe(".fusion/memory/MEMORY.md:617");
+  });
+
+  it("limit 1 reserves nothing - the caller keeps its backend slot", () => {
+    const remote = remoteRows(1, 2.0);
+    const file = [hit(".fusion/memory/MEMORY.md", 617, 1)];
+    expect(keys(mergeMemoryFileLayerHits(remote, file, 1))).toEqual(keys(remote));
+  });
+
+  it("limit 2 and limit 20 each reserve one slot for a file hit scoring 1 against remote 2.0", () => {
+    const file = [hit(".fusion/memory/MEMORY.md", 617, 1)];
+    for (const limit of [2, 20]) {
+      const remote = remoteRows(limit, 2.0);
+      const merged = mergeMemoryFileLayerHits(remote, file, limit);
+      expect(merged).toHaveLength(limit);
+      expect(keys(merged)).toContain(".fusion/memory/MEMORY.md:617");
+    }
+  });
+
+  it("score ties break on path then lineStart, deterministically", () => {
+    const remote = [hit("stash://session/ses-1", 1, 2)];
+    const file = [
+      hit(".fusion/memory/MEMORY.md", 617, 2),
+      hit(".fusion/memory/MEMORY.md", 401, 2),
+    ];
+    const merged = mergeMemoryFileLayerHits(remote, file, 5);
+    expect(keys(merged)).toEqual([
+      ".fusion/memory/MEMORY.md:401",
+      ".fusion/memory/MEMORY.md:617",
+      "stash://session/ses-1:1",
+    ]);
+    // Same inputs twice -> same ordering (the merge is a pure function of its inputs).
+    expect(keys(mergeMemoryFileLayerHits(remote, file, 5))).toEqual(keys(merged));
+  });
+});
+
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:52 (RUFU-1010):
+Step 3 - the windowed read must be honest. StashMemoryBackend.get() is a pure empty-window stub,
+so under `stash` the fn_memory_get promise ("read back a file returned by fn_memory_search") was
+false even after the search lane existed. These cases pin: the disk fallback serves ONLY
+canonical layered paths under a backend that does not serve them, and every other backend's own
+window (including readonly's NOT_FOUND catch-and-empty) is unchanged. Stash's get performs no
+HTTP, so no loopback server is needed here.
+*/
+describe("RUFU-1010 getProjectMemory serves a real window under a stash-resolved backend", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = join(tmpdir(), `rufu1010-get-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(join(root, ".fusion", "memory"), { recursive: true });
+    const lines = Array.from({ length: 40 }, (_, i) => `context line ${i + 1}`);
+    lines[19] = "needle rufu1010-window on line twenty";
+    await writeFile(join(root, ".fusion", "memory", "MEMORY.md"), lines.join("\n"), "utf-8");
+    await writeFile(join(root, ".env"), "SECRET=rufu1010-must-not-leak\n", "utf-8");
+  });
+
+  afterEach(async () => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("a stash-resolved request for the memory file returns the requested window with truthful line numbers", async () => {
+    const result = await getProjectMemory(
+      root,
+      { path: ".fusion/memory/MEMORY.md", startLine: 19, lineCount: 3 },
+      { memoryEnabled: true, memoryBackendType: "stash" },
+    );
+    expect(result.content).toBe("context line 19\nneedle rufu1010-window on line twenty\ncontext line 21");
+    expect(result.startLine).toBe(19);
+    expect(result.endLine).toBe(21);
+    expect(result.totalLines).toBe(40);
+    expect(result.path).toBe(".fusion/memory/MEMORY.md");
+    // The backend field reports who actually answered, not the configured stub.
+    expect(result.backend).toBe("file");
+  });
+
+  it("a stash-resolved request for a non-existent memory path still reports the empty window", async () => {
+    const result = await getProjectMemory(
+      root,
+      { path: ".fusion/memory/2020-01-01.md", startLine: 1, lineCount: 5 },
+      { memoryEnabled: true, memoryBackendType: "stash" },
+    );
+    expect(result.content).toBe("");
+  });
+
+  it("the stash fallback never widens into a general file reader: a non-canonical path keeps the stub answer", async () => {
+    const result = await getProjectMemory(
+      root,
+      { path: ".env", startLine: 1, lineCount: 5 },
+      { memoryEnabled: true, memoryBackendType: "stash" },
+    );
+    expect(result.content).not.toContain("rufu1010-must-not-leak");
+  });
+
+  it("a readonly-resolved request keeps its catch-and-empty contract and does not start serving disk content", async () => {
+    const result = await getProjectMemory(
+      root,
+      { path: ".fusion/memory/MEMORY.md", startLine: 19, lineCount: 3 },
+      { memoryEnabled: true, memoryBackendType: "readonly" },
+    );
+    expect(result.content).toBe("");
+    expect(result.backend).toBe("readonly");
+  });
+
+  it("file- and qmd-resolved requests keep their own windows and never take the fallback", async () => {
+    const fileResult = await getProjectMemory(
+      root,
+      { path: ".fusion/memory/MEMORY.md", startLine: 20, lineCount: 1 },
+      { memoryEnabled: true, memoryBackendType: "file" },
+    );
+    expect(fileResult.content).toBe("needle rufu1010-window on line twenty");
+    expect(fileResult.backend).toBe("file");
+
+    const qmdResult = await getProjectMemory(
+      root,
+      { path: ".fusion/memory/MEMORY.md", startLine: 20, lineCount: 1 },
+      { memoryEnabled: true, memoryBackendType: "qmd" },
+    );
+    expect(qmdResult.content).toBe("needle rufu1010-window on line twenty");
+    // qmd labels its own window reader; the fallback would have said "file".
+    expect(qmdResult.backend).toBe("qmd");
+  });
+
+  it("isCanonicalLayeredMemoryPath accepts only the layered corpus and bounds the fallback", () => {
+    expect(isCanonicalLayeredMemoryPath(".fusion/memory/MEMORY.md")).toBe(true);
+    expect(isCanonicalLayeredMemoryPath("./.fusion/memory/MEMORY.md")).toBe(true);
+    expect(isCanonicalLayeredMemoryPath(".fusion/memory/DREAMS.md")).toBe(true);
+    expect(isCanonicalLayeredMemoryPath(".fusion/memory/2026-11-18.md")).toBe(true);
+    expect(isCanonicalLayeredMemoryPath(".fusion/agent-memory/agent-1/MEMORY.md")).toBe(false);
+    expect(isCanonicalLayeredMemoryPath(".env")).toBe(false);
+    expect(isCanonicalLayeredMemoryPath(".fusion/memory/../.env")).toBe(false);
+    expect(isCanonicalLayeredMemoryPath(".fusion/memory/nested/MEMORY.md")).toBe(false);
   });
 });

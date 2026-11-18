@@ -16,17 +16,22 @@
  */
 
 import http from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildProactiveMemoryCueBlock,
   ensureMemoryFileWithBackend,
+  getProjectMemory,
   readProjectMemoryWithBackend,
   searchProjectMemory,
 } from "../project-memory.js";
-import { buildPerTurnMemoryRecallCue } from "../recall/per-turn-recall.js";
+import {
+  buildPerTurnMemoryRecallCue,
+  __resetPerTurnRecallDedupForTests,
+} from "../recall/per-turn-recall.js";
 import {
   StashMemoryBackend,
   STASH_READ_REFUSAL_MUTATION_TYPE,
@@ -657,5 +662,185 @@ describe("RUFU-994 Stash read recovery without a restart", () => {
     const recovered = await searchProjectMemory("/project", { query: "epsilon zeta", limit: 5 }, settings, "epsilon", reader);
     expect(recovered).toHaveLength(1);
     expect(attempts()).toBe(1);
+  });
+});
+
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:20 (RUFU-1010):
+The reporting measurement this block encodes: a query built from tokens present verbatim at
+.fusion/memory/MEMORY.md:700 returned up to 20 remote transcript rows and ZERO rows from the file,
+because the Stash index has never received the durable layered memory corpus (write paths refresh
+only the qmd index; see docs/memory-backend-integration.md). These cases run against the SAME
+loopback harness as RUFU-994 with a real memory file on disk: the remote lane answers with foreign
+`session_id` rows, so only the file lane can produce the AC1 shape (project path + real line range
+past line 600). Every RUFU-994 assertion above (fail-closed [], refusal outcome codes) must survive
+unchanged — the file lane is an additional lane, never a failure fallback.
+*/
+describe("RUFU-1010 durable project memory is searchable under a stash-resolved backend", () => {
+  let server: LoopbackStash | null = null;
+  let projectRoot: string | null = null;
+
+  /** 1-based line of the unique-token sentence; chosen so the match window starts past line 600. */
+  const TOKEN_LINE = 621;
+
+  beforeEach(() => {
+    __resetStashReadDiagnosticsForTests();
+    __resetStashReadAuditDedupeForTests();
+    __resetVectorCapabilityCacheForTests();
+    __resetPerTurnRecallDedupForTests();
+  });
+
+  afterEach(async () => {
+    await server?.close();
+    server = null;
+    if (projectRoot) rmSync(projectRoot, { recursive: true, force: true });
+    projectRoot = null;
+  });
+
+  /**
+   * A temp project root whose `.fusion/memory/MEMORY.md` carries both unique tokens on
+   * TOKEN_LINE, past the 600-line mark where off-by-one line math becomes observable in a
+   * 107 KB+ real corpus. No trailing newline: total line count is exactly TOKEN_LINE.
+   */
+  function projectRootWithMemoryFile(): string {
+    projectRoot = mkdtempSync(join(tmpdir(), "rufu1010-"));
+    mkdirSync(join(projectRoot, ".fusion", "memory"), { recursive: true });
+    const lines: string[] = [];
+    for (let i = 1; i < TOKEN_LINE; i++) lines.push(`unrelated filler note ${i}`);
+    lines.push("container rufu1010-quoll mapped to host port 44713 for the pg harness");
+    writeFileSync(join(projectRoot, ".fusion", "memory", "MEMORY.md"), lines.join("\n"), "utf-8");
+    return projectRoot;
+  }
+
+  it("the verbatim-token query returns a row for the memory file with its real line range", async () => {
+    // The exact reproduction from the report: tokens absent from every transcript row (the
+    // loopback only stores "recalled memory body") but verbatim on a line past 600.
+    projectRoot = projectRootWithMemoryFile();
+    server = await startLoopbackStash();
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const hits = await searchProjectMemory(
+      projectRoot,
+      { query: "rufu1010-quoll 44713", limit: 5 },
+      readPathSettings(server.baseUrl),
+      undefined,
+      reader,
+    );
+
+    const fileRow = hits.find((h) => h.path === ".fusion/memory/MEMORY.md");
+    expect(fileRow, "durable project memory must be reachable by search under stash").toBeDefined();
+    // File-lane window math: 8-line stride, 12-line window -> the window covering line 621
+    // starts at line 617 and ends at the file's real end (621), with no off-by-one.
+    expect(fileRow?.lineStart).toBe(617);
+    expect(fileRow?.lineEnd).toBe(TOKEN_LINE);
+    expect(fileRow?.snippet).toContain("rufu1010-quoll");
+    // The remote lane still contributes its own rows — the lane union never swallows it.
+    expect(hits.some((h) => h.path === "stash://session/ses-1")).toBe(true);
+  });
+
+  it("a refused remote lane (401) still yields the file row and still records the refusal", async () => {
+    projectRoot = projectRootWithMemoryFile();
+    server = await startLoopbackStash({ refuseEvenWhenAuthed: true });
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const hits = await searchProjectMemory(
+      projectRoot,
+      { query: "rufu1010-quoll 44713", limit: 5 },
+      readPathSettings(server.baseUrl),
+      undefined,
+      reader,
+    );
+
+    expect(hits.map((h) => h.path)).toContain(".fusion/memory/MEMORY.md");
+    // RUFU-994's refusal contract is untouched: the empty remote lane is still accounted.
+    expect(getStashReadOutcome(server.baseUrl, "keyword-search")?.code).toBe("refused-auth");
+  });
+
+  it("a project without .fusion/memory/ returns exactly today's remote-only array", async () => {
+    projectRoot = mkdtempSync(join(tmpdir(), "rufu1010-nomemory-"));
+    server = await startLoopbackStash();
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const hits = await searchProjectMemory(
+      projectRoot,
+      { query: "rufu1010-quoll 44713", limit: 5 },
+      readPathSettings(server.baseUrl),
+      undefined,
+      reader,
+    );
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.path).toBe("stash://session/ses-1");
+  });
+
+  it("a qmd-resolved project gets exactly one copy of the file rows (predicate keeps it single-source)", async () => {
+    projectRoot = projectRootWithMemoryFile();
+    // No loopback server: qmd answers from its (empty for a fresh temp root) index and falls
+    // back to the file scorer, which is the ONLY file-row producer for qmd — the lane predicate
+    // must not fire for qmd or every file row would appear twice.
+    const hits = await searchProjectMemory(
+      projectRoot,
+      { query: "rufu1010-quoll 44713", limit: 5 },
+      { memoryEnabled: true, memoryBackendType: "qmd" },
+    );
+
+    const fileRows = hits.filter((h) => h.path === ".fusion/memory/MEMORY.md");
+    expect(fileRows.length).toBeGreaterThanOrEqual(1);
+    expect(fileRows.length).toBe(1);
+  });
+
+  it("the per-turn recall cue carries the memory-file path with its line range under stash", async () => {
+    projectRoot = projectRootWithMemoryFile();
+    server = await startLoopbackStash();
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const cue = await buildPerTurnMemoryRecallCue({
+      rootDir: projectRoot,
+      topic: "rufu1010-quoll 44713 harness",
+      settings: readPathSettings(server.baseUrl),
+      sessionKey: "chat-rufu1010-cue",
+      secretsReader: reader,
+    });
+
+    expect(cue).toContain(".fusion/memory/MEMORY.md:617-621");
+    // The remote lane keeps its slot too (union, not replacement).
+    expect(cue).toContain("stash://session/ses-1");
+  });
+
+  it("the executor session-start cue carries the memory-file path with its line range under stash", async () => {
+    projectRoot = projectRootWithMemoryFile();
+    server = await startLoopbackStash();
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const block = await buildProactiveMemoryCueBlock(
+      projectRoot,
+      "rufu1010-quoll 44713",
+      readPathSettings(server.baseUrl),
+      { limit: 5, secretsReader: reader },
+    );
+
+    // The formatter renders `- <path> (score N): <snippet>` - the lane row must reach it.
+    expect(block).toContain(".fusion/memory/MEMORY.md");
+    expect(block).toContain("rufu1010-quoll");
+    expect(block).toContain("stash://session/ses-1");
+  });
+
+  it("fn_memory_get reads a real window of the memory file when the stash stub returns nothing", async () => {
+    projectRoot = projectRootWithMemoryFile();
+    server = await startLoopbackStash();
+    const reader = secretsReaderReturning(RESOLVED_SECRET);
+
+    const result = await getProjectMemory(
+      projectRoot,
+      { path: ".fusion/memory/MEMORY.md", startLine: TOKEN_LINE, lineCount: 3 },
+      readPathSettings(server.baseUrl),
+      reader,
+    );
+
+    const diskLines = readFileSync(join(projectRoot, ".fusion", "memory", "MEMORY.md"), "utf-8").split("\n");
+    expect(result.content).toBe(diskLines[TOKEN_LINE - 1]);
+    expect(result.startLine).toBe(TOKEN_LINE);
+    expect(result.endLine).toBe(TOKEN_LINE);
+    expect(result.totalLines).toBe(TOKEN_LINE);
   });
 });

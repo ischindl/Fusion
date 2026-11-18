@@ -985,7 +985,15 @@ function scoreSnippet(snippet: string, queryTerms: string[]): number {
   return queryTerms.reduce((score, term) => score + (normalized.includes(term) ? 1 : 0), 0);
 }
 
-async function searchMemoryFiles(rootDir: string, options: MemorySearchOptions, backend: string): Promise<MemorySearchResult[]> {
+/*
+FNXC:MemoryFileLayerSearch 2026-11-18-17:25 (RUFU-1010):
+Exported as a shared seam. The deterministic file scorer was module-private because only the
+file/qmd backends called it; RUFU-1010 measured that the Stash index never received the durable
+layered memory corpus (write paths refresh only qmd), so the core read seams
+(searchProjectMemory, buildProactiveMemoryCueBlock, buildPerTurnMemoryRecallCue) run THIS scorer
+as a second lane when the resolved backend is `stash`. Behavior unchanged; only visibility widened.
+*/
+export async function searchMemoryFiles(rootDir: string, options: MemorySearchOptions, backend: string): Promise<MemorySearchResult[]> {
   const queryTerms = options.query
     .toLowerCase()
     .split(/[^a-z0-9_-]+/i)
