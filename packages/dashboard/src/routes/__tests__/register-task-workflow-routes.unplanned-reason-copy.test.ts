@@ -34,7 +34,13 @@ vi.mock("@fusion/engine", async (importOriginal) => ({
   promoteHeldTask: (...args: unknown[]) => promoteHeldTask(...args),
 }));
 
-const { registerTaskWorkflowRoutes } = await import("../register-task-workflow-routes.js");
+const {
+  registerTaskWorkflowRoutes,
+  RELEASE_ADMISSION_MESSAGE_KEYS,
+  UNPLANNED_FOR_EXECUTION_MESSAGE_KEY,
+  UNPLANNED_ADMISSION_MESSAGE_KEYS,
+  releaseAdmissionWire,
+} = await import("../register-task-workflow-routes.js");
 
 function workflow(): WorkflowIr {
   return {
@@ -242,5 +248,121 @@ describe("Workflow-resolution 503 — retryable, and has no reason to name", () 
       retryable: true,
     });
     expect(body.details).not.toHaveProperty("reason");
+  });
+});
+
+/*
+FNXC:ReleaseAdmissionWire 2026-11-18-07:17 (RUFU-727 Steps 4 and 8):
+The same 409 shape failed the other way for refusals that are NOT about planning. `retryable` was a
+two-member equality and `messageKey` fell into an `else` that named PLANNING for every rejection that was
+not literally `unplanned-for-execution`. Measured on the second reported card: its History reads
+`Plan premise invalidated by the card's own delivery` and then, in the same minute,
+`Execution dispatch refused — task is still unplanned` — a premise-class refusal wearing the planning
+sentence, with `retryable: true` attached to a condition that never changed across attempts. Its row
+carries a `premise-invalidated` document and NO refusal episode, the signature of that `else` mapping:
+whatever it returned, the board had one sentence for it, and it named planning.
+
+These cases extend the closed-set guard above to the whole release-admission vocabulary, holding two
+properties and no prose:
+  - EXHAUSTIVENESS — every value of the engine's rejection union resolves a code, a key and a retryable
+    flag from ONE table, so a code added at the door cannot land on a catch-all;
+  - OWNERSHIP — a refusal whose subject is a plan premise never resolves the unplanned-for-execution copy,
+    and `retryable` is true only where the next attempt genuinely re-derives.
+Both routes are covered because the RUFU-718 defect was exactly a disagreement between them.
+*/
+
+/** The engine's release-admission rejection vocabulary, spelled here so an added value fails to compile. */
+const REJECTIONS = [
+  "unplanned-for-execution",
+  "plan-premise-stale",
+  "plan-premise-invalid",
+  "plan-premise-unavailable",
+  "plan-premise-exhausted",
+  "capacity-exhausted-or-no-slot",
+  "source-changed",
+] as const satisfies readonly string[];
+
+describe("release admission wire — one closed table for the whole 409 vocabulary", () => {
+  it("resolves a code, a messageKey and a retryable flag for every rejection the door can return", () => {
+    for (const rejection of REJECTIONS) {
+      const wire = releaseAdmissionWire(rejection);
+      expect(wire.code, `${rejection} must keep its own wire code`).toBe(rejection);
+      expect(wire.messageKey.length).toBeGreaterThan(0);
+      expect(typeof wire.retryable).toBe("boolean");
+    }
+    // Exactly one entry per non-unplanned rejection — no dead rows, no missing key.
+    expect(Object.keys(RELEASE_ADMISSION_MESSAGE_KEYS).sort()).toEqual(
+      REJECTIONS.filter((rejection) => rejection !== "unplanned-for-execution").sort(),
+    );
+  });
+
+  it("never resolves the planning sentence for a refusal whose subject is a plan premise or a lost race", () => {
+    const premiseClass = ["plan-premise-stale", "plan-premise-invalid", "plan-premise-unavailable", "plan-premise-exhausted", "source-changed"] as const;
+    const unplannedKeys = new Set<string>([UNPLANNED_FOR_EXECUTION_MESSAGE_KEY, ...Object.values(UNPLANNED_ADMISSION_MESSAGE_KEYS)]);
+    for (const rejection of premiseClass) {
+      const { messageKey } = releaseAdmissionWire(rejection);
+      expect(unplannedKeys.has(messageKey), `${rejection} must not borrow the unplanned-for-execution copy`).toBe(false);
+    }
+  });
+
+  it("keeps retryable as the promise that the next attempt re-derives something different", () => {
+    // Re-derivable: git did not answer, or the card changed under the check.
+    expect(releaseAdmissionWire("plan-premise-unavailable").retryable).toBe(true);
+    expect(releaseAdmissionWire("source-changed").retryable).toBe(true);
+    // Deterministic: the plan is wrong, malformed, terminally parked, or the column is full. The dashboard
+    // reads this field to withhold a Retry affordance, so promising here is the bug, not the omission.
+    expect(releaseAdmissionWire("plan-premise-stale").retryable).toBe(false);
+    expect(releaseAdmissionWire("plan-premise-invalid").retryable).toBe(false);
+    expect(releaseAdmissionWire("plan-premise-exhausted").retryable).toBe(false);
+    expect(releaseAdmissionWire("capacity-exhausted-or-no-slot").retryable).toBe(false);
+    // Unplanned keeps its pre-existing classification: re-trying a move cannot make a pending gate report.
+    expect(releaseAdmissionWire("unplanned-for-execution", "plan-review-pending").retryable).toBe(false);
+  });
+
+  it("keeps the reason-keyed copy for the one code that is about planning readiness", () => {
+    expect(releaseAdmissionWire("unplanned-for-execution", "plan-review-pending").messageKey)
+      .toBe(UNPLANNED_ADMISSION_MESSAGE_KEYS["plan-review-pending"]);
+    expect(releaseAdmissionWire("unplanned-for-execution", "seed-prompt").messageKey)
+      .toBe(UNPLANNED_ADMISSION_MESSAGE_KEYS["seed-prompt"]);
+    expect(releaseAdmissionWire("unplanned-for-execution").messageKey).toBe(UNPLANNED_FOR_EXECUTION_MESSAGE_KEY);
+  });
+
+  it("gives a declined attempt its own honest wire shape instead of the planning sentence", () => {
+    /*
+    A door that declines a pass asserts NO refusal (`rejection` absent): the card is paused, left the
+    column, or its premises were consumed by its own delivery while the move was lost. That arrived as
+    `release-gate-refused` wearing the unplanned key — the same mislabel in a different wrapper.
+    */
+    const wire = releaseAdmissionWire(undefined);
+    expect(wire.code).toBe("release-deferred");
+    expect(wire.messageKey).toBe("board.rejection.releaseDeferred");
+    expect(wire.retryable).toBe(true);
+  });
+
+  it("carries a premise refusal to both routes with the same code, key and retryable flag", async () => {
+    const refusal = { released: false as const, rejection: "plan-premise-exhausted" as const, detail: "Premises stayed false across 2 re-derivations." };
+    admitTaskToWip.mockResolvedValue(refusal);
+    promoteHeldTask.mockResolvedValue({ ...refusal, toColumn: "in-progress" });
+
+    const { app } = buildApp(createTask());
+    const move = await post(app, "/api/tasks/RUFU-718/move", { column: "in-progress" });
+    const promote = await post(app, "/api/tasks/RUFU-718/promote", {});
+    const moveBody = move.body as { error: string; details: Record<string, unknown> };
+    const promoteBody = promote.body as { error: string; details: Record<string, unknown> };
+
+    expect(move.status).toBe(409);
+    expect(promote.status).toBe(409);
+    expect(moveBody.details).toMatchObject({
+      code: "plan-premise-exhausted",
+      messageKey: "board.rejection.planPremiseExhausted",
+      retryable: false,
+    });
+    // Same refusal, same wire shape — the RUFU-718 failure mode was the two routes disagreeing.
+    expect(promoteBody.details).toEqual(moveBody.details);
+    // The premise key owns the whole wire shape: the planning field cannot ride alongside it either.
+    expect(JSON.stringify(moveBody.details)).not.toContain("unplannedForExecution");
+    expect(moveBody.details).not.toHaveProperty("reason");
+    // The engine's own sentence is what the operator reads.
+    expect(moveBody.error).toContain("Premises stayed false");
   });
 });

@@ -410,6 +410,71 @@ export type WipAdmissionRejection =
   | "source-changed";
 
 /*
+FNXC:PlanPremiseDisposition 2026-11-18-05:52 (RUFU-727):
+One release admission evaluates its plan premises up to THREE times: the pre-move door, the under-lock
+predicate over the live row, and the re-check `publishPremiseReplan` performs inside its own atomic
+window. STAS-282 (FN-8356) taught the FIRST two to honour `premise-invalidated-by-delivery` as
+release-equivalent evidence; the third never got a say of its own — both mapping sites folded it into
+an `else`, so the door printed a verdict its own newest evaluation disowned.
+
+Measured pair (2026-11-18, `pnpm --filter @fusion/engine exec tsx scripts/reproduce-premise-falsifier.ts`,
+output recorded in the `premise-falsifier-measurement` task document). The first reported card is no
+longer on the board — `column: "archived"` with `deleted_at` set and `branch: NULL`, its
+`planPremiseRejection` episode left behind — and its surviving history does NOT show this defect: all
+three of its falsifiers resolve to its own delivery (`b7bfb9243a perf(RUFU-698)`, carrying
+`Fusion-Task-Id: RUFU-698`), including the two premises whose last-toucher commits name strangers. That
+is the attribution fix holding, which is why Step 2 closes only coverage residue.
+The second reported card reproduces on the DISPOSITION, not the attribution, and the two facts the row
+still carries pin it precisely: its `premise-invalidated` document and its History line `Plan premise
+invalidated by the card's own delivery` prove a door saw the delivery verdict and let the pass proceed,
+while `sourceMetadata.planPremiseRejection` is ABSENT — the pass that was refused published no episode at
+all. An episode-less refusal has only one source: `publishPremiseReplan` writes nothing when its own
+re-check disagrees with the outcome the caller had already committed to, and both callers then mapped that
+disagreement through an `else`. The card was left `needs-replan`, which the unplanned authority refuses on
+every later attempt — a permanent condition wearing a word (`source-changed`, retryable) that promises the
+next attempt re-derives something different.
+
+So the mapping is ONE function over the re-check union, exhaustive by construction: a sixth outcome is
+a compile error here rather than another silent `source-changed`.
+*/
+export type PremiseRecheckDisposition =
+  /** The premises hold: the release may proceed. */
+  | { action: "release" }
+  /** The card's own delivery consumed the facts — release-equivalent, and it owes its evidence record. */
+  | { action: "release-with-evidence"; evidence: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }> }
+  /** A real premise failure, with a code that names it. */
+  | { action: "refuse"; rejection: WipAdmissionRejection; detail: string };
+
+/**
+ * Decide once, from a premise re-check, what a release door may tell the operator.
+ *
+ * `satisfied` is the ONLY honest `source-changed`: the premise the door was refusing for is now true,
+ * so the very next pass re-derives exactly that, and the word is a promise the wire can keep.
+ * `unavailable` is a probe that did not answer and gets its own already-retryable code instead of
+ * borrowing the race word — the two read identically at the wire but mean "git did not answer", not
+ * "you raced". `premise-invalidated-by-delivery` is never a race code: a delivery does not race with
+ * itself, and labelling it as one is what made a finished card look retryable forever.
+ */
+export function disposePremiseRecheck(recheck: PlanPremiseCheckResult, raceDetail: string): PremiseRecheckDisposition {
+  switch (recheck.outcome) {
+    case "satisfied":
+      return { action: "refuse", rejection: "source-changed", detail: raceDetail };
+    case "stale":
+      return { action: "refuse", rejection: "plan-premise-stale", detail: recheck.detail };
+    case "invalid-contract":
+      return { action: "refuse", rejection: "plan-premise-invalid", detail: recheck.detail };
+    case "unavailable":
+      return { action: "refuse", rejection: "plan-premise-unavailable", detail: recheck.detail };
+    case "premise-invalidated-by-delivery":
+      return { action: "release-with-evidence", evidence: recheck };
+    default: {
+      const exhaustive: never = recheck;
+      return exhaustive;
+    }
+  }
+}
+
+/*
 FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
 The unplanned refusal used to publish only `rejection: "unplanned-for-execution"`, so an operator
 reading a refused move could not tell a real gate from a stale claim: six different conditions
@@ -2044,6 +2109,18 @@ async function recordDeliveryInvalidatedPremises(
 }
 
 /*
+FNXC:PlanPremiseDisposition 2026-11-18-05:58 (RUFU-727 Step 3):
+The sentence a door may print when the newest premise evaluation says the card's own delivery consumed
+the plan's facts, the move is already lost, and NOTHING else blocks. It is a deferral, not a refusal:
+the next pass evaluates the same delivery verdict at the pre-move door and releases, so it names that
+action instead of inventing a race. The evidence half lives on the History entry and the
+`premise-invalidated` document; this is the operator-facing "what now".
+*/
+export function deliveryInvalidatedDeferralDetail(check: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }>): string {
+  return `Plan premises were consumed by this card's own delivery, so they refuse nothing: ${check.detail} — the release will proceed on the next attempt; if it does not, amend the PLAN (never the delivered code) or Retry to re-derive.`;
+}
+
+/*
 FNXC:PlanPremises 2026-09-27-03:30:
 The card's `premise-invalidated` document is the readable half of the same evidence: the operator who
 has to amend the plan needs the premise JSON, the commit that consumed it, and the instruction that the
@@ -2173,14 +2250,23 @@ async function issueRelease(
     const premiseCheck = await checkPlanPremises(store, task);
     if (premiseCheck.outcome === "stale" || premiseCheck.outcome === "invalid-contract") {
       const recorded = await publishPremiseReplan(store, task.id, options.expectedColumn ?? task.column, premiseCheck.outcome, { planReviewNodeId });
-      if (recorded.check.outcome === "unavailable" || recorded.check.outcome === "satisfied") {
-        return { released: false, rejection: "source-changed", detail: "detail" in recorded.check ? recorded.check.detail : "Plan premise changed during release" };
+      const disposition = disposePremiseRecheck(recorded.check, "Plan premise changed during release");
+      if (disposition.action === "refuse") {
+        return { released: false, rejection: disposition.rejection, detail: disposition.detail };
       }
-      return {
-        released: false,
-        rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : "plan-premise-invalid",
-        detail: "detail" in recorded.check ? recorded.check.detail : premiseCheck.detail,
-      };
+      /*
+      FNXC:PlanPremiseDisposition 2026-11-18-06:36 (RUFU-727 Step 3):
+      The re-check is the newest of the three evaluations — it runs inside the publication lock — and it
+      says this card's own delivery consumed the facts the plan assumed. Refusing it there would be
+      exactly the defect this step removes, and it would refuse WITHOUT publishing an episode: a caller
+      that maps a disagreement out of `publishPremiseReplan` publishes nothing, so the card is refused
+      with no durable state behind the refusal. The door therefore does here what STAS-282 already
+      guarantees at the direct verdict: record the evidence, then release. Nothing is reserved or moved
+      yet on this arm, so releasing is simply falling through.
+      */
+      if (disposition.action === "release-with-evidence") {
+        await recordDeliveryInvalidatedPremises(store, task.id, disposition.evidence);
+      }
     }
     if (premiseCheck.outcome === "premise-invalidated-by-delivery") {
       // STAS-282: evidence, not a refusal — record it and fall through to a normal release.
@@ -2262,7 +2348,7 @@ async function issueRelease(
     reason-bearing source as the pre-move door, so both sites speak one vocabulary.
     */
     let liveUnplannedReason: UnplannedAdmissionReason | undefined;
-    let livePremiseFailure: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }> | undefined;
+    let livePremiseFailure: { check: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }>; row: Task } | undefined;
     let livePremiseDeliveryInvalidated: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }> | undefined;
     // RUFU-246: set when the locked live row already carries a terminal premise park (see predicate).
     let livePremiseExhausted = false;
@@ -2324,7 +2410,9 @@ async function issueRelease(
             // premise evaluation never performs a write inside the move transaction.
             livePremiseDeliveryInvalidated = checked;
           } else if (checked.outcome !== "satisfied") {
-            livePremiseFailure = checked;
+            // The refused verdict and the row it was read from travel together: the arm that reports them
+            // has to be able to ask a second authority about THAT row, not about the sweep's snapshot.
+            livePremiseFailure = { check: checked, row: live };
             return false;
           }
         }
@@ -2375,15 +2463,58 @@ async function issueRelease(
         return { released: false, rejection: "plan-premise-exhausted", detail: "Plan premise contract exhausted; operator Retry/Reset required to clear the refusal episode" };
       }
       if (livePremiseFailure) {
-        if (livePremiseFailure.outcome === "unavailable") {
-          return { released: false, rejection: "plan-premise-unavailable", detail: livePremiseFailure.detail };
+        const failure = livePremiseFailure.check;
+        if (failure.outcome === "unavailable") {
+          return { released: false, rejection: "plan-premise-unavailable", detail: failure.detail };
         }
-        const recorded = await publishPremiseReplan(store, task.id, originalColumn, livePremiseFailure.outcome, { planReviewNodeId });
-        return {
-          released: false,
-          rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : recorded.check.outcome === "invalid-contract" ? "plan-premise-invalid" : "source-changed",
-          detail: "detail" in recorded.check ? recorded.check.detail : livePremiseFailure.detail,
-        };
+        const recorded = await publishPremiseReplan(store, task.id, originalColumn, failure.outcome, { planReviewNodeId });
+        const disposition = disposePremiseRecheck(recorded.check, failure.detail);
+        if (disposition.action === "refuse") {
+          return { released: false, rejection: disposition.rejection, detail: disposition.detail };
+        }
+        if (disposition.action === "release") {
+          return { released: false, detail: failure.detail };
+        }
+        /*
+        FNXC:PlanPremiseDisposition 2026-11-18-06:36 (RUFU-727 Step 3):
+        The newest of the three evaluations — the re-check inside the publication lock — says this card's
+        own delivery consumed the facts the predicate refused on. STAS-282 guarantees that verdict is
+        release-equivalent at the pre-move door and at the predicate; this third site cannot honour it by
+        releasing, because the move is already lost and a seed or a status write may not sit inside the
+        move transaction. So it does the two remaining honest things, in this order:
+        1. record the evidence once, outside the move transaction, deduped like the other two sites;
+        2. refuse with the authority that ACTUALLY blocks — asked, not assumed. The unplanned gate is
+           evaluated on the very row the predicate refused on, so planning that really is outstanding
+           answers with `unplanned-for-execution` plus its closed reason (which is what the second
+           measured card's row still reports: `needs-replan` with Plan Review outstanding — a real refusal
+           from a real authority, and the sentence a premise refusal used to borrow came from THAT gate),
+           and only when nothing else blocks does the door decline the pass with no rejection at all,
+           because the next attempt evaluates the delivery verdict at the pre-move door and releases.
+        What this site may never emit is `source-changed`. That word promises the next attempt re-derives
+        something different, and a delivery does not race with itself: the condition is invariant while
+        the delivered branch stays attached, which is what made the reported loop unbounded.
+        */
+        await recordDeliveryInvalidatedPremises(store, task.id, disposition.evidence);
+        const refusedRow = livePremiseFailure.row;
+        const blocked = await evaluateUnplannedForExecution(store, refusedRow, ir, options.pass);
+        if (blocked.unplanned) {
+          const reason = blocked.reason ?? undefined;
+          const discharge = await dischargeUnplannedAdmission(store, deps, refusedRow, ir, reason, {
+            explicit: options.moveSource === "user",
+            canContinueRelease: false,
+            pass: options.pass,
+          });
+          await checkAndRecordUnplannedExecutionBlock(store, refusedRow, ir, options.pass);
+          schedulerLog.debug(`Hold release for ${task.id} blocked — plan premises were consumed by its own delivery and the card is unplanned (${reason ?? "unclassified"}) before entering processing column ${target}`);
+          return {
+            released: false,
+            rejection: "unplanned-for-execution",
+            ...(reason ? { reason } : {}),
+            detail: discharge.continueRelease ? unplannedAdmissionDetail(reason) : discharge.detail,
+          };
+        }
+        schedulerLog.debug(`Hold release for ${task.id} declined — plan premises consumed by its own delivery, move lost this pass, no other authority blocks; the next attempt releases`);
+        return { released: false, detail: deliveryInvalidatedDeferralDetail(disposition.evidence) };
       }
       schedulerLog.log(`Hold release for ${task.id} skipped — task became paused or left ${originalColumn}`);
       return { released: false };

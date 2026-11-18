@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
-import { admitTaskToWip } from "../execution/hold-release.js";
-import { checkPlanPremises } from "../execution/plan-premise-check.js";
-import { TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION } from "../execution/plan-premise-ladder.js";
+import { buildManualRetryResetPatch } from "@fusion/core";
+import { admitTaskToWip, disposePremiseRecheck } from "../execution/hold-release.js";
+import { checkPlanPremises, type PlanPremiseCheckResult } from "../execution/plan-premise-check.js";
+import { TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION, TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION } from "../execution/plan-premise-ladder.js";
 
 const roots: string[] = [];
 const ir: WorkflowIr = {
@@ -427,6 +428,173 @@ describe("stateless plan premise release gate", () => {
     const result = await admitTaskToWip(f.store, { now: Date.now, reserveSlot: f.reserve, allocateWorktree: (_task: Task, names: Set<string>) => f.allocate(names) }, f.task, "doing", ir);
     expect(result).toMatchObject({ released: true, task: { column: "doing" } });
     expect(f.task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+  });
+
+  /*
+  FNXC:PlanPremiseDisposition 2026-11-18-06:36 (RUFU-727 Steps 3, 7 and 8):
+  The defect these cases pin is a DISPOSITION hole, not an attribution one. Attribution (landed,
+  `falsifyingCommitForPremise`) correctly says "this card's own commit consumed the fact", and the
+  pre-move door honoured that as release evidence (STAS-282), but a caller that mapped a disagreement
+  out of `publishPremiseReplan` fell into an `else` arm that published `source-changed` - and the wire
+  marked that code retryable with the "planning is still outstanding" sentence. Measured on RUFU-1040:
+  History carried `Plan premise invalidated by the card's own delivery` beside
+  `Execution dispatch refused - task is still unplanned`, and the move answered
+  `{"code":"source-changed","messageKey":"board.rejection.unplannedForExecution","retryable":true}` for a
+  condition that is invariant while the delivered branch stays attached.
+
+  These cases hold three things: the disposition table itself has no catch-all arm, the door releases on
+  the delivery verdict instead of refusing it, and the ONLY lift for a card the ladder already parked is
+  the existing operator Retry - no new waiver surface, and no gate row written by a premise path.
+  */
+  it("keeps every premise surface waiver-free and gate-row-free (FN-245)", () => {
+    /*
+    Cheap structural guard for the guardrails the operator asked this card to preserve: the delivery
+    verdict is answered by re-evaluation, never by a parameter that skips it, and no premise path may
+    author the gate evidence a reviewer owns. Asserted as code constructs, not prose.
+    */
+    const source = readFileSync(new URL("../execution/hold-release.ts", import.meta.url), "utf8")
+      // FN-245's removal notes describe the deleted waiver in prose, so the scan reads code only
+      // (the same comment-stripping discipline `legacy-tombstones.test.ts` uses).
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+    for (const banned of ["allowUnplanned", "forcePremise", "waivePremises", "premiseOverride", "skipPremises"]) {
+      expect(source).not.toContain(banned);
+    }
+    // No premise path authors workflow gate evidence: the file never touches a step-result writer.
+    expect(source).not.toMatch(/updateWorkflowStepResults|recordWorkflowStepResult|recordPlanReviewWorkflowResult/);
+  });
+
+  it("maps every premise re-check outcome to its own disposition, and the delivery verdict to none of the refusal codes", () => {
+    const verdict = <T extends PlanPremiseCheckResult["outcome"]>(outcome: T): PlanPremiseCheckResult =>
+      ({ outcome, detail: `${outcome} detail`, promptFingerprint: "f".repeat(64), premiseViolations: [] } as PlanPremiseCheckResult);
+    const race = "Plan premise changed during release";
+    // A re-check that came back satisfied is the ONE honest race: the next attempt re-derives it.
+    expect(disposePremiseRecheck(verdict("satisfied"), race)).toMatchObject({ action: "refuse", rejection: "source-changed" });
+    expect(disposePremiseRecheck(verdict("stale"), race)).toMatchObject({ action: "refuse", rejection: "plan-premise-stale" });
+    expect(disposePremiseRecheck(verdict("invalid-contract"), race)).toMatchObject({ action: "refuse", rejection: "plan-premise-invalid" });
+    expect(disposePremiseRecheck(verdict("unavailable"), race)).toMatchObject({ action: "refuse", rejection: "plan-premise-unavailable" });
+    const delivery = disposePremiseRecheck(verdict("premise-invalidated-by-delivery"), race);
+    expect(delivery).toMatchObject({ action: "release-with-evidence" });
+    expect("rejection" in delivery).toBe(false);
+  });
+
+  it("releases a card whose own branch consumed the plan's fact and never reports it as the source-changed race", async () => {
+    const f = await fixture('{"kind":"text-present","path":"App.tsx","literal":"alphaUpdatesEnabled"}');
+    // The card delivered on its own branch: the branch tip is where the assumed fact died.
+    const git = (args: string[]) => execFileSync("git", args, { cwd: f.root, stdio: "ignore" });
+    git(["checkout", "-q", "-b", "fusion/fn-375-t"]);
+    writeFileSync(join(f.root, "App.tsx"), "export const footer = true;\n");
+    git(["add", "-A"]);
+    git(["commit", "-qm", "feat: retire the assumed flag", "-m", "Fusion-Task-Id: FN-375-T"]);
+    f.task.branch = "fusion/fn-375-t";
+
+    const result = await admitTaskToWip(
+      f.store,
+      { now: Date.now, reserveSlot: f.reserve, allocateWorktree: (_task: Task, names: Set<string>) => f.allocate(names) },
+      f.task,
+      "doing",
+      ir,
+    );
+
+    expect(result).toMatchObject({ released: true, task: { column: "doing" } });
+    expect(result.rejection).toBeUndefined();
+    expect(result.rejection).not.toBe("source-changed");
+    // Release-equivalent evidence, not a refusal: no episode, no replan, one History entry.
+    expect(f.task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+    expect(f.task.status).toBeNull();
+    expect(f.task.log.filter((e: { action?: string }) => e.action === TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION)).toHaveLength(0);
+    expect(f.task.log.filter((e: { action?: string }) => e.action === TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toHaveLength(1);
+  });
+
+  it("refuses under the move lock with the authority that actually blocks, never the source-changed race", async () => {
+    const f = await fixture('{"kind":"text-present","path":"App.tsx","literal":"alphaUpdatesEnabled"}');
+    const git = (args: string[]) => execFileSync("git", args, { cwd: f.root, stdio: "ignore" });
+    // The card's own branch (based on the base commit) retires the assumed flag. Main still holds the
+    // fact, so the pre-move door evaluates `satisfied` and the release reaches the move lock.
+    git(["checkout", "-q", "-b", "fusion/fn-375-live"]);
+    writeFileSync(join(f.root, "App.tsx"), "export const footer = true;\n");
+    git(["add", "-A"]);
+    git(["commit", "-qm", "feat: retire the assumed flag", "-m", "Fusion-Task-Id: FN-375-T"]);
+    git(["checkout", "-q", "main"]);
+
+    /*
+    The measured sequence, staged in the one order the door can actually reach it: upstream drift removes
+    the fact while the move lock is held, so the predicate refuses on `stale`; the card's branch is
+    attached before the publication re-check runs, and that re-check reads the delivery verdict. The two
+    evaluations disagree exactly as they did on the reported card.
+    */
+    f.store.moveTaskIf = vi.fn(async (_id: string, _column: string, predicate: (row: Task) => boolean | Promise<boolean>) => {
+      writeFileSync(join(f.root, "App.tsx"), "export const footer = true;\n");
+      git(["add", "-A"]);
+      git(["commit", "-qm", "chore: drop the flag upstream"]);
+      const ok = await predicate(f.task);
+      f.task.branch = "fusion/fn-375-live";
+      return { task: f.task, moved: ok };
+    });
+
+    const result = await admitTaskToWip(
+      f.store,
+      { now: Date.now, reserveSlot: f.reserve, allocateWorktree: (_task: Task, names: Set<string>) => f.allocate(names) },
+      f.task,
+      "doing",
+      ir,
+    );
+
+    expect(result.released).toBe(false);
+    // The move is lost and nothing else blocks, so the door declines the pass. It may NOT claim a race
+    // (invariant while the branch stays attached) and may NOT borrow the unplanned sentence.
+    expect(result.rejection).toBeUndefined();
+    expect(result.rejection).not.toBe("source-changed");
+    expect(result.detail).toMatch(/consumed by this card's own delivery/);
+    expect(result.detail).toMatch(/next attempt/);
+    // Evidence, not episode: the disagreement published nothing, and no gate row was authored.
+    expect(f.task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+    expect(f.task.workflowStepResults ?? []).toHaveLength(0);
+    expect(f.task.log.filter((e: { action?: string }) => e.action === TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toHaveLength(1);
+  });
+
+  it("lifts a terminal premise park on the existing operator Retry and releases on the delivery verdict, writing no gate row", async () => {
+    const f = await fixture('{"kind":"text-present","path":"App.tsx","literal":"alphaUpdatesEnabled"}');
+    const deps = { now: Date.now, reserveSlot: f.reserve, allocateWorktree: (_task: Task, names: Set<string>) => f.allocate(names) };
+    /*
+    The state an operator actually has: a card terminally parked on an exhausted premise contract,
+    authored here in the same shape `preserves a park that lands under the move lock` observes from
+    another surface. Rebuilding it by three refusals would need the fact to be false at the base, and
+    then no branch of this card could ever be the falsifier - which is the half this case must show.
+    */
+    f.task.status = "failed";
+    f.task.error = "PLAN PREMISE CONTRACT EXHAUSTED: plan premises no longer true";
+    f.task.sourceMetadata = {
+      owner: "keep-me",
+      planPremiseRejection: { signature: "other-surface", refusalCount: 3, lastDetail: "plan premises no longer true", lastAt: new Date().toISOString(), escalation: "park", detailHash: "0".repeat(64) },
+    };
+    await expect(admitTaskToWip(f.store, deps, f.task, "doing", ir)).resolves.toMatchObject({ released: false, rejection: "plan-premise-exhausted" });
+
+    // Recovery is the surface that already exists: every Retry writes `{ status: null, error: null,
+    // ...buildManualRetryResetPatch() }` through `updateTaskAtomic` (the composition at
+    // `project-engine.ts` merge-retry reset, the dashboard route, and `agent-tools.ts`), and the builder's
+    // key-level clear is what lifts the sticky park. No new waiver parameter is introduced anywhere, and
+    // unrelated provenance keys survive.
+    await f.store.updateTaskAtomic!(f.task.id, () => ({ status: null, error: null, ...buildManualRetryResetPatch() }));
+    expect(f.task.status).toBeNull();
+    expect(f.task.error ?? null).toBeNull();
+    expect(f.task.sourceMetadata?.planPremiseRejection ?? null).toBeNull();
+    expect(f.task.sourceMetadata?.owner).toBe("keep-me");
+
+    // The card delivered its work while it sat parked, and that delivery is what consumed the fact.
+    const git = (args: string[]) => execFileSync("git", args, { cwd: f.root, stdio: "ignore" });
+    git(["checkout", "-q", "-b", "fusion/fn-375-t"]);
+    writeFileSync(join(f.root, "App.tsx"), "export const footer = true;\n");
+    git(["add", "-A"]);
+    git(["commit", "-qm", "feat: retire the assumed flag", "-m", "Fusion-Task-Id: FN-375-T"]);
+    f.task.branch = "fusion/fn-375-t";
+
+    await expect(admitTaskToWip(f.store, deps, f.task, "doing", ir)).resolves.toMatchObject({ released: true, task: { column: "doing" } });
+    expect(f.task.sourceMetadata?.planPremiseRejection ?? null).toBeNull();
+    expect(f.task.log.filter((e: { action?: string }) => e.action === TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toHaveLength(1);
+    // No premise path may author gate evidence: recovery re-evaluates, it never fabricates a verdict.
+    expect(f.task.workflowStepResults ?? []).toHaveLength(0);
+    expect((f.store as unknown as Record<string, unknown>).updateWorkflowStepResultsFenced).toBeUndefined();
+    expect((f.store as unknown as Record<string, unknown>).recordWorkflowStepResult).toBeUndefined();
   });
 
   it("preserves a park that lands under the move lock without recording a new refusal", async () => {

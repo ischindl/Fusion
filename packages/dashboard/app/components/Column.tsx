@@ -105,6 +105,70 @@ function unplannedRejectionCopy(t: TFn, messageKey: string): string {
   }
 }
 
+/*
+FNXC:ReleaseAdmissionWire 2026-11-18-06:20 (RUFU-727 Step 4):
+A release-admission refusal names WHICH check stopped the card, and each of these has a different remedy
+in a different subsystem: a plan whose stated facts drifted (it gets re-planned), a plan whose Premises
+section cannot be parsed (that section gets repaired), a probe that never answered (the repository gets
+made readable, then the move is retried), a plan refused three times for the same violation (an operator
+Retry, after the plan is fixed), a card that changed under the check (just move it again), a column that
+is full (wait for a slot), and a declined attempt that asserted no refusal at all (the board retries by
+itself).
+
+`unplanned-for-execution` is the ONE code whose subject is planning readiness, and until now it was also
+the fallback sentence for every other code — which is how a card whose own delivery had consumed its plan
+premises came to be told, permanently, that plan review was still outstanding. So this group resolves its
+own copy and its unknown-key fallback never points at the planning sentence again. Each sentence names the
+one action that changes the outcome. Both public helpers below route through this one function, so the
+board drag path (messageKey only) and the 409 path (code + messageKey) cannot print two sentences for one
+refusal, and the static literals are what the i18next extractor sees — FN-8471's raw-key defect reproduces
+exactly when a server code arrives here without a case.
+*/
+function releaseRejectionCopy(t: TFn, messageKey: string): string {
+  switch (messageKey) {
+    case "board.rejection.planPremiseStale":
+      return t(
+        "board.rejection.planPremiseStale",
+        "The repository no longer matches a fact this plan states as given, so the card is being re-planned. Wait for the new plan, or amend its Plan Premises, before moving it.",
+      );
+    case "board.rejection.planPremiseInvalid":
+      return t(
+        "board.rejection.planPremiseInvalid",
+        "This plan's Plan Premises section can't be checked — each premise must be one JSON object on its own bullet. Re-plan the card, or repair that section.",
+      );
+    case "board.rejection.planPremiseUnavailable":
+      return t(
+        "board.rejection.planPremiseUnavailable",
+        "Git could not answer whether this plan's stated facts still hold, so the card stayed put. Make the repository readable, then move it again.",
+      );
+    case "board.rejection.planPremiseExhausted":
+      return t(
+        "board.rejection.planPremiseExhausted",
+        "This plan was refused three times for the same premise violation and is parked. Fix the plan, then run Retry on the card to clear the refusal.",
+      );
+    case "board.rejection.sourceChanged":
+      return t(
+        "board.rejection.sourceChanged",
+        "The card changed while this release was being checked, so nothing moved. Move it again — the check re-reads the card.",
+      );
+    case "board.rejection.capacityExhausted":
+      return t(
+        "board.rejection.capacityExhausted",
+        "That column is at capacity. Try again when a slot frees up.",
+      );
+    case "board.rejection.releaseDeferred":
+      return t(
+        "board.rejection.releaseDeferred",
+        "Nothing moved and no check is refusing this card — the board retries the release on its own. You can also move the card yourself.",
+      );
+    default:
+      return t(
+        "board.rejection.releaseRefused",
+        "This card stayed where it is: the release did not pass its checks. Read the message above for the step to fix.",
+      );
+  }
+}
+
 export function translateRejection(t: TFn, rejection: TransitionRejectionDetail): string {
   switch (rejection.code) {
     case "guard-rejected":
@@ -147,6 +211,21 @@ export function translateRejection(t: TFn, rejection: TransitionRejectionDetail)
     */
     case "unplanned-for-execution":
       return unplannedRejectionCopy(t, rejection.messageKey);
+    /*
+    FNXC:ReleaseAdmissionWire 2026-11-18-06:20 (RUFU-727 Step 4):
+    Premise-, race-, capacity- and deferral-shaped release refusals. Each code is the engine's own
+    rejection value, and the code `release-deferred` is the door declining an attempt without asserting a
+    refusal. Every one of these keys resolves through `releaseRejectionCopy`; a code added at the door
+    without a case here is FN-8471 again, which `Column.rejection-copy.test.tsx` now fails.
+    */
+    case "plan-premise-stale":
+    case "plan-premise-invalid":
+    case "plan-premise-unavailable":
+    case "plan-premise-exhausted":
+    case "capacity-exhausted-or-no-slot":
+    case "source-changed":
+    case "release-deferred":
+      return releaseRejectionCopy(t, rejection.messageKey);
     case "stale-move-precondition":
       return t(
         "board.rejection.staleMovePrecondition",
@@ -163,8 +242,6 @@ export function translateRejectionKey(t: TFn, messageKey: string): string {
   switch (messageKey) {
     case "board.rejection.guardRejected":
       return t("board.rejection.guardRejected", "This move is not allowed by the workflow.");
-    case "board.rejection.capacityExhausted":
-      return t("board.rejection.capacityExhausted", "That column is at capacity. Try again when a slot frees up.");
     case "board.rejection.unknownColumn":
       return t("board.rejection.unknownColumn", "That column doesn't exist in this task's workflow.");
     case "board.rejection.workflowMismatch":
@@ -191,6 +268,21 @@ export function translateRejectionKey(t: TFn, messageKey: string): string {
         "board.rejection.staleMovePrecondition",
         "This card already moved on. Refresh to see where it is now.",
       );
+    /*
+    FNXC:ReleaseAdmissionWire 2026-11-18-06:22 (RUFU-727 Step 4):
+    The release-admission keys resolve here through the SAME helper the 409 path uses — including
+    `capacityExhausted`, whose literal moved into the helper so the drag path and the HTTP path cannot
+    drift into two sentences for one refusal.
+    */
+    case "board.rejection.capacityExhausted":
+    case "board.rejection.planPremiseStale":
+    case "board.rejection.planPremiseInvalid":
+    case "board.rejection.planPremiseUnavailable":
+    case "board.rejection.planPremiseExhausted":
+    case "board.rejection.sourceChanged":
+    case "board.rejection.releaseDeferred":
+    case "board.rejection.releaseRefused":
+      return releaseRejectionCopy(t, messageKey);
     default:
       return t(messageKey, messageKey);
   }

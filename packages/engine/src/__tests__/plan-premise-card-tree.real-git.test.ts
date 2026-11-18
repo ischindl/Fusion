@@ -864,6 +864,51 @@ describe("falsification is attributed to the commit that turned the premise fals
     expect(verdict.detail).toContain(ownDeletion);
   }, 30_000);
 
+  /*
+  FNXC:PlanPremiseFalsifier 2026-11-18-05:42 (RUFU-727 Step 2):
+  The fourth kind x direction pair had no attribution case at all: `file-absent` violated because the
+  path APPEARED. It is the shape this card's own authoring gate (Step 5) exists to refuse at writing
+  time — a plan that asserts a file will stay missing while its own File Scope promises to create it —
+  and it is the only kind whose falsifier is an `A` (addition) rather than a `D` (deletion) or a literal
+  count change, so it exercises the other half of `--diff-filter=AD`. Without these two cases the
+  attribution audit this step performed had no witness for 1 of the 4 kinds, and a future change to the
+  file-kind filter could silently turn a card's own new file into "upstream drift".
+  */
+  it("attributes a file the card itself created, behind a later foreign touch, as delivery", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, "src/Generated.ts", "export const generated = 1;\n");
+    const ownCreation = await commitFor(root, "feat: emit the generated adapter", "FN-282");
+    await land(root, "fusion/fn-282");
+    // The mask: a different card edits the NEW file afterwards, so the last toucher names another card.
+    await write(root, "src/Generated.ts", "export const generated = 1;\n// tuned by another card\n");
+    const mask = await commitFor(root, "fix: tune the generated adapter", "FN-718");
+
+    const verdict = await verdictOf(root, ['{"kind":"file-absent","path":"src/Generated.ts"}'], { id: "FN-282", branch: "fusion/fn-282" });
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(ownCreation);
+    expect(verdict.detail).not.toContain(mask);
+  }, 30_000);
+
+  it("keeps a file a foreign commit created loudly plan-stale, naming the commit that added it", async () => {
+    // The control: the same violated shape, falsified by a stranger. The file premise must be attributed
+    // to the ADD, not to the later unrelated edit, and must never arrive as delivery evidence.
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await write(root, "src/Generated.ts", "export const generated = 1;\n");
+    const creator = await commitFor(root, "feat: upstream adds the adapter", "FN-700");
+    await write(root, "src/Generated.ts", "export const generated = 1;\n// upstream polish\n");
+    const lastEditor = await commitFor(root, "chore: upstream polishes the adapter", "FN-718");
+
+    const task = premiseTask(['{"kind":"file-absent","path":"src/Generated.ts"}'], { id: "FN-282", baseBranch: "main" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.detail).toContain(creator);
+    expect(verdict.detail).not.toContain(lastEditor);
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+  }, 30_000);
+
   it("attributes a violated premise by its OWN path when an earlier premise in the set is satisfied", async () => {
     /*
     The attribution loop indexes the evaluated premises by the position of the violation. With a

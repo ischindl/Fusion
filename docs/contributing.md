@@ -268,6 +268,11 @@ Fusion tests must run against disposable test data, never live local state:
 
 If you add or change test entrypoints, keep this isolation guard path intact and ensure guard + test execution share the same disposable HOME so changed/full/cached paths stay consistent.
 
+<!-- FNXC:PlanPremiseAuthoring 2026-11-18-08:03 (RUFU-727): author-facing form of the rule the deterministic Plan Review gate enforces, written beside the external-integration evidence gate precedent. -->
+## Spec authoring: plan premises must outlive the plan
+
+`## Plan Premises` states facts the implementation relies on **staying** true, not the end state the plan is trying to produce. So never declare an absence — a `file-absent` premise, or a `text-absent` literal — on a path your own `## File Scope` says the card will create or rewrite: the plan executing is what would falsify that premise, and Plan Review refuses the spec deterministically before any reviewer or execution starts (`detectSelfConsumingPremises`). If the deliverable is that a marker or a file is GONE once the work lands, put that in the tested Completion Criteria, or re-point the premise at a path the card does not touch. The sibling trap needs judgment rather than a gate: a `text-present` literal quoted out of source your own Steps rewrite is true only on the pre-work tree, so the card finishes its work into a stale-plan refusal; quote a fact that survives the edit. The same deterministic gate also runs the release door's own rule, so an authored contradiction costs one self-correcting revision round instead of a card that cannot be released after it ships.
+
 ## Spec authoring: provenance evidence for outside tooling
 
 Any task that wires in an outside command-line program, daemon, separately-fetched program, or package-managed dependency must include provenance evidence in its `PROMPT.md`. The deterministic spec-validation gate (`detectExternalIntegrationEvidenceGaps`) REVISEs specs that mention this kind of outside tooling without enough provenance to audit where it comes from and what command or artifact is expected.

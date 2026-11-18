@@ -174,6 +174,12 @@ import {
   type PrepareWorkspaceRevertPrBranchesResult,
   type WorkspaceRepoRevertPrBranch,
   type LandedReviewReconcileResult,
+  /*
+  FNXC:ReleaseAdmissionWire 2026-11-18-06:14 (RUFU-727 Step 4): imported so the wire table below is keyed
+  by the ENGINE's rejection union — a code added at the door must fail to compile here, not silently land
+  on a catch-all messageKey.
+  */
+  type WipAdmissionRejection,
 } from "@fusion/engine";
 import { buildBoardWorkflowsPayload, resolveBoardColumnFlags } from "./board-workflows.js";
 import {
@@ -270,6 +276,111 @@ export const UNPLANNED_ADMISSION_MESSAGE_KEYS: Record<UnplannedAdmissionReason, 
 /** Reason-specific board copy key, falling back to the generic unplanned key when no reason exists. */
 export function unplannedAdmissionMessageKey(reason: UnplannedAdmissionReason | undefined | null): string {
   return reason ? UNPLANNED_ADMISSION_MESSAGE_KEYS[reason] : UNPLANNED_FOR_EXECUTION_MESSAGE_KEY;
+}
+
+/*
+FNXC:ReleaseAdmissionWire 2026-11-18-06:14 (RUFU-727 Step 4):
+The release-admission refusal wire used to derive its two meaning-carrying fields from two different
+half-vocabularies. `retryable` was a two-member equality (`plan-premise-unavailable` OR
+`source-changed`) and `messageKey` fell into a catch-all that named PLANNING for every rejection that was
+not literally `unplanned-for-execution`. That pairing is exactly what made a premise refusal unreadable:
+`source-changed` was the one code the derivation trusted, and the hold-release door reached it from an
+`else` over a re-check it did not examine. The consequence is mechanical: on the board, a plan whose
+premises drifted, a Premises section that cannot be parsed, a git probe that never answered and a
+terminally exhausted premise contract all read as "planning or plan review is still outstanding" — the
+wrong subsystem, on cards whose plan review had already reported — and the one code the retryable
+derivation trusted was reachable from an `else`, which is how a delivery verdict (a condition that cannot
+race with itself) got shipped as a permanent promise. Measured 2026-11-18 on the second reported card: its
+`premise-invalidated` document and its History line `Plan premise invalidated by the card's own delivery`
+prove a door saw that verdict, while `sourceMetadata.planPremiseRejection` is ABSENT — the refusing pass
+published no episode, the signature of a caller mapping a `publishPremiseReplan` disagreement out of an
+`else`.
+
+Both fields now resolve from ONE closed table keyed by the engine's own rejection union, so a sixth
+premise code is a compile error here rather than another silent mislabel, and no premise-class refusal
+can borrow the planning sentence. `code` values are unchanged (FN-8471: a new code with no client case is
+the defect) except the rejection-less deferral, which gains an honest code AND its client case together.
+`retryable` is the promise the dashboard and CLI act on: it is true only where the next attempt re-derives
+something different, so `source-changed` and `plan-premise-unavailable` keep it, and a deterministic
+refusal — a plan whose facts are wrong, malformed, exhausted, or consumed by its own delivery — does not.
+*/
+/** The premise-class slice of the release vocabulary, as a type so a guard can narrow it. */
+export type PremiseAdmissionRejection =
+  | "plan-premise-stale"
+  | "plan-premise-invalid"
+  | "plan-premise-unavailable"
+  | "plan-premise-exhausted";
+
+export const RELEASE_ADMISSION_MESSAGE_KEYS = {
+  "plan-premise-stale": "board.rejection.planPremiseStale",
+  "plan-premise-invalid": "board.rejection.planPremiseInvalid",
+  "plan-premise-unavailable": "board.rejection.planPremiseUnavailable",
+  "plan-premise-exhausted": "board.rejection.planPremiseExhausted",
+  "capacity-exhausted-or-no-slot": "board.rejection.capacityExhausted",
+  "source-changed": "board.rejection.sourceChanged",
+} as const satisfies Record<Exclude<WipAdmissionRejection, "unplanned-for-execution">, string>;
+
+/** A release-admission refusal or deferral rendered for the wire. */
+export interface ReleaseAdmissionWire {
+  code: string;
+  messageKey: string;
+  retryable: boolean;
+}
+
+/**
+ * Resolve `code`, `messageKey`, and `retryable` for one release-admission outcome.
+ *
+ * `undefined` rejection is not a refusal at all: the door declined this attempt without asserting a
+ * refusal (paused, left the column, or the premises were consumed by the card's own delivery and the
+ * move was lost). It used to arrive wearing the planning sentence, which is the same lie in a different
+ * wrapper, so it gets its own code, its own key, and `retryable: true` — the board retries it by itself.
+ */
+/**
+ * The premise-class slice of the release vocabulary — refusals whose subject is a plan premise rather
+ * than planning readiness, capacity, or an unknown guard.
+ *
+ * FNXC:PlanPremiseDisposition 2026-11-18-07:17 (RUFU-727 Step 8): the promote route historically
+ * collapsed every non-unplanned, non-capacity refusal into one `guard-rejected` row whose message was the
+ * raw rejection code, so a premise refusal reached the operator as the literal string
+ * `plan-premise-exhausted` and the two release routes disagreed about the same refusal — the RUFU-718
+ * failure mode, still live on the promote lane. This predicate is how that route recognizes the class it
+ * must resolve from the shared table; the list is closed so a future rejection value defaults to the
+ * generic guard shape rather than silently joining the class.
+ */
+export function isPremiseAdmissionRejection(rejection: string | undefined): rejection is PremiseAdmissionRejection {
+  return (
+    rejection === "plan-premise-stale"
+    || rejection === "plan-premise-invalid"
+    || rejection === "plan-premise-unavailable"
+    || rejection === "plan-premise-exhausted"
+  );
+}
+
+export function releaseAdmissionWire(
+  rejection: WipAdmissionRejection | undefined,
+  reason?: UnplannedAdmissionReason | null,
+): ReleaseAdmissionWire {
+  switch (rejection) {
+    case "unplanned-for-execution":
+      // The one code that IS about planning readiness keeps the reason-keyed copy and its existing
+      // non-retryable classification: re-trying a move cannot make a pending gate report.
+      return { code: rejection, messageKey: unplannedAdmissionMessageKey(reason), retryable: false };
+    case "plan-premise-unavailable":
+    case "source-changed":
+      // Genuinely re-derivable: git did not answer, or the card moved under the check.
+      return { code: rejection, messageKey: RELEASE_ADMISSION_MESSAGE_KEYS[rejection], retryable: true };
+    case "plan-premise-stale":
+    case "plan-premise-invalid":
+    case "plan-premise-exhausted":
+    case "capacity-exhausted-or-no-slot":
+      return { code: rejection, messageKey: RELEASE_ADMISSION_MESSAGE_KEYS[rejection], retryable: false };
+    case undefined:
+      return { code: "release-deferred", messageKey: "board.rejection.releaseDeferred", retryable: true };
+    default: {
+      const exhaustive: never = rejection;
+      return exhaustive;
+    }
+  }
 }
 
 
@@ -2982,19 +3093,18 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         );
         if (!admission.released) {
           /*
-          FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
-          The 409 now carries the closed reason and picks its messageKey from it, so a board drag that
-          is refused for a pending Plan Review cannot print the same sentence as a duplicate redirect.
-          `code` is unchanged; `detail` (the engine's reason-bearing sentence) is the message.
+          FNXC:ReleaseAdmissionWire 2026-11-18-06:14 (RUFU-727 Step 4):
+          One closed table resolves code, messageKey and retryable — see `releaseAdmissionWire`. The
+          previous two-member `retryable` equality plus an `else`-shaped messageKey is what let a premise
+          refusal read as "planning or plan review is still outstanding"; `detail` (the engine's
+          reason-bearing sentence) remains the human message.
           */
-          const retryable = admission.rejection === "plan-premise-unavailable" || admission.rejection === "source-changed";
+          const wire = releaseAdmissionWire(admission.rejection, admission.reason);
           throw new ApiError(409, admission.detail ?? `Execution admission refused: ${admission.rejection ?? "release-gate"}`, {
-            code: admission.rejection ?? "release-gate-refused",
-            messageKey: admission.rejection === "unplanned-for-execution"
-              ? unplannedAdmissionMessageKey(admission.reason)
-              : UNPLANNED_FOR_EXECUTION_MESSAGE_KEY,
+            code: wire.code,
+            messageKey: wire.messageKey,
             ...(admission.reason ? { reason: admission.reason } : {}),
-            retryable,
+            retryable: wire.retryable,
           });
         }
         res.json(admission.task);
@@ -3104,6 +3214,25 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             code: "capacity-exhausted",
             messageKey: "board.rejection.capacityExhausted",
             retryable: true,
+          });
+        }
+        /*
+        FNXC:PlanPremiseDisposition 2026-11-18-07:17 (RUFU-727 Step 8):
+        Everything that was neither an unplanned hold nor capacity pressure collapsed into one
+        `guard-rejected` / `board.rejection.promoteRejected` row whose message was the raw rejection code.
+        For a plan-premise refusal that meant the operator read the literal string
+        `plan-premise-exhausted` where a sentence belongs, the reason-bearing `detail` the engine produced
+        was thrown away, and the two release routes disagreed about the same refusal — the RUFU-718
+        failure mode, still live on the promote lane. Premise-class refusals now resolve code, key and
+        retryable from the SAME table the move route uses, and carry the engine's sentence; genuinely
+        unknown guard rejections keep the pre-existing generic shape.
+        */
+        if (result.rejection && isPremiseAdmissionRejection(result.rejection)) {
+          const wire = releaseAdmissionWire(result.rejection);
+          throw new ApiError(409, result.detail ?? "Plan premises do not hold against the current tree", {
+            code: wire.code,
+            messageKey: wire.messageKey,
+            retryable: wire.retryable,
           });
         }
         throw new ApiError(409, result.rejection ?? "Promote rejected", {

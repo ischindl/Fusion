@@ -172,3 +172,72 @@ describe("translateRejection — unplanned-for-execution reason copy", () => {
     expect(seen.get("seed-prompt")).toMatch(/plan/i);
   });
 });
+
+/*
+FNXC:ReleaseAdmissionWire 2026-11-18-06:36 (RUFU-727 Step 4):
+The release door refuses with one of several codes and, since RUFU-727, each resolves its own messageKey
+through `releaseAdmissionWire`. FN-8471 is still the failure mode this loop exists to make impossible — a
+server code with no client case printed its raw key at operators — and RUFU-727 adds the second half: a
+refusal whose subject is a plan premise must not resolve the PLANNING sentence. Before this change every
+non-`unplanned-for-execution` rejection resolved `board.rejection.unplannedForExecution`, so a drifted
+plan, an unparseable Premises section, an unanswered git probe and an exhausted premise contract all read
+to an operator as "planning or plan review is still outstanding" — one sentence pointing at one subsystem
+for five different remedies. The key strings below are the same closed set
+`RELEASE_ADMISSION_MESSAGE_KEYS` resolves; both sides name them, so a rename on either side goes red here
+or there instead of shipping untranslated copy.
+*/
+const RELEASE_ADMISSION_KEYS: Record<string, string> = {
+  "plan-premise-stale": "board.rejection.planPremiseStale",
+  "plan-premise-invalid": "board.rejection.planPremiseInvalid",
+  "plan-premise-unavailable": "board.rejection.planPremiseUnavailable",
+  "plan-premise-exhausted": "board.rejection.planPremiseExhausted",
+  "source-changed": "board.rejection.sourceChanged",
+  "release-deferred": "board.rejection.releaseDeferred",
+};
+
+describe("translateRejection — release-admission refusal copy", () => {
+  const t = (_key: string, defaultValue: string) => defaultValue;
+
+  it("renders real copy for every release-admission key, on the 409 path and the bare drag path alike", () => {
+    for (const [code, messageKey] of Object.entries(RELEASE_ADMISSION_KEYS)) {
+      const rendered = translateRejection(t, rejection(code, messageKey));
+      expect(rendered, `code "${code}" must not render its raw key`).not.toBe(messageKey);
+      expect(rendered.trim().length).toBeGreaterThan(0);
+      expect(translateRejectionKey(t, messageKey), `${messageKey} must read the same on a drag pre-check`).toBe(rendered);
+    }
+    // An unknown release key still degrades to a sentence, never to a raw key.
+    expect(translateRejectionKey(t, "board.rejection.releaseRefused")).not.toBe("board.rejection.releaseRefused");
+  });
+
+  it("says something different for each refusal, because each has its remedy in a different subsystem", () => {
+    const seen = new Map<string, string>();
+    for (const [code, messageKey] of Object.entries(RELEASE_ADMISSION_KEYS)) {
+      seen.set(code, translateRejection(t, rejection(code, messageKey)));
+    }
+    const distinct = new Set(seen.values());
+    expect(distinct.size).toBe(seen.size);
+
+    // Each sentence names the thing the operator can actually act on.
+    expect(seen.get("plan-premise-stale")).toMatch(/plan premise|re-plan/i);
+    expect(seen.get("plan-premise-invalid")).toMatch(/plan premises/i);
+    expect(seen.get("plan-premise-unavailable")).toMatch(/git|repository/i);
+    expect(seen.get("plan-premise-exhausted")).toMatch(/retry/i);
+    expect(seen.get("source-changed")).toMatch(/again/i);
+    expect(seen.get("release-deferred")).toMatch(/retr/i);
+  });
+
+  it("never sends a premise or race refusal to the planning sentence", () => {
+    const genericUnplanned = translateRejection(t, rejection("unplanned-for-execution", "board.rejection.unplannedForExecution"));
+    for (const [code, messageKey] of Object.entries(RELEASE_ADMISSION_KEYS)) {
+      expect(translateRejection(t, rejection(code, messageKey)), `code "${code}" must not reuse the unplanned copy`)
+        .not.toBe(genericUnplanned);
+    }
+    // And the capacity key reads identically whichever wire code carries it, so the promote route
+    // (`capacity-exhausted`) and the move route (`capacity-exhausted-or-no-slot`) cannot print two
+    // sentences for one full column.
+    expect(translateRejection(t, rejection("capacity-exhausted", "board.rejection.capacityExhausted")))
+      .toBe(translateRejection(t, rejection("capacity-exhausted-or-no-slot", "board.rejection.capacityExhausted")));
+    expect(translateRejectionKey(t, "board.rejection.capacityExhausted"))
+      .toBe(translateRejection(t, rejection("capacity-exhausted", "board.rejection.capacityExhausted")));
+  });
+});

@@ -80,6 +80,10 @@ import {
   detectExternalIntegrationEvidenceGaps,
   formatExternalIntegrationEvidenceDiagnostic,
 } from "../spec-validation/external-integration-evidence.js";
+import {
+  detectSelfConsumingPremises,
+  formatSelfConsumingPremiseDiagnostic,
+} from "../spec-validation/plan-premise-shape.js";
 import { createRunAuditor, type EngineRunContext } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import {
@@ -425,6 +429,38 @@ export async function executeWorkflowStep(
           success: false,
           revisionRequested: true,
           output,
+          verdict: "REVISE",
+          notes: diagnostic,
+        };
+      }
+    }
+
+    /*
+     * FNXC:PlanPremiseAuthoring 2026-11-18-06:36 (RUFU-727 Step 5):
+     * A plan that premises an ABSENCE on a path its own File Scope promises to write is self-contradictory
+     * on its face, and the contradiction is resolvable from the two sections alone. Refusing it here is the
+     * whole point: discovered at the release door instead, the same shape costs a bounded pickaxe scan per
+     * premise and ends as `premise-invalidated-by-delivery` — a card that finished its work and cannot be
+     * released while its own delivery is attached, re-planning forever because a re-plan cannot make an
+     * absence premise survive a delivery that removes it.
+     *
+     * Unlike the external-integration check above this needs no node flag: `## Plan Premises` is mandatory
+     * on every planned card, so the shape gate applies to every Plan Review. It is deterministic — no
+     * reviewer agent, no model call, no review-revision budget unit — and returns the same REVISE shape the
+     * graph's plan-replan loop already consumes.
+     */
+    if (isPlanReviewStep) {
+      const premiseFindings = detectSelfConsumingPremises({ promptContent: planReviewSpecText });
+      if (premiseFindings.length > 0) {
+        const diagnostic = formatSelfConsumingPremiseDiagnostic(premiseFindings);
+        await deps.store.logEntry(
+          task.id,
+          `[pre-merge] Plan Review deterministic plan-premise shape check requested revision: ${diagnostic}`,
+        );
+        return {
+          success: false,
+          revisionRequested: true,
+          output: `REVISE: ${diagnostic}`,
           verdict: "REVISE",
           notes: diagnostic,
         };

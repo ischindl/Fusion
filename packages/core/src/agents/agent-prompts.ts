@@ -437,7 +437,7 @@ Follow this structure exactly:
 
 ## Plan Premises
 
-- {One exact JSON object per bullet. Use only \`{"kind":"file-exists|file-absent","path":"project/relative/path"}\` or \`{"kind":"text-present|text-absent","path":"project/relative/path","literal":"exact non-empty text"}\`. Include one to a few real, atomic implementation assumptions; never prose, commands, globs, regex, goals, or tautologies.}
+- {One exact JSON object per bullet. Use only \`{"kind":"file-exists|file-absent","path":"project/relative/path"}\` or \`{"kind":"text-present|text-absent","path":"project/relative/path","literal":"exact non-empty text"}\`. Include one to a few real, atomic implementation assumptions; never prose, commands, globs, regex, goals, or tautologies. A premise states a fact that is already true and stays true while the plan runs, so never write an absence premise (\`file-absent\`, or a \`text-absent\` literal) for a path listed in your own \`## File Scope\` — the plan creating or rewriting that path is what would falsify the premise, and Plan Review refuses the spec as self-contradictory. If the end state you want is that a marker or file is GONE once the work lands, put it in the tested acceptance criteria, not in Premises. The other way a premise pins the card to its pre-work state is a \`text-present\` literal quoted from a file this plan's own Steps rewrite: keep only facts that stay true after the edit.}
 
 ## Surface Enumeration
 
