@@ -6268,6 +6268,7 @@ export default interface Resources {
       "loading": "Loading custom providers…",
       "modelRow": {
         "noThinkingParams": "No thinking params",
+        "supportsImages": "Accepts images",
         "thinkingFormat": "Thinking format",
         "thinkingFormatDefault": "Default"
       },
