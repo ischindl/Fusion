@@ -41,6 +41,7 @@ import {
   reindexTasksSearchVector,
   sanitizeSearchTokens,
 } from "../../task-store/async/async-search.js";
+import { searchArchivedTasks } from "../../async-stores/async-archive-db.js";
 import { upsertArchivedTaskEntry } from "../../task-store/async/async-archive-lineage.js";
 import type { ArchivedTaskEntry } from "../../types.js";
 
@@ -379,5 +380,155 @@ pgDescribe("fts-replacement: tsvector/GIN full-text search (PostgreSQL)", () => 
     expect(sanitizeSearchTokens('+must (group)')).toEqual(["must", "group"]);
     expect(sanitizeSearchTokens("")).toEqual([]);
     expect(sanitizeSearchTokens("   ")).toEqual([]);
+  });
+
+  // ========================================================================
+  // FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+  // The recall half of the search contract, asserted at the lane level. Every case below is the shape the old
+  // rule made impossible: a punctuated token SITTING BESIDE a word. `isLiteralOnlySearchQuery` used to fire on
+  // ANY punctuation anywhere, which discarded the tsvector arm for the WHOLE query, so membership collapsed to
+  // one `%whole query%` substring match. No card contains a whole query verbatim, so the honest answer was `[]`
+  // - and the caller above, the mandatory pre-create duplicate scan, reads an empty result as "no duplicate
+  // exists" and files a duplicate card.
+  //
+  // Membership here is read through `searchTasksTsvector`, the lane that applies `buildTaskSearchPredicate`.
+  // It ranks by `ts_rank` only when a tsquery exists, so a punctuated query that lost its lexical arm also lost
+  // its ordering, which the density case below makes observable.
+  // ========================================================================
+
+  /** Seed cards that together carry the query's words but never hold the query as one contiguous sentence. */
+  async function seedRecallCorpus(): Promise<void> {
+    await insertTask(ctx.layer, "R680-A", { title: "long term MEMORY.md consolidation", description: "agent memory file" });
+    await insertTask(ctx.layer, "R680-B", { title: "budget over budget gate", description: "planning lane" });
+    await insertTask(ctx.layer, "R680-C", { title: "memory and consolidation reporting", description: "token spend" });
+    await insertTask(ctx.layer, "R680-D", { title: "an unrelated chore", description: "nothing here matches" });
+  }
+
+  it("RUFU-680 answers a punctuated multi-word query and supersedes the same query spaced out", async () => {
+    await seedRecallCorpus();
+
+    const punctuated = await searchTasksTsvector(ctx.layer.db, "memory long-term budget over budget consolidation", { limit: 100 });
+    const spaced = await searchTasksTsvector(ctx.layer.db, "memory long term budget over budget consolidation", { limit: 100 });
+
+    // The measured symptom: this row of the table answered `[]` / "No tasks matched".
+    expect(punctuated.length).toBeGreaterThan(0);
+    // The invariant that makes the symptom structurally impossible: punctuation may not narrow the result set
+    // below the same words written without it.
+    const punctuatedIds = new Set(punctuated.map((row) => row.id as string));
+    for (const row of spaced) expect(punctuatedIds.has(row.id as string)).toBe(true);
+  });
+
+  it("RUFU-680 keeps the ranked lane and its own count in agreement per query", async () => {
+    await seedRecallCorpus();
+
+    for (const q of ["memory long-term consolidation", "memory consolidation", ".txt", "% _"]) {
+      const ranked = await searchTasksTsvector(ctx.layer.db, q, { limit: 100 });
+      const counted = await countSearchTasksTsvector(ctx.layer.db, q);
+      expect(counted, `count for ${JSON.stringify(q)}`).toBe(ranked.length);
+    }
+  });
+
+  it("RUFU-680 ranks a punctuated query instead of answering it unranked", async () => {
+    /*
+    Pre-fix this lane built no tsquery for a punctuated query, so it ordered by the `length(id) * 0` constant
+    placeholder and the card that merely mentions the words could come back first. With the lexical arm restored,
+    `ts_rank` decides and the denser card leads. R2 is seeded BEFORE R1 so a createdAt tie-break cannot be what
+    puts R1 first.
+    */
+    await insertTask(ctx.layer, "R680-R2", {
+      title: "weekly reporting",
+      description:
+        "Routine weekly reporting across the team, including standup notes, sprint grooming, oncall handoff, " +
+        "release packaging, and one passing mention of the memory budget consolidation gate.",
+    });
+    await insertTask(ctx.layer, "R680-R1", {
+      title: "memory budget consolidation",
+      description: "memory budget consolidation for the memory budget lane",
+    });
+
+    const ranked = await searchTasksTsvector(ctx.layer.db, "memory long-term budget consolidation", { limit: 100 });
+    expect(ranked.length).toBeGreaterThanOrEqual(2);
+    expect(ranked[0]!.id).toBe("R680-R1");
+  });
+
+  it("RUFU-680 keeps one punctuated token exact while the multi-token form reaches its fragments", async () => {
+    await insertTask(ctx.layer, "R680-SPLIT", { title: "RUFU and 276 mentioned apart", description: "split token trap" });
+    await insertTask(ctx.layer, "R680-EXACT", { title: "RUFU-276 exact token", description: "the real card" });
+
+    // ONE punctuated raw token: the whole string is the search term, so it may not be fragment-broadened.
+    expect(resultIds(await searchTasksTsvector(ctx.layer.db, "RUFU-276", { limit: 100 }))).toEqual(["R680-EXACT"]);
+    // The same token typed as a multi-word query IS lexical and does reach the split-token card.
+    expect(resultIds(await searchTasksTsvector(ctx.layer.db, "RUFU-276 exact token", { limit: 100 }))).toEqual([
+      "R680-EXACT",
+      "R680-SPLIT",
+    ]);
+  });
+
+  it("RUFU-680 answers a lexeme-less query literally and never as bare wildcards", async () => {
+    await seedRecallCorpus();
+
+    // `% _` yields no letters or digits, so it stays literal-only with its LIKE wildcards escaped. Were that
+    // guard to lapse, both of these would read as wildcards matching every row on the board.
+    expect(await searchTasksTsvector(ctx.layer.db, "% _", { limit: 100 })).toEqual([]);
+    expect(await searchTasksTsvector(ctx.layer.db, "%_", { limit: 100 })).toEqual([]);
+  });
+
+  it("RUFU-680 answers injection-shaped queries without raising SQL or admitting an operator expression", async () => {
+    await seedRecallCorpus();
+
+    /*
+    Measured against this same cluster: `to_tsquery('simple', 'zzz:* | | memory:*')` and
+    `to_tsquery('simple', 'a!<>&|:* | memory:*')` both raise `syntax error in tsquery`. So "did not raise" is a
+    real assertion here and not a tautology - it goes red the moment a metacharacter reaches the tsquery string
+    instead of being decided by the plan. `%_` is the LIKE half of the same guard.
+    */
+    const hostile = ["a|b memory", "%_", "x:* y", "a!<>&| memory", "memory <-> nonesuch"];
+    for (const q of hostile) {
+      await expect(searchTasksTsvector(ctx.layer.db, q, { limit: 100 }), `rank(${q})`).resolves.toBeInstanceOf(Array);
+      await expect(countSearchTasksTsvector(ctx.layer.db, q), `count(${q})`).resolves.toBeTypeOf("number");
+      await expect(searchArchivedTasks(ctx.layer.db, q, 100), `archive(${q})`).resolves.toBeInstanceOf(Array);
+    }
+
+    /*
+    A leaked NOT arm would make `memory !nonesuchzzz` match every card LACKING that word, i.e. the whole board
+    including the unrelated chore. Asserting that every returned row really carries the word is what proves the
+    operator authored no tsquery expression - the `!` was decided by the plan, not handed to PostgreSQL.
+    */
+    const negated = await searchTasksTsvector(ctx.layer.db, "memory !nonesuchzzz", { limit: 100 });
+    expect(negated.length).toBeGreaterThan(0);
+    for (const row of negated) {
+      expect(`${row.id} ${row.title} ${row.description}`.toLowerCase()).toContain("memory");
+    }
+  });
+
+  it("RUFU-680 gives an archived card the membership the live board gives the same query", async () => {
+    const entry = (id: string, title: string, description: string) =>
+      ({
+        id,
+        title,
+        description,
+        archivedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }) as unknown as ArchivedTaskEntry;
+
+    /*
+    The SAME card is placed in both tables, plus a non-matching card in both, so parity is a two-way check on
+    identical input: if either lane applies its own membership rule, the two id sets differ. That is the
+    RUFU-312 invariant, and it is exactly what a one-sided edit to only the live or only the archive predicate
+    breaks.
+    */
+    const title = "long term MEMORY.md consolidation";
+    const description = "agent memory file";
+    await insertTask(ctx.layer, "P680-MATCH", { title, description });
+    await insertTask(ctx.layer, "P680-NOMATCH", { title: "an unrelated chore", description: "nothing here matches" });
+    await upsertArchivedTaskEntry(ctx.layer.db, entry("P680-MATCH", title, description));
+    await upsertArchivedTaskEntry(ctx.layer.db, entry("P680-NOMATCH", "an unrelated chore", "nothing here matches"));
+
+    const q = "memory long-term consolidation";
+    const liveIds = resultIds(await searchTasksTsvector(ctx.layer.db, q, { limit: 100 }));
+    const archiveIds = resultIds(await searchArchivedTasks(ctx.layer.db, q, 100));
+    expect(liveIds).toEqual(["P680-MATCH"]);
+    expect(archiveIds).toEqual(liveIds);
   });
 });

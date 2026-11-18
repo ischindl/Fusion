@@ -310,15 +310,25 @@ export const FTS_TS_CONFIG = "simple";
  * @returns A `SQL` fragment binding the to_tsquery, or `undefined` if the
  *   query produces no valid tokens.
  */
-export function buildTsqueryFragment(query: string): SQL | undefined {
-  const tokens = sanitizeSearchTokens(query);
-  if (tokens.length === 0) return undefined;
+/**
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+ * Build a tsquery from an already-decided lexeme list. This is the single implementation of the
+ * `to_tsquery(FTS_TS_CONFIG, "lexeme:* | lexeme:*")` contract; `buildTsqueryFragment` reaches it after
+ * planning a query, and the lanes that already hold a plan call it directly rather than replanning.
+ *
+ * The metacharacter strip is retained as defense in depth. Plan lexemes are runs of letters and digits, so it
+ * is a no-op for every query the planner produces today; it stays because dropping it would mean the
+ * injection guard depended on the caller never handing this function a raw token, and that is exactly the
+ * coupling `searchArchivedTasksTsvector` used to have.
+ */
+function buildTsqueryFragmentFromLexemes(lexemes: readonly string[]): SQL | undefined {
+  if (lexemes.length === 0) return undefined;
 
-  // Strip to_tsquery metacharacters that survive sanitizeSearchTokens
-  // (&|!:<>()'\) so user input cannot inject tsquery operators.
-  const safeTokens = tokens
-    .map((t) => t.replace(/[&|!:<>()'\\]/g, ""))
-    .filter((t) => t.length > 0);
+  // Strip to_tsquery metacharacters that survive tokenization (&|!:<>()'\) so
+  // user input cannot inject tsquery operators.
+  const safeTokens = lexemes
+    .map((lexeme) => lexeme.replace(/[&|!:<>()'\\]/g, ""))
+    .filter((lexeme) => lexeme.length > 0);
   if (safeTokens.length === 0) return undefined;
 
   // `simple` config, OR join, prefix match per token -- matches FTS5 baseline.
@@ -327,35 +337,183 @@ export function buildTsqueryFragment(query: string): SQL | undefined {
 }
 
 /**
+ * FNXC:TaskStoreSearch 2026-06-24-15:45:
+ * Build a tsquery SQL fragment from the raw query using the 'simple' config.
+ * Uses `to_tsquery` (NOT plainto_tsquery) with each token suffixed
+ * `:*` for prefix matching and joined by ` | ` (OR), reproducing the FTS5
+ * baseline semantics in store.ts (sanitizedTokens.map(t => `${t}*`).join(" OR ")).
+ *
+ * `plainto_tsquery` was INCORRECT: it ANDs tokens and does no prefix matching,
+ * so "frob" failed to match "frobnicator" and multi-term queries lost OR
+ * recall. The earlier comment claiming FTS5 used "space-joined tokens (implicit
+ * AND)" was factually wrong -- FTS5 joined with " OR " (see store.ts MATCH).
+ *
+ * `websearch_to_tsquery` is also unsuitable: it lacks prefix matching.
+ * `to_tsquery` with manually sanitized tokens + `:*` is the only function
+ * that gives OR + prefix.
+ *
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+ * The OR/prefix contract above is unchanged; what changed is its INPUT. Lexemes now come from
+ * `planTaskSearch`, so they are runs of letters and digits and no character that `to_tsquery` could read as
+ * syntax reaches it from a query. That was not theoretical: measured on the test cluster,
+ * `to_tsquery('simple', 'long-term:*')` returns `'long-term':* <-> 'long':* <-> 'term':*` - the hyphen became
+ * the phrase-distance operator - and a raw `|` becomes a real OR the operator never asked for. For a
+ * punctuation-free query the plan's lexemes are exactly its whitespace tokens, so the emitted SQL is what it
+ * was before; the planner deduplicates a repeated word and `to_tsquery` normalises duplicate lexemes itself,
+ * so the tsquery VALUE PostgreSQL builds is unchanged.
+ *
+ * @param query The raw user query (planned, then reduced to lexemes).
+ * @returns A `SQL` fragment binding the to_tsquery, or `undefined` if the
+ *   query produces no valid tokens.
+ */
+export function buildTsqueryFragment(query: string): SQL | undefined {
+  return buildTsqueryFragmentFromLexemes(planTaskSearch(query).lexemes);
+}
+
+/**
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+ * The ONE search plan for a raw query: the lexical lexemes, the per-token literal arms, and whether the query
+ * is literal-only. Every lane that has to answer "may this query be read lexically?" reads this plan, so the
+ * decision exists in exactly one place.
+ *
+ * The plan decides punctuation on RAW whitespace tokens, NEVER on `sanitizeSearchTokens` output. That sanitizer
+ * strips the operator-typed characters `"{}:*^+()` (`sanitizeSearchTokens`, above), so a sanitized basis
+ * silently reclassifies `foo*` as the pure word `foo`: the card titled `foo` then re-enters through the lexical
+ * arm AND through the now-unsuppressed cold-index LIKE fallback. That is the exact regression RUFU-312 landed
+ * the fallback gate to prevent, and the exact assertion shipped at store-search.pg.test.ts:125. Sanitized
+ * tokens remain the right source for LEXEMES; they are structurally the wrong source for the punctuation
+ * verdict, because stripping is what erases the character the verdict is about.
+ *
+ * Measured on the provisioned test cluster, and the reason raw punctuated tokens never enter a tsquery:
+ * `to_tsquery('simple', 'long-term:*')` returns `'long-term':* <-> 'long':* <-> 'term':*` — the hyphen is
+ * consumed as the phrase-distance operator — and `to_tsquery('simple', 'long | term:*')` returns
+ * `'long' | 'term':*`, a real OR the operator did not ask for. Lexemes are therefore built from letters and
+ * digits only, so no character that `to_tsquery` could read as syntax can ever reach it from a query.
+ *
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680) recall contract:
+ * Before this plan, one regex over the WHOLE trimmed query made ANY punctuation discard the full-text branch,
+ * so the mandatory pre-create duplicate scan — which its own prompt tells the agent to run with "file paths,
+ * symptoms, and symbols", all of which contain punctuation — was answered from a single `%whole query%`
+ * substring match and returned zero rows. The agent read that zero as "no duplicate exists" and filed a
+ * duplicate card. Now a multi-token punctuated query contributes its word fragments as lexemes (so
+ * `long-term` recalls cards carrying `long` and `term`) while each punctuated raw token keeps an exact literal
+ * arm of its own. The exactness promise that motivated RUFU-312 survives intact and keeps its whole scope:
+ * a SINGLE punctuated raw token (`.txt`, `%`, `_`, `foo*`, `RUFU-276`) is still answered literally and is never
+ * broadened, because there the punctuation is the entire search term rather than one token among several.
+ */
+export interface TaskSearchPlan {
+  /** Raw whitespace tokens of the trimmed query. Never sanitized output. */
+  readonly rawTokens: readonly string[];
+  /** Deduplicated lexical lexemes, letters and digits only, in first-seen order. */
+  readonly lexemes: readonly string[];
+  /**
+   * Punctuated raw tokens that get a literal substring arm of their own, so a path or symbol typed inside a
+   * multi-word query still has to appear verbatim. Empty whenever `literalOnly` is true, because there the
+   * whole-query literal already is the answer.
+   */
+  readonly punctuatedTokenLiterals: readonly string[];
+  /** Whether membership may only be answered by literal substring matching. */
+  readonly literalOnly: boolean;
+}
+
+/** A raw token whose every character is a letter or a digit — a pure word, punctuation-free. */
+const PURE_WORD_TOKEN_RE = /^[\p{L}\p{N}]+$/u;
+/** Runs of letters and digits inside a punctuated token: `self-healing.ts` yields `self`, `healing`, `ts`. */
+const WORD_FRAGMENT_RE = /[\p{L}\p{N}]+/gu;
+
+export function planTaskSearch(query: string): TaskSearchPlan {
+  const trimmed = query?.trim() ?? "";
+  const rawTokens = trimmed ? trimmed.split(/\s+/).filter((token) => token.length > 0) : [];
+
+  const lexemes: string[] = [];
+  const punctuatedTokenLiterals: string[] = [];
+  const seenLexemes = new Set<string>();
+  const addLexeme = (candidate: string) => {
+    if (!seenLexemes.has(candidate)) {
+      seenLexemes.add(candidate);
+      lexemes.push(candidate);
+    }
+  };
+
+  for (const rawToken of rawTokens) {
+    if (PURE_WORD_TOKEN_RE.test(rawToken)) {
+      addLexeme(rawToken);
+      continue;
+    }
+    // Punctuated raw token: it keeps its own literal arm, and its word fragments join the lexical arm.
+    // A token with no alphanumerics at all (`%`, `_`) contributes no lexeme — that is what stops a
+    // lexeme-less query from ever producing an empty tsquery that means "nothing is required".
+    punctuatedTokenLiterals.push(rawToken);
+    for (const fragment of rawToken.match(WORD_FRAGMENT_RE) ?? []) addLexeme(fragment);
+  }
+
+  const literalOnly =
+    rawTokens.length === 0
+    || lexemes.length === 0
+    || (rawTokens.length === 1 && punctuatedTokenLiterals.length === 1);
+
+  return literalOnly
+    ? { rawTokens, lexemes, punctuatedTokenLiterals: [], literalOnly: true }
+    : { rawTokens, lexemes, punctuatedTokenLiterals, literalOnly: false };
+}
+
+/**
  * FNXC:TaskStoreSearch 2026-11-01-19:24 (RUFU-312 step 6):
  * Whether a query must be answered as a LITERAL substring rather than as a lexical (tsvector) query.
  * Punctuation carries user intent — a task id, a file extension, a path — and tsvector tokenization erases it,
- * so a punctuation-bearing query may only match rows that literally contain what the operator typed.
- * This is the ONE predicate for that decision: `buildTaskSearchPredicate` (membership), `searchTasksTsvector`
- * (whether a rank order exists), and `searchTasksImpl` (whether the cold-index LIKE fallback may run) all
- * read it, because a fallback that tokenizes a punctuation query re-admits exactly the rows the literal rule
- * exists to exclude.
+ * so a query whose intent IS the punctuated string may only match rows that literally contain what the
+ * operator typed. This is the ONE predicate for that decision: `buildTaskSearchPredicate` (membership),
+ * `buildArchiveSearchPredicate` (archive membership), `searchTasksTsvector` and `searchArchivedTasks` (whether
+ * a rank order exists), and `searchTasksImpl` (whether the cold-index LIKE fallback may run) all read it,
+ * because a fallback that tokenizes a literal query re-admits exactly the rows the literal rule exists to exclude.
+ *
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680): the verdict now answers from `planTaskSearch`, so its
+ * scope is stated honestly. It is literal-only for a query with no tokens, for one that yields no word lexeme
+ * at all (`%`, `_`, `% _`), and for exactly ONE punctuated raw token (`.txt`, `%`, `foo*`, `RUFU-276`) — the
+ * shape the 2026-11-01 rationale was written for. A MULTI-token punctuated query is NOT literal-only: its
+ * punctuated tokens still each demand a verbatim match, but they no longer get to veto the lexical arm for the
+ * words around them. The body changed; the name, the signature, and the five consumers did not.
  */
 export function isLiteralOnlySearchQuery(query: string): boolean {
-  return /[^\p{L}\p{N}\s]/u.test(query?.trim() ?? "");
+  return planTaskSearch(query).literalOnly;
 }
 
 /**
  * FNXC:TaskStoreSearch 2026-09-11-22:33:
- * Task membership always includes a case-insensitive literal substring match across ID, title, description, and comments. Lexical queries additionally retain GIN-backed OR/prefix recall, while punctuation-bearing queries such as `.txt`, `%`, and `_` stay literal so tokenization cannot admit rows that omit characters the user typed; LIKE wildcards are escaped before binding.
+ * Task membership always includes a case-insensitive literal substring match across ID, title, description, and comments. LIKE wildcards are escaped before binding.
+ *
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680) - corrected scope of this note's second sentence, which
+ * read "...while punctuation-bearing queries such as `.txt`, `%`, and `_` stay literal so tokenization cannot
+ * admit rows that omit characters the user typed". That rationale is correct for its real scope, ONE punctuated
+ * raw token, and inverted when applied to a whole multi-word query: there the literal arm stops protecting the
+ * characters the operator typed and starts requiring the entire sentence verbatim. No card contains a whole
+ * sentence verbatim, so the lane answered zero rows and every caller - above all the mandatory pre-create
+ * duplicate scan - read that zero as "no duplicate exists" and filed a duplicate card.
+ * Membership is now `or(GIN lexical arm, whole-query literal, one literal arm PER punctuated raw token)`. The
+ * exactness promise keeps its full force per token: a path or a symbol still has to appear verbatim. It just no
+ * longer vetoes the lexical recall of the words beside it. Punctuation-free and single-token queries compose
+ * the identical arms and emit the identical SQL.
  */
 export function buildTaskSearchPredicate(query: string): SQL | undefined {
   const literalPredicate = buildLiteralSubstringPredicate(query);
   if (!literalPredicate) return undefined;
 
-  // Punctuation carries user intent (task IDs, paths, extensions). Do not let
-  // tsvector tokenization erase it and broaden membership.
-  if (isLiteralOnlySearchQuery(query)) return literalPredicate;
+  const plan = planTaskSearch(query);
+  // A single punctuated raw token, or a query with no word lexeme at all, is answered by the literal arm
+  // alone: the operator typed the whole search term, so tokenizing it would admit rows that omit characters
+  // they insisted on seeing.
+  if (plan.literalOnly) return literalPredicate;
 
-  const tsquery = buildTsqueryFragment(query);
-  return tsquery
-    ? or(sql`${schema.project.tasks.searchVector} @@ ${tsquery}`, literalPredicate) as SQL
-    : literalPredicate;
+  const arms: SQL[] = [];
+  const tsquery = buildTsqueryFragmentFromLexemes(plan.lexemes);
+  if (tsquery) arms.push(sql`${schema.project.tasks.searchVector} @@ ${tsquery}`);
+  arms.push(literalPredicate);
+  for (const tokenLiteral of plan.punctuatedTokenLiterals) {
+    // Reuse the one LIKE-escaping implementation instead of re-escaping per lane.
+    const arm = buildLiteralSubstringPredicate(tokenLiteral);
+    if (arm) arms.push(arm);
+  }
+  return or(...arms) as SQL;
 }
 
 /**
@@ -374,21 +532,35 @@ const ARCHIVE_SEARCHABLE_COLUMN_REFS: SQL[] = [
 /**
  * FNXC:TaskSearchVectorScope 2026-11-01-20:30 (RUFU-312 step 6):
  * Archived-card membership, built by the SAME rules as `buildTaskSearchPredicate`: lexical queries get the
- * GIN-backed OR/prefix arm plus the literal substring arm, and a punctuation-bearing query gets the literal
- * arm alone. One rule for both task tables is the point — an archived card that answers a different membership
+ * GIN-backed OR/prefix arm plus the literal substring arm, and a literal-only query gets the literal arm alone.
+ * One rule for both task tables is the point — an archived card that answers a different membership
  * question than a live one makes "where is my card?" depend on whether it was ever archived, and the archive
  * path's old shape (tsquery over a vector that also indexed the comment document, ILIKE only when the tsquery
  * came out empty) had exactly that divergence.
+ *
+ * FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+ * The live rule this mirrors now distinguishes ONE punctuated raw token from a multi-token punctuated query,
+ * and this lane follows it arm for arm over its own column refs rather than keeping a private copy of the old
+ * whole-query rule. Parity is the RUFU-312 invariant, so the recall fix has to land here in the same change it
+ * lands live: a one-sided edit would make a card findable from the board only, and "where is my card?" would
+ * once again depend on whether it had ever been archived.
  */
 export function buildArchiveSearchPredicate(query: string): SQL | undefined {
   const literalPredicate = buildLiteralSubstringPredicate(query, ARCHIVE_SEARCHABLE_COLUMN_REFS);
   if (!literalPredicate) return undefined;
-  if (isLiteralOnlySearchQuery(query)) return literalPredicate;
 
-  const tsquery = buildTsqueryFragment(query);
-  return tsquery
-    ? or(sql`${schema.archive.archivedTasks.searchVector} @@ ${tsquery}`, literalPredicate) as SQL
-    : literalPredicate;
+  const plan = planTaskSearch(query);
+  if (plan.literalOnly) return literalPredicate;
+
+  const arms: SQL[] = [];
+  const tsquery = buildTsqueryFragmentFromLexemes(plan.lexemes);
+  if (tsquery) arms.push(sql`${schema.archive.archivedTasks.searchVector} @@ ${tsquery}`);
+  arms.push(literalPredicate);
+  for (const tokenLiteral of plan.punctuatedTokenLiterals) {
+    const arm = buildLiteralSubstringPredicate(tokenLiteral, ARCHIVE_SEARCHABLE_COLUMN_REFS);
+    if (arm) arms.push(arm);
+  }
+  return or(...arms) as SQL;
 }
 
 /**
@@ -490,11 +662,23 @@ export async function searchArchivedTasksTsvector(
   limit: number,
   projectId?: string,
 ): Promise<Record<string, unknown>[]> {
-  const tokens = sanitizeSearchTokens(query);
-  if (tokens.length === 0) return [];
+  /*
+  FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680):
+  This lane used to reassemble its own query string - `sanitizeSearchTokens(query).join(" ")` - and hand the
+  result to `buildTsqueryFragment`, which re-tokenized it. That double tokenization was the one place where a
+  raw punctuated token reached `to_tsquery` with no plan in front of it: `long-term cleanup` arrived as
+  `long-term:* | cleanup:*`, and a hyphen inside a tsquery is not inert text - measured, `to_tsquery('simple',
+  'long-term:*')` returns `'long-term':* <-> 'long':* <-> 'term':*`, the phrase-distance operator. The lexemes
+  now come from the same plan every other lane reads.
 
-  const cleanQuery = tokens.join(" ");
-  const tsquery = buildTsqueryFragment(cleanQuery);
+  Its membership shape is deliberately UNCHANGED: this helper is tsvector-only, with no literal arm. So a
+  literal-only plan has nothing to ask the vector and answers empty, rather than being broadened into the
+  fragments of a token whose whole point was that the operator typed it exactly.
+  */
+  const plan = planTaskSearch(query);
+  if (plan.rawTokens.length === 0 || plan.literalOnly) return [];
+
+  const tsquery = buildTsqueryFragmentFromLexemes(plan.lexemes);
   if (!tsquery) return [];
 
   // FNXC:MultiProjectIsolation 2026-07-12: scope archived search to the bound

@@ -2569,12 +2569,21 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       /*
       FNXC:TaskStoreSearch 2026-11-01-20:25 (RUFU-312 step 6, measured red at base 7a9981a71f):
       The fallback exists for a cold or unusable tsvector index, and it tokenizes: `sanitizeSearchTokens`
-      strips FTS operators, so `foo*` becomes `foo`. For a punctuation-bearing query the primary path already
-      answered with the literal arm alone — that is `buildTaskSearchPredicate`'s documented rule — so an empty
-      result is the ANSWER, and re-running a punctuation-stripped LIKE here re-admitted exactly the rows the
-      literal rule exists to exclude (`foo*` matching a card titled `foo`). Same guard as membership and
-      ranking, one seam: a lexical query keeps its cold-index fallback, a literal query never gets a second,
-      narrower-still reading of what the operator typed.
+      strips FTS operators, so `foo*` becomes `foo`. For a LITERAL-ONLY query the primary path already answered
+      with the literal arm alone — that is `buildTaskSearchPredicate`'s documented rule — so an empty result is
+      the ANSWER, and re-running a punctuation-stripped LIKE here re-admitted exactly the rows the literal rule
+      exists to exclude (`foo*` matching a card titled `foo`). Same guard as membership and ranking, one seam:
+      a lexical query keeps its cold-index fallback, a literal query never gets a second, narrower-still
+      reading of what the operator typed.
+
+      FNXC:TaskStoreSearch 2026-11-18-02:19 (RUFU-680) — the scope of "literal-only" above is now stated
+      precisely, because the gate is keyed on it and the old wording read as "any punctuation". A plan is
+      literal-only for a query with no tokens, for one that yields no word lexeme at all (`%`, `_`, `% _`), and
+      for exactly ONE punctuated raw token (`.txt`, `foo*`, `RUFU-276`) — the shape whose entire intent IS the
+      punctuated string. A MULTI-token punctuated query is not gated here: it is lexical, it did get a full
+      ranked primary answer, and if that answer came back empty a cold index is the live explanation, so its
+      fallback must still run. Suppressing that shape was the recall defect — it is the same gate that turned
+      `memory long-term budget over budget consolidation` into a confident "no duplicate exists".
       */
       pgRows = await searchTasksLike(layer.db, trimmedQuery, {
         limit: sourceLimit,
