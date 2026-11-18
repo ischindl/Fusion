@@ -282,9 +282,21 @@ export function recordRequest(
 }
 
 /** Compute a percentile over the recent durations ring (0 when empty). */
-function percentile(recent: number[], pct: number): number {
-  if (recent.length === 0) return 0;
-  const sorted = [...recent].sort((a, b) => a - b);
+export function percentile(values: readonly number[], pct: number): number {
+  /*
+  FNXC:RouteCostAccounting 2026-11-18-07:10 (RUFU-479): ONE nearest-rank percentile for the dashboard's
+  server metrics. `reliability-metrics.ts` held a second copy that assumed a sorted input, and the new
+  per-route cost map would have needed a third. Three copies of a percentile is how a dashboard ends up
+  reporting two different p95s for overlapping windows, so the rule lives here and both other callers
+  import it. Sorting internally is the union of the two old contracts: the ring is written in arrival
+  order, and a sorted caller is unaffected by a second sort beyond the copy it already made.
+
+  This module, and not `metrics/route-cost.ts`, is its home for a load-order reason: `route-cost.ts`
+  imports this module's ring cap and bucket edges, so a percentile living there would make the dependency
+  two-directional.
+  */
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((pct / 100) * sorted.length) - 1));
   return sorted[idx] ?? 0;
 }

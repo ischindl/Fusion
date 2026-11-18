@@ -110,6 +110,35 @@ describe("diff stats lane — one git lane per key", () => {
     expect(__taskDiffStatsInFlightCount()).toBe(0);
   });
 
+  /*
+  FNXC:TaskDiffStats 2026-11-18-12:35 (RUFU-479): the claim this card is measured against is stated in git
+  invocations, not in computations. `diff-stats-ttl-outlasts-poll.test.ts` proves the TTL and the client poll
+  period still pair, but it does so by reading two constants, and a constant that is long enough proves a
+  window, not a saving - the saving only exists if a request that lands inside the window costs the shared
+  process nothing. This case spends a real request pair against the real route and asserts the second answer
+  forks ZERO subprocesses. The cache is deliberately NOT reset between the two requests: the cache is the
+  subject, and the single-flight case above already covers the concurrent shape.
+  */
+  it("serves a within-TTL re-request with zero git invocations", async () => {
+    server = await startServer();
+
+    const first = await fetch(server.url("/api/tasks/RUFU-9001/diff?stats=1"));
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const firstCalls = gitCallCount;
+    expect(firstCalls).toBeGreaterThan(0);
+
+    gitCallCount = 0;
+
+    const second = await fetch(server.url("/api/tasks/RUFU-9001/diff?stats=1"));
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual(firstBody);
+    expect(
+      gitCallCount,
+      `a within-TTL stats re-request forked ${gitCallCount} git subprocesses; the badge lane is the slowest idle cost on the board`,
+    ).toBe(0);
+  });
+
   it("clears the flight when the lane fails so a later poll is not wedged", async () => {
     runGitCommandMock.mockImplementation(async () => {
       gitCallCount++;

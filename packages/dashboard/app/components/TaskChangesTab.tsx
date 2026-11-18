@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { isCompleteColumnRole, isReviewColumnRole, isWipColumnRole } from "../utils/columnRoles";
 import { useTranslation } from "react-i18next";
 import { FileCode, ChevronDown, ChevronRight, ChevronLeft, AlertCircle, WrapText, Maximize2 } from "lucide-react";
@@ -150,7 +150,20 @@ export function TaskChangesTab({ columnFlags, taskId, worktree, projectId, colum
 
   const canLoad = isWipColumnRole(columnFlags, column ?? "") || isReviewColumnRole(columnFlags, column ?? "") || isDone;
 
+  /*
+  FNXC:DiffLaneCancellation 2026-11-18-09:58 (RUFU-479): the Files tab's read is superseded, not abandoned.
+  `loadDiff` re-runs whenever the target changes (task id, project, lane, merge commit), and until now the
+  superseded read kept its place in the client's four-slot read queue and, on a server cache miss, its place
+  behind a git lane measured at 19.96-28.35 s on the deployed node. Holding the live controller in a ref lets
+  two events cancel it - a newer target starting, and the tab unmounting - without inventing an effect whose
+  cleanup would also fire on dependencies that do not change the read.
+  */
+  const inflightDiffRef = useRef<AbortController | null>(null);
+
   const loadDiff = useCallback(async () => {
+    inflightDiffRef.current?.abort();
+    const controller = new AbortController();
+    inflightDiffRef.current = controller;
     if (!canLoad && !isDone) {
       setLoading(false);
       return;
@@ -166,7 +179,7 @@ export function TaskChangesTab({ columnFlags, taskId, worktree, projectId, colum
         return;
       }
 
-      const data: TaskDiff = await fetchTaskDiff(taskId, undefined, projectId);
+      const data: TaskDiff = await fetchTaskDiff(taskId, undefined, projectId, false, controller.signal);
       const normalized: NormalizedFile[] = data.files.map((f) => ({
         path: f.path,
         status: f.status,
@@ -181,6 +194,10 @@ export function TaskChangesTab({ columnFlags, taskId, worktree, projectId, colum
         setCurrentFileIndex(0);
       }
     } catch (err) {
+      // A cancellation is not a load failure: the operator moved on, there is nothing to report as broken.
+      if ((err as { name?: string } | null)?.name === "AbortError") {
+        return;
+      }
       if (isDone && !mergeDetails?.commitSha) {
         setFiles([]);
         setStats({ filesChanged: 0, additions: 0, deletions: 0 });
@@ -189,12 +206,25 @@ export function TaskChangesTab({ columnFlags, taskId, worktree, projectId, colum
         setError(getErrorMessage(err) || t("taskChanges.loadError", "Failed to load task changes"));
       }
     } finally {
-      setLoading(false);
+      /*
+      FNXC:DiffLaneCancellation 2026-11-18-10:00 (RUFU-479): only the read that is still the current one owns
+      the spinner. An aborted predecessor settles after its successor has already set `loading`, so an
+      unguarded `setLoading(false)` here would clear the indicator of a load that is still running - and on
+      unmount the ref is null, which also keeps this from setting state on an unmounted component.
+      */
+      if (inflightDiffRef.current === controller) {
+        setLoading(false);
+      }
     }
   }, [taskId, projectId, canLoad, isDone, mergeDetails?.commitSha]);
 
   useEffect(() => {
     loadDiff();
+    // Unmounting the tab means nobody is waiting for the answer any more.
+    return () => {
+      inflightDiffRef.current?.abort();
+      inflightDiffRef.current = null;
+    };
   }, [loadDiff]);
 
   const toggleFile = (filePath: string) => {

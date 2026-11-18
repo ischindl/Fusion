@@ -9,6 +9,7 @@ import {
   __setResumeDiagnosticsCapForTests,
   registerDiagnosticsRoutes,
 } from "../register-diagnostics-routes.js";
+import { ROUTE_COST_MAX_ROUTES, observeRouteCost, resetRouteCosts } from "../../metrics/route-cost.js";
 
 function createApp(getProjectContext = vi.fn(async () => ({ projectId: "proj-1", store: {} })), store: unknown = {}) {
   const router = express.Router();
@@ -254,5 +255,43 @@ describe("register-diagnostics-routes", () => {
     const withRows = await performRequest(app, "GET", "/api/diagnostics/run-audit-sink?rows=1");
     expect(withRows.body.deadLetter.entries).toEqual([]);
     expect(readRows).toHaveBeenCalledOnce();
+  });
+});
+
+/*
+FNXC:RouteCostAccounting 2026-11-18-07:52 (RUFU-479): the shape of the answer an operator gets when they
+ask "which route is costing this".
+
+The measured failure was one board page at 8.79-10.79 s while `/api/settings/global` on the same process
+answered in 5 ms, visible nowhere but a browser trace. These cases pin the two properties that make the
+published number usable instead of misleading: an unserved route is ABSENT (so "nothing recorded yet" and
+"everything is fast" stay different answers), and every key is a ROUTE TEMPLATE - a concrete URL must never
+appear, because the same shape holding per-card URLs is an unbounded map wearing a percentile.
+*/
+describe("GET /api/diagnostics/costs (RUFU-479)", () => {
+  beforeEach(() => resetRouteCosts());
+
+  it("answers an empty table as zero routes served, not as a fabricated zero-cost route", async () => {
+    const { app } = createApp();
+    const res = await performRequest(app, "GET", "/api/diagnostics/costs");
+
+    expect(res.status).toBe(200);
+    expect(res.body.routes).toEqual({});
+    expect(res.body.routesServed).toBe(0);
+    expect(res.body.bounds.maxRouteTemplates).toBe(ROUTE_COST_MAX_ROUTES);
+  });
+
+  it("reports p50, p95 and count per route template, and never a concrete URL", async () => {
+    const { app } = createApp();
+    observeRouteCost({ method: "GET", routeTemplate: "/api/tasks/page", durationMs: 8_790 });
+    observeRouteCost({ method: "GET", routeTemplate: "/api/tasks/page", durationMs: 10_790 });
+    observeRouteCost({ method: "GET", routeTemplate: "/api/settings/global", durationMs: 5 });
+
+    const res = await performRequest(app, "GET", "/api/diagnostics/costs");
+
+    expect(res.body.routesServed).toBe(2);
+    expect(res.body.routes["GET /api/tasks/page"]).toMatchObject({ count: 2, maxMs: 10_790 });
+    expect(res.body.routes["GET /api/settings/global"].count).toBe(1);
+    expect(Object.keys(res.body.routes)).not.toContain("GET /api/tasks/RUFU-457/diff");
   });
 });

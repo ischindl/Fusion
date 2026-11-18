@@ -1,4 +1,5 @@
 import { isResumeTrigger } from "../shared/resume-triggers.js";
+import { ROUTE_COST_MAX_ROUTES, routeCostSnapshot } from "../metrics/route-cost.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
 let resumeRingCap = 5_000;
@@ -113,6 +114,33 @@ export const registerDiagnosticsRoutes: ApiRouteRegistrar = (ctx) => {
     } catch (error) {
       ctx.rethrowAsApiError(error, "Failed to read resume diagnostics events");
     }
+  });
+
+  /*
+  FNXC:RouteCostAccounting 2026-11-18-07:18 (RUFU-479): per-route cost for the board-side question the
+  aggregate latency ring cannot answer - not "is the node slow" but "which handler is slow". Reading a
+  frozen board took 22-31 s and the only evidence was a browser trace; the page alone cost 8.79-10.79 s
+  while a settings read on the same server took 5 ms.
+
+  This is BOARD-SIDE ROUTE COST, not a run-audit row: it lives in this process' memory, a restart clears
+  it, and it is deliberately absent from the audit store, whose contract is durable ids/counts/outcomes and
+  whose retention would have to collect a per-route latency ring forever. Keys are route templates
+  (`GET /api/tasks/:id/diff`), never concrete URLs, which is what makes the two bounds
+  (`ROUTE_COST_MAX_ROUTES` routes, `REQUEST_LATENCY_RING_CAP` samples each) absolute rather than
+  proportional to traffic.
+
+  A route that was never served is ABSENT from `routes` rather than present with zeroes, and `routesServed`
+  counts what is present, so "nothing recorded yet" and "one route recorded once" are different answers.
+  */
+  router.get("/diagnostics/costs", async (_req, res) => {
+    const routes = routeCostSnapshot();
+    res.json({
+      routes,
+      routesServed: Object.keys(routes).length,
+      bounds: {
+        maxRouteTemplates: ROUTE_COST_MAX_ROUTES,
+      },
+    });
   });
 
   /*

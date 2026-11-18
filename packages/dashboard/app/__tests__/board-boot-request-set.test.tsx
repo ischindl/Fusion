@@ -29,14 +29,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, render, waitFor } from "@testing-library/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import { useAgents } from "../hooks/useAgents";
 import { useBoardChromeReady } from "../hooks/useBoardChromeReady";
-import { fetchBoardWorkflows } from "../api";
+import { fetchBoardWorkflows, fetchGlobalSettings, invalidateGlobalSettingsCache } from "../api";
 import { UsageIndicator } from "../components/UsageIndicator";
 import { TaskCard, __test_clearMissionTitleCache, __test_clearAgentNameCache } from "../components/TaskCard";
 import { SWR_CACHE_KEYS, clearCache } from "../utils/swrCache";
+import { resetRequestStats, requestStatCount } from "../api/client/request-stats";
 import type { Task } from "@fusion/core";
 
 /*
@@ -331,6 +332,7 @@ function pathsMatching(pattern: RegExp): string[] {
 
 beforeEach(() => {
   recorded = [];
+  resetRequestStats();
   sessionStorage.clear();
   localStorage.clear();
   clearCache(SWR_CACHE_KEYS.USAGE);
@@ -355,6 +357,27 @@ describe("board boot request set (RUFU-493)", () => {
       pathsMatching(/\/api\/usage/),
       `the cold board mount requested /api/usage; measured 61-82 s each on the deployed board, holding two of the four read slots`,
     ).toEqual([]);
+
+    unmount();
+  });
+
+  /*
+  FNXC:RouteCostAccounting 2026-11-18-07:40 (RUFU-479):
+  The boot's own per-pattern counter has to AGREE with what the transport recorded, or the number an
+  operator reads at `GET /api/diagnostics/costs` (server side) and the client figure quoted next to it are
+  two opinions. Coalescing is the interesting case: several consumers, one read, so both counters must
+  report one. A counter that disagreed would be worse than none, because the whole point of publishing it
+  is to settle a cost argument without a browser trace.
+  */
+  it("counts one boot's reads per URL pattern, agreeing with the transport recording", async () => {
+    const { unmount } = render(<BoardBootHarness />);
+    await waitFor(() => expect(countMatching(/\/api\/tasks\/board-workflows/)).toBeGreaterThanOrEqual(1));
+
+    expect(requestStatCount("/tasks/board-workflows")).toBe(
+      countMatching(/\/api\/tasks\/board-workflows/),
+      "the client's per-pattern counter must report the same number of board-workflows reads the transport sent",
+    );
+    expect(requestStatCount("/usage")).toBe(0);
 
     unmount();
   });
@@ -724,5 +747,78 @@ describe("board boot request set — board-workflows read scope (RUFU-493)", () 
         `${testCase.label}: classifier agrees with parsed params: ${path}`,
       ).toBe(!params.get("taskIds") && params.get("scope") !== "lanes");
     }
+  });
+});
+
+
+/*
+FNXC:GlobalSettingsCache 2026-11-18-12:25 (RUFU-479):
+The deployed trace measured `/api/settings/global` fetched FOUR times by one board load - four consumers
+mounted, each asked, each paid. `global-settings-cache.test.ts` proves the mechanism in isolation (a shared
+in-flight promise, then a TTL window, then invalidation on write). What this file owns is the other half:
+whether the boot's request SET actually shows one read, because the whole card is about the set, and a
+cache that works in a unit test but is bypassed by a consumer importing the transport directly would leave
+four lines in the trace and a green unit suite. Shape only, as every case here: counts, never a clock.
+*/
+describe("board boot request set — settings fan-out (RUFU-479)", () => {
+  /** One boot-path consumer: it asks for global settings on mount, the way the four measured consumers did. */
+  function SettingsConsumer({ label }: { label: string }) {
+    const [state, setState] = useState("pending");
+    useEffect(() => {
+      let active = true;
+      fetchGlobalSettings()
+        .then(() => {
+          if (active) setState("done");
+        })
+        .catch(() => {
+          if (active) setState("error");
+        });
+      return () => {
+        active = false;
+      };
+    }, []);
+    return <span data-testid={`settings-${label}`}>{state}</span>;
+  }
+
+  it("collapses four consumers asking on mount into one transport read", async () => {
+    // The cache is module-level and outlives a test; a warm entry would make the absence assertion
+    // pass for the wrong reason, exactly the hazard this file's header warns about.
+    invalidateGlobalSettingsCache();
+
+    const { container, unmount } = render(
+      <>
+        {["a", "b", "c", "d"].map((label) => (
+          <SettingsConsumer key={label} label={label} />
+        ))}
+      </>,
+    );
+
+    await waitFor(() => {
+      for (const label of ["a", "b", "c", "d"]) {
+        expect(textOf(container, `settings-${label}`)).toBe("done");
+      }
+    });
+
+    expect(countMatching(/\/settings\/global/)).toBe(
+      1,
+      `four consumers asked; the transport saw ${pathsMatching(/\/settings\/global/).length} reads`,
+    );
+    // The published per-pattern counter must agree with the transport, or the diagnostics figure is a second opinion.
+    expect(requestStatCount("/settings/global")).toBe(1);
+
+    unmount();
+  });
+
+  it("saves the payload out of browser storage, because it carries tokens", async () => {
+    invalidateGlobalSettingsCache();
+    const { container, unmount } = render(<SettingsConsumer label="a" />);
+    await waitFor(() => expect(textOf(container, "settings-a")).toBe("done"));
+
+    const persisted = [...Array(localStorage.length).keys()].map((i) => localStorage.key(i))
+      .concat([...Array(sessionStorage.length).keys()].map((i) => sessionStorage.key(i)))
+      .filter((key) => /settings/i.test(key ?? ""));
+    expect(persisted, `the global settings payload can carry daemon and GitHub tokens; it must stay in memory only`).toEqual([]);
+
+    unmount();
   });
 });

@@ -3,6 +3,12 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 import { useTaskDiffStats, __test_clearDiffStatsCache } from "../useTaskDiffStats";
 import * as api from "../../api";
 
+/*
+FNXC:DiffLaneCancellation 2026-11-18-11:05 (RUFU-479): every stats fetch now carries an AbortSignal as its
+fifth argument, so each identity assertion below states it. The matcher is the new truth, not a loosening:
+the four identity arguments are still asserted exactly, and dropping the signal from the hook would fail
+every one of these lines again.
+*/
 vi.mock("../../api", () => ({
   fetchTaskDiff: vi.fn(),
 }));
@@ -35,7 +41,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 2, additions: 15, deletions: 2 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true, expect.any(AbortSignal));
   });
 
   it("passes projectId to fetchTaskDiff", async () => {
@@ -50,7 +56,7 @@ describe("useTaskDiffStats", () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, "proj-1", true);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, "proj-1", true, expect.any(AbortSignal));
   });
 
   it("fetches for active columns without a worktree", async () => {
@@ -71,7 +77,7 @@ describe("useTaskDiffStats", () => {
 
     expect(inProgress.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
     expect(inReview.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true, expect.any(AbortSignal));
   });
 
   it("fetches diff stats for active tasks with a worktree", async () => {
@@ -95,7 +101,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 1, additions: 10, deletions: 2 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", "/repo/.worktrees/fn-123", "proj-1", true);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", "/repo/.worktrees/fn-123", "proj-1", true, expect.any(AbortSignal));
   });
 
   it("fetches for done tasks even when commit SHA is missing", async () => {
@@ -111,7 +117,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 4, additions: 20, deletions: 6 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true, expect.any(AbortSignal));
   });
 
   it("does not fetch for empty task ID", async () => {
@@ -637,7 +643,7 @@ describe("useTaskDiffStats", () => {
 
       await waitFor(() => expect(result.current.stats).toEqual({ filesChanged: 1, additions: 5, deletions: 1 }));
       expect(result.current.loading).toBe(false);
-      expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-STEP", "/repo/.worktrees/fn-step", undefined, true);
+      expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-STEP", "/repo/.worktrees/fn-step", undefined, true, expect.any(AbortSignal));
       expect(mockFetchTaskDiff).toHaveBeenCalledTimes(1);
 
       rerender({ stepVersion: 2 as number | string });

@@ -15,6 +15,24 @@ vi.mock("../../api", () => ({
 
 import { fetchGlobalSettings, updateGlobalSettings } from "../../api";
 
+/*
+FNXC:IdleBoardReadCost 2026-11-18-11:25 (RUFU-479): the two kinds of settings read are now distinguishable
+by their arguments, and the assertions below have to name which one they are counting. A read with NO
+arguments is the hydrating read - the one that could DECIDE the selection. A read with `{ forceFresh: true }`
+is the merge base a whole-map write needs (`dashboardCurrentProjectIdByNode` carries one entry per node, so
+the writer must not merge onto a TTL-cached snapshot). Counting them together used to be exact; counting
+them together now would either forgive a duplicate hydrating read or forbid a write's own base.
+*/
+type SettingsCall = Parameters<typeof fetchGlobalSettings>;
+const settingsMock = () => fetchGlobalSettings as unknown as ReturnType<typeof vi.fn>;
+/** Reads that could have decided the selection: the hydrating read takes no arguments. */
+const decisionReads = () => settingsMock().mock.calls.filter((call: SettingsCall) => call.length === 0);
+/** Reads that only exist to give a whole-map write its merge base. */
+const mergeReads = () =>
+  settingsMock().mock.calls.filter(
+    (call: SettingsCall) => (call[0] as { forceFresh?: boolean } | undefined)?.forceFresh === true,
+  );
+
 describe("useCurrentProject", () => {
   const mockProjects: ProjectInfo[] = [
     {
@@ -119,7 +137,10 @@ describe("useCurrentProject", () => {
     });
 
     expect(result.current.currentProject?.id).toBe("proj_2");
-    expect(fetchGlobalSettings).not.toHaveBeenCalled();
+    // The URL is the whole decision: nothing about the selection was read from settings.
+    expect(decisionReads()).toHaveLength(0);
+    // Persisting the URL-derived selection is a whole-map write, and that write buys its own merge base.
+    expect(mergeReads()).toHaveLength(1);
     expect(mockWriteCache).toHaveBeenCalledWith(swrCache.SWR_CACHE_KEYS.CURRENT_PROJECT_ID, "proj_2");
   });
 
@@ -140,7 +161,9 @@ describe("useCurrentProject", () => {
       expect(result.current.loading).toBe(false);
     });
     expect(result.current.currentProject?.id).toBe("proj_2");
-    expect(fetchGlobalSettings).not.toHaveBeenCalled();
+    // Waiting for the URL list must not spend a settings read on the decision either.
+    expect(decisionReads()).toHaveLength(0);
+    expect(mergeReads()).toHaveLength(1);
   });
 
   it("keeps unknown URL project from falling back to default project", async () => {
@@ -242,7 +265,11 @@ describe("useCurrentProject", () => {
     }
 
     expect(result.current.currentProject?.id).toBe("proj_2");
-    expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
+    // Three fresh poll arrays must not re-hydrate: exactly one deciding read for the whole sequence.
+    expect(decisionReads()).toHaveLength(1);
+    // The one manual switch is the only write, so it owns the only merge base. The claim is published
+    // before that read settles, which is what stops a re-render storm from buying a read each.
+    expect(mergeReads()).toHaveLength(1);
   });
 
   it("does not persist a saved local selection across fresh poll arrays", async () => {
@@ -282,7 +309,11 @@ describe("useCurrentProject", () => {
       result.current.setCurrentProject(mockProjects[1]);
     });
 
-    expect(updateGlobalSettings).toHaveBeenCalledTimes(1);
+    // The PUT now follows a fresh merge-base read, so it settles a hop later than the click; the count and
+    // the map contents are the same claim they always were.
+    await waitFor(() => {
+      expect(updateGlobalSettings).toHaveBeenCalledTimes(1);
+    });
     expect(updateGlobalSettings).toHaveBeenCalledWith({
       dashboardCurrentProjectIdByNode: { "node-456": "proj_2" },
     });
@@ -315,7 +346,10 @@ describe("useCurrentProject", () => {
     }
 
     expect(result.current.currentProject).toBeNull();
-    expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
+    expect(decisionReads()).toHaveLength(1);
+    // The clear deletes one key out of the whole map, so it buys its merge base exactly once - and the
+    // synchronously claimed delete is what keeps the absence threshold's rerenders from buying more.
+    expect(mergeReads()).toHaveLength(1);
   });
 
   it("rehydrates once when nodeId changes", async () => {
@@ -344,7 +378,8 @@ describe("useCurrentProject", () => {
     await waitFor(() => {
       expect(result.current.currentProject?.id).toBe("proj_2");
     });
-    expect(fetchGlobalSettings).toHaveBeenCalledTimes(2);
+    // One deciding read per node key, and no more, however many reads the writes themselves need.
+    expect(decisionReads()).toHaveLength(2);
   });
 
   it("restores saved project when it appears in later polls", async () => {
@@ -437,11 +472,18 @@ describe("useCurrentProject", () => {
     });
 
     expect(result.current.currentProject?.id).toBe("proj_2");
-    expect(updateGlobalSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        dashboardCurrentProjectIdByNode: { local: "proj_2" },
-      }),
-    );
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-11:35 (RUFU-479): the PUT now lands one hop after the click, because a
+    whole-map write first buys the server map it is merging into. The selection itself is still applied
+    synchronously (the line above), which is the user-visible half of the contract.
+    */
+    await waitFor(() => {
+      expect(updateGlobalSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dashboardCurrentProjectIdByNode: { local: "proj_2" },
+        }),
+      );
+    });
     expect(mockWriteCache).toHaveBeenCalledWith(swrCache.SWR_CACHE_KEYS.CURRENT_PROJECT_ID, "proj_2");
   });
 
@@ -456,6 +498,9 @@ describe("useCurrentProject", () => {
       result.current.setCurrentProject(mockProjects[1]);
     });
 
+    await waitFor(() => {
+      expect(updateGlobalSettings).toHaveBeenCalled();
+    });
     expect(updateGlobalSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         dashboardCurrentProjectIdByNode: { "node-456": "proj_2" },

@@ -166,6 +166,8 @@ export type { UpdateInstallResponse } from "./settings/settings.js";
 export {
   fetchGlobalSettings,
   updateGlobalSettings,
+  invalidateGlobalSettingsCache,
+  hasCachedGlobalSettings,
   fetchSettingsByScope,
   fetchPiExtensions,
   updatePiExtensions,

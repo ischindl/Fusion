@@ -4,15 +4,17 @@ import type { MainContentProps } from "../types";
 import { MainContent } from "../MainContent";
 import { NATIVE_STRUCTURE_DRAG_MIME } from "../../../utils/nativeStructureDrag";
 
-const { fetchMissionMock, fetchMissionsMock, fetchInsightsMock, listEvalsMock, receivedPluginContexts } = vi.hoisted(() => ({
+const { fetchMissionMock, fetchMissionsMock, fetchInsightsMock, listEvalsMock, apiMock, receivedPluginContexts } = vi.hoisted(() => ({
   fetchMissionMock: vi.fn(),
   fetchMissionsMock: vi.fn(),
   fetchInsightsMock: vi.fn(),
   listEvalsMock: vi.fn(),
+  apiMock: vi.fn(),
   receivedPluginContexts: [] as Array<{ beginNativeStructureDrag?: (dataTransfer: DataTransfer, ref: { kind: "roadmap-item"; id: string; projectId?: string }) => boolean }>,
 }));
 
 vi.mock("../../../api", () => ({
+  api: apiMock,
   fetchMission: fetchMissionMock,
   fetchMissions: fetchMissionsMock,
   fetchInsights: fetchInsightsMock,
@@ -82,8 +84,20 @@ function props(overrides: Partial<MainContentProps> = {}): MainContentProps {
   } as unknown as MainContentProps;
 }
 
-function response(body: unknown, ok = true) {
-  return { ok, json: vi.fn(async () => body) } as unknown as Response;
+/*
+FNXC:IdleBoardReadCost 2026-11-18-08:55 (RUFU-479): the goals and roadmap reads used to be raw `fetch`, so
+this file asserted them by stubbing `globalThis.fetch`. They now go through `api()` - the one client seam
+that is inside the bounded read queue and inside the per-pattern request counter - so the assertion moved to
+that seam. The rewritten expectation is STRICTER, not weaker: a raw `fetch` spy would still have been
+satisfied by a call that bypassed the queue, whereas `apiMock` can only be reached by going through it.
+*/
+function stubSettingsAndRoadmapRoutes(options: { goals?: unknown; roadmapDetail?: unknown; roadmapsOk?: boolean } = {}) {
+  apiMock.mockImplementation(async (path: string) => {
+    if (path.startsWith("/goals")) return { goals: options.goals ?? [{ id: "G-1", title: "Goal" }] };
+    if (path.includes("/roadmaps/RM-1")) return options.roadmapDetail ?? { milestones: [{ features: [{ id: "RF-1", title: "Roadmap feature" }] }] };
+    if (path.includes("/plugins/fusion-plugin-roadmap/roadmaps")) return [{ id: "RM-1" }];
+    throw new Error(`unexpected api path ${path}`);
+  });
 }
 
 describe("MainContent roadmap native structures", () => {
@@ -96,12 +110,7 @@ describe("MainContent roadmap native structures", () => {
   });
 
   it("loads roadmap feature candidates alongside the five existing kinds and opens every mail destination", async () => {
-    const fetchMock = vi.fn((url: string) => {
-      if (url.startsWith("/api/goals")) return Promise.resolve(response({ goals: [{ id: "G-1", title: "Goal" }] }));
-      if (url.includes("/roadmaps/RM-1")) return Promise.resolve(response({ milestones: [{ features: [{ id: "RF-1", title: "Roadmap feature" }] }] }));
-      return Promise.resolve(response([{ id: "RM-1" }]));
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    stubSettingsAndRoadmapRoutes();
     const handleChangeTaskView = vi.fn();
     const setMissionTargetId = vi.fn();
     const setGoalAnchorId = vi.fn();
@@ -122,7 +131,6 @@ describe("MainContent roadmap native structures", () => {
     expect(handleChangeTaskView).toHaveBeenCalledWith("research");
     screen.getByRole("button", { name: "Open eval-result" }).click();
     expect(handleChangeTaskView).toHaveBeenCalledWith("evals");
-    vi.unstubAllGlobals();
   });
 
   it("injects the host-owned native-structure drag hook into the production plugin context", () => {
@@ -173,17 +181,16 @@ describe("MainContent roadmap native structures", () => {
   });
 
   it("silently keeps existing candidates when roadmap routes are unavailable or empty", async () => {
-    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
-      url.startsWith("/api/goals")
-        ? response({ goals: [{ id: "G-1", title: "Goal" }] })
-        : response([], false),
-    )));
+    apiMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/goals")) return { goals: [{ id: "G-1", title: "Goal" }] };
+      if (path.includes("/plugins/fusion-plugin-roadmap/roadmaps")) throw new Error("roadmap route unavailable");
+      throw new Error(`unexpected api path ${path}`);
+    });
     render(<MainContent {...props()} />);
 
     await waitFor(() => expect(screen.getByTestId("native-structure-candidates")).toHaveTextContent(
       "mission:Mission|milestone:Milestone|research-finding:Research|eval-result:Eval|goal:Goal",
     ));
     expect(screen.getByTestId("native-structure-candidates")).not.toHaveTextContent("roadmap-item");
-    vi.unstubAllGlobals();
   });
 });

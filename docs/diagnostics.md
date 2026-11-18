@@ -756,3 +756,45 @@ and move none of it?", nothing else. A card's own `stallReason` chip and its `ta
 row remain the surfaces for "which gate is holding this card"; the difference is that the planning-
 continuation lane previously had no analogue at all, which is how a boosted card could be examined every
 two seconds while unboosted cards behind it were claimed, invisibly.
+
+## Per-route cost accounting: `GET /api/diagnostics/costs` (RUFU-479)
+
+The trace that motivated this surface was a board that settled in 22-31 s while `GET /api/health` answered in
+milliseconds, so the question an operator arrives with is never "is the server slow" but "WHICH route is slow,
+how often did the browser ask, and how many bytes did that answer carry". That table now exists in the
+process that served the requests: `packages/dashboard/src/metrics/route-cost.ts`, mounted in `server.ts`
+beside the aggregate latency middleware and read at `GET /api/diagnostics/costs`.
+
+Contract an operator and a future maintainer both need:
+
+- **The key is `METHOD + matched route template`, never a raw URL.** A template count is dozens on this
+  server; a raw-URL count is every card id ever requested. `/api/tasks/:id/diff` is one row; two diff lanes
+  for two cards are one row. Method is inside the key, so a slow `POST /api/auth/status` can never hide
+  behind a fast `GET` of the same path.
+- **Both bounds are cardinality bounds, and both are reported.** Each route keeps
+  `REQUEST_LATENCY_RING_CAP` (256) duration samples in a ring, and at most `ROUTE_COST_MAX_ROUTES` (256)
+  route templates exist with oldest-inserted eviction. `GET /diagnostics/costs` answers
+  `bounds.maxRouteTemplates` so the ceiling is read, not remembered. The retention ratchet (RUFU-257) is what
+  forces the ceiling to be a numeric constant declared beside the map that uses it.
+- **Unmatched requests share one sentinel** (`<unmatched>`) rather than minting a row per 404 path.
+- **Absent and zero are different answers.** A route that was never requested is ABSENT from `routes`, while
+  a direct counter read reports `0`. "Nobody asked" must never be readable as "it is fast" - that is how a
+  missing instrument looks identical to a healthy one.
+- **Percentiles are nearest-rank over the ring**, computed by the ONE `percentile()` implementation exported
+  from `metrics/runtime-sampler.ts`; `reliability-metrics.ts` imports the same function rather than keeping a
+  second copy.
+- **It is a ring-buffered sample, not a run-audit row.** No sink, no migration, no replay, and a restart
+  clears it. That is deliberate: making diagnostics survive a restart would put the audit store on the path
+  of a request that is already slow.
+- **The client keeps its own counter** at the single `api()` seam
+  (`app/api/client/request-stats.ts`, capped at `REQUEST_STATS_MAX_PATTERNS` = 128, ids normalised to `:id`,
+  query strings dropped, failures counted on `res.ok === false`). Its keys are caller-facing paths
+  (`/tasks/:id`), because `buildApiUrl` adds `/api` later. `board-boot-request-set.test.tsx` asserts the two
+  counters agree for the same mount, because two figures that disagree are worse than none - the whole point
+  of publishing a number is to settle a cost argument without a browser trace.
+- Historical figures stay readable as history: `AUTH_STATUS_HISTORICAL_P95_MS` (10 920 ms) is recorded in
+  `src/__tests__/route-cost-board-routes.test.ts` as the bound a re-measurement must beat. It is NOT asserted
+  as a present-day p95, because it predates the probe memoization.
+
+Related surfaces: `/metrics` (RUFU-081) reports process-level latency and runtime sampling; this endpoint
+reports per-route cost, which is the level the board investigation actually needed.

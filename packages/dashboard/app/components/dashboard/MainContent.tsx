@@ -2,7 +2,7 @@
 FNXC:MainContent 2026-06-24-00:00:
 MainContent is the dashboard main-content router extracted from AppInner's render path. Its hook-free switch still owns every ordinary destination, while Board, List, and Chat yield to MainViewKeepAlive so visited project views preserve local state without remaining active behind another route. The lazy view chunks (and their leading-underscore inventory convention) stay declared in App.tsx per the docs guard and are threaded in as props; the eager ChatView.css import remains in App.tsx so the styles bundle into the main CSS file.
 */
-import { Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { NativeStructurePreviewResult, NativeStructureRef, Task, TaskDetail } from "@fusion/core";
 import { TaskCard } from "../TaskCard";
 import { ListView } from "../ListView";
@@ -22,7 +22,7 @@ import { PluginDashboardHostChromeContext } from "../../plugins/PluginDashboardV
 import { buildPluginTaskViewId, getPluginViewId, isPluginViewId } from "../../plugins/pluginViewRegistry";
 import { getPluginNavIcon } from "../pluginNavIcon";
 import { isNearDuplicateCanonicalInactive } from "../../../../core/src/duplicates/near-duplicate-canonical";
-import { fetchMission, fetchMissions, fetchInsights, fetchTaskDetail, listEvals } from "../../api";
+import { api, fetchMission, fetchMissions, fetchInsights, fetchTaskDetail, listEvals } from "../../api";
 import { attachNativeStructureRefToDrag } from "../../utils/nativeStructureDrag";
 import type { DetailTaskTab } from "../../hooks/useModalManager";
 import type { TaskView } from "../../hooks/useViewState";
@@ -459,22 +459,64 @@ export function MainContent(props: MainContentProps) {
   existing project-scoped mission, insight, evaluation, and goal sources. Clear the prior project
   before loading to prevent attaching cross-project refs. Persist only refs and labels;
   NativeStructurePreview resolves current details lazily after the message is sent.
+
+  FNXC:IdleBoardReadCost 2026-11-18-08:30 (RUFU-479): this assembly ran on MOUNT of the main view, so a
+  cold board paid for a picker it was never going to show. One mount cost five list reads (`missions`,
+  `insights`, `evals`, `goals`, `roadmaps`) PLUS one detail read per mission and per roadmap - a project
+  with a dozen missions and a few roadmaps turned opening the board into dozens of requests, inside the
+  same second as every other boot read (measured: 42 of 63 requests in one 1 s window). The `nativeStructureCandidates`
+  state this effect writes is consumed at exactly one place, the `taskView === "mailbox"` branch below that
+  passes it to `MailboxView` / `MessageComposer`, so the gate is the consumer that already exists - no new
+  flag, no new cache.
+
+  Two rules the gate has to keep honest:
+    * a project change still clears first, so a candidate list can never carry a ref into another project;
+    * navigating away and back does NOT refetch, because the candidates are project-scoped and the panel
+      they feed is the only thing that reads them. Clearing is keyed to the project, not to the effect run.
+
+  The goals and roadmap reads were raw `fetch`, which put them outside the bounded client read queue and
+  outside the per-pattern request counter; they now go through `api()`, the one seam every other client read
+  already uses. That is the queue's whole promise - a cold mount cannot fan out past its bound - and a raw
+  fetch silently opted two endpoints (and the per-roadmap fan-out) out of it.
   */
+  const mailboxActive = taskView === "mailbox";
+  const candidatesProjectIdRef = useRef<string | null | undefined>(undefined);
+  /*
+  The two refs carry different facts and must not be merged: `…ProjectIdRef` says whose candidates are
+  currently in state (so a project switch clears first), while `…LoadedRef` says a load for that project
+  COMPLETED. Re-entering the mailbox with a completed load is a re-render of data the project already owns,
+  not a reason to pay for five list reads and a per-node fan-out again.
+  */
+  const candidatesLoadedForProjectRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    let active = true;
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-11:55 (RUFU-479): two values, not one. `projectId` keeps the
+    `string | undefined` shape the read layer takes (`fetchMissions`, `fetchInsights`, `listEvals`,
+    `fetchMission` all declare an optional id), while `scopeKey` is what the two refs compare: a ref field
+    that is `undefined` already means "nothing loaded", so the no-project case needs its own sentinel to
+    stay distinguishable from "not yet decided". Collapsing them into one `string | null` makes every API
+    call below a type error.
+    */
     const projectId = currentProject?.id;
-    setNativeStructureCandidates([]);
+    const scopeKey = projectId ?? null;
+    if (candidatesProjectIdRef.current !== scopeKey) {
+      candidatesProjectIdRef.current = scopeKey;
+      candidatesLoadedForProjectRef.current = undefined;
+      setNativeStructureCandidates([]);
+    }
+    if (!mailboxActive || candidatesLoadedForProjectRef.current === scopeKey) return;
+
+    let active = true;
     const ref = (kind: NativeStructureRef["kind"], id: string): NativeStructureRef => ({ kind, id, ...(projectId ? { projectId } : {}) });
+    const projectQuery = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
 
     void Promise.all([
       fetchMissions(projectId).catch(() => []),
       fetchInsights({ limit: 100 }, projectId).catch(() => ({ insights: [], count: 0 })),
       listEvals({ limit: 100 }, projectId).catch(() => ({ results: [], count: 0 })),
-      fetch(projectId ? `/api/goals?projectId=${encodeURIComponent(projectId)}` : "/api/goals")
-        .then(async (response) => response.ok ? response.json() as Promise<{ goals?: Array<{ id: string; title: string }> }> : { goals: [] })
-        .catch(() => ({ goals: [] })),
-      fetch(projectId ? `/api/plugins/fusion-plugin-roadmap/roadmaps?projectId=${encodeURIComponent(projectId)}` : "/api/plugins/fusion-plugin-roadmap/roadmaps")
-        .then(async (response) => response.ok ? response.json() as Promise<Array<{ id: string }>> : [])
+      api<{ goals?: Array<{ id: string; title: string }> }>(`/goals${projectQuery}`)
+        .catch(() => ({ goals: [] as Array<{ id: string; title: string }> })),
+      api<Array<{ id: string }>>(`/plugins/fusion-plugin-roadmap/roadmaps${projectQuery}`)
         .catch(() => [] as Array<{ id: string }>),
     ]).then(async ([missions, insights, evals, goalsResponse, roadmaps]) => {
       const missionHierarchies = await Promise.all(missions.map(async (mission) => {
@@ -486,8 +528,9 @@ export function MainContent(props: MainContentProps) {
       }));
       const roadmapHierarchies = await Promise.all(roadmaps.map(async (roadmap) => {
         try {
-          const response = await fetch(`/api/plugins/fusion-plugin-roadmap/roadmaps/${encodeURIComponent(roadmap.id)}${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
-          return response.ok ? await response.json() as { milestones?: Array<{ features?: Array<{ id: string; title: string }> }> } : undefined;
+          return await api<{ milestones?: Array<{ features?: Array<{ id: string; title: string }> }> }>(
+            `/plugins/fusion-plugin-roadmap/roadmaps/${encodeURIComponent(roadmap.id)}${projectQuery}`,
+          );
         } catch {
           return undefined;
         }
@@ -503,10 +546,11 @@ export function MainContent(props: MainContentProps) {
         ...roadmapHierarchies.flatMap((roadmap) => roadmap?.milestones?.flatMap((milestone) => milestone.features ?? []) ?? []).map((feature) => ({ ref: ref("roadmap-item", feature.id), label: feature.title })),
       ];
       setNativeStructureCandidates(candidates);
+      candidatesLoadedForProjectRef.current = scopeKey;
     });
 
     return () => { active = false; };
-  }, [currentProject?.id]);
+  }, [currentProject?.id, mailboxActive]);
 
   /*
   FNXC:NativeStructureEmbed 2026-07-20-12:00:

@@ -4,8 +4,19 @@ import type { TaskDetail } from "@fusion/core";
 import { MainContent } from "../MainContent";
 import type { MainContentProps } from "../types";
 
-const { fetchTaskDetailMock, fetchMissionMock, fetchMissionsMock, fetchInsightsMock, listEvalsMock } = vi.hoisted(() => ({
+const { fetchTaskDetailMock, fetchMissionMock, fetchMissionsMock, fetchInsightsMock, listEvalsMock, apiMock } = vi.hoisted(() => ({
   fetchTaskDetailMock: vi.fn(),
+  apiMock: vi.fn(async (path: string) => {
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-09:10 (RUFU-479): the goals and roadmap candidate reads moved from raw
+    `fetch` (which silently went nowhere in jsdom, so this file never saw them) to `api()`, the client seam
+    that sits inside the bounded read queue. The mock therefore has to answer them now - and answering here
+    is what lets this file assert the seam at all, which the raw-fetch shape could not.
+    */
+    if (path.startsWith("/goals")) return { goals: [] };
+    if (path.includes("/plugins/fusion-plugin-roadmap/roadmaps")) return [];
+    throw new Error(`unexpected api path ${path}`);
+  }),
   fetchMissionMock: vi.fn(async () => ({
     id: "mission-1",
     milestones: [{ id: "milestone-1", title: "Milestone candidate" }],
@@ -22,6 +33,7 @@ const { fetchTaskDetailMock, fetchMissionMock, fetchMissionsMock, fetchInsightsM
 }));
 
 vi.mock("../../../api", () => ({
+  api: apiMock,
   fetchTaskDetail: fetchTaskDetailMock,
   fetchMission: fetchMissionMock,
   fetchMissions: fetchMissionsMock,
@@ -141,5 +153,9 @@ describe("MainContent mailbox artifact View task routing", () => {
     expect(fetchMissionMock).toHaveBeenCalledWith("mission-1", "project-1");
     expect(fetchInsightsMock).toHaveBeenCalledWith({ limit: 100 }, "project-1");
     expect(listEvalsMock).toHaveBeenCalledWith({ limit: 100 }, "project-1");
+    // The goals and roadmap reads are queue-routed now, and still project-scoped like the other three.
+    expect(apiMock.mock.calls.map((call) => String(call[0]))).toEqual(
+      expect.arrayContaining(["/goals?projectId=project-1"]),
+    );
   });
 });

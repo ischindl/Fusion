@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProjectNote, ProjectNoteSummary } from "@fusion/core";
 import { ApiRequestError } from "../api/client/client";
 import { createNote, deleteNote, fetchNote, fetchNotes, updateNote } from "../api/notes";
+import { deferToIdle } from "../utils/defer-to-idle";
 
 export interface NotesState {
   notes: ProjectNoteSummary[];
@@ -60,7 +61,18 @@ export function useNotes(projectId?: string) {
     selectionGeneration.current += 1;
     mutationRequest.current += 1;
     setState({ notes: [], selected: null, pendingSelectedId: null, failedSelectionId: null, draftTitle: "", draftContent: "", loading: Boolean(projectId), saving: false, error: null, errorOperation: null, conflict: false, dirty: false, search: "" });
-    if (projectId) void loadList();
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-09:32 (RUFU-479): the shared notes controller is mounted at App level, so
+    this list read was one of the boot-burst requests (42 of 63 inside one second, against four read slots)
+    even when no Notes surface was open. It is DEFERRED rather than gated, and the difference is deliberate:
+    `notesController` is shared by several surfaces (the tool popover's list, the dirty guard, the reload on
+    `onChanged`), so a gate that guessed wrong about which surface was open would leave a Notes list that
+    never loads. Deferring takes it out of the window the board's own reads need while keeping every
+    consumer's semantics: the list still arrives with no user action, one task later.
+    */
+    if (!projectId) return;
+    const cancel = deferToIdle(() => { void loadList(); });
+    return cancel;
   }, [projectId, loadList]);
 
   const select = useCallback(async (id: string) => {

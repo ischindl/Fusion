@@ -7,7 +7,7 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
-import { BOARD_SOURCE_METADATA_KEYS, isBoardFeedProjectionEnabled } from "../postgres/board-feed.js";
+import { BOARD_SOURCE_METADATA_KEYS, isBoardFeedProjectionEnabled, resolveBoardFeedProjection } from "../postgres/board-feed.js";
 import { recordReadCall } from "./read-attribution.js";
 import { shouldWarnPromptParseFailure } from "./task-artifacts-ops.js";
 import {readFile} from "node:fs/promises";
@@ -1809,6 +1809,27 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
   if (query) {
     const membershipPredicate = buildTaskSearchPredicate(query);
     if (!membershipPredicate) return { tasks: [], total: 0, hasMore: false, nextCursor: null };
+    /*
+    FNXC:BoardReadProjection 2026-11-18-04:55 (RUFU-479):
+    The searched arm now asks the SAME column question as the board arm. It used to send the whole
+    `TASK_SLIM_PROJECTION` and let `hydrateSearchTaskRows(..., compactBoardFeed: true)` throw `summary`,
+    `comments`, `steeringComments`, the step bodies and the non-allowlisted `sourceMetadata` keys away
+    after the driver had already built them — which is the exact shape of cost this card exists to remove
+    (live measurement: 410 024 B of `summary` and 46 038 B of comments transferred per 100-card page, all
+    of it discarded before the response). Searching is the hotter of the two arms — it runs per keystroke —
+    so leaving it wide would have moved the disagreement instead of closing it.
+
+    `resolveBoardFeedProjection` narrows `TASK_SLIM_PROJECTION` only, never inventing a column, and
+    `board-feed.test.ts` proves the projected row hydrates to the identical `Task` once compaction runs.
+    The spend-chip decision is resolved once per pass here (the settings read is the store's merged
+    cache, no row read) because the badge columns are now dropped in the SELECT rather than after
+    hydration; `hydrateSearchTaskRows` makes the same `showCostBadgeOnCards` decision from that same
+    cached read, so the two cannot disagree about the shape they are each producing.
+    */
+    const searchBoardFeed = isBoardFeedProjectionEnabled();
+    const searchProjection = searchBoardFeed
+      ? resolveBoardFeedProjection(TASK_SLIM_PROJECTION, { includeTokenUsage: await resolveBoardFeedCostVisibility(store) })
+      : { ...TASK_SLIM_PROJECTION };
     const searchPredicate = and(
       membershipPredicate,
       liveSearchPredicate(false, layer.projectId, ARCHIVED_SENTINEL_LANES),
@@ -1820,7 +1841,7 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
     );
     const [countRows, pageRows] = await Promise.all([
       layer.db.select({ count: sql<number>`count(*)::int` }).from(schema.project.tasks).where(totalPredicate),
-      layer.db.select({ ...TASK_SLIM_PROJECTION })
+      layer.db.select({ ...searchProjection })
         .from(schema.project.tasks)
         .where(searchPredicate)
         .orderBy(...buildTaskSearchPageOrder())
@@ -2013,6 +2034,22 @@ export async function listTaskQueuePageImpl(store: TaskStore, options: TaskQueue
       // FNXC:TaskLogProjections 2026-10-10-20:01 (RUFU-615): same settlement as the board page above —
       // a lane-scoped feed reads badges from the write-time projections, not from the log column.
       excludeLog: true,
+      /*
+      FNXC:BoardReadProjection 2026-11-18-04:58 (RUFU-479): a LANE page is a board page.
+      The whole-board arm has shipped `compactBoardFeed` since FNXC:BoardFeedCompaction 2026-09-17-14:49,
+      but the per-lane reads the board actually issues (`/tasks/page?columns=<lane>&order=queue`) never
+      asked for it, so every lane head paid for `summary`, both comment arrays, the four reviewer step
+      bodies and the whole `source_metadata` blob — transferred, parsed, and rendered as nothing. The
+      same RUFU-902 changeset that measured the Done lane at 8.07 MB of a 10.02 MB response, 4.6 MB of it
+      exactly the fields this compaction drops, is the evidence that this is where the per-card cost lived.
+      Asking for it here also activates the SQL-side projection (the flag now defaults ON), so the dropped
+      payload stops being transferred at all rather than being built by the driver and discarded.
+
+      The field policy is unchanged from the whole-board page's, which is the point: one card, one shape,
+      whichever endpoint listed it. `board-feed-payload-projection` and `lane-read-projection-parity` own
+      that identity; the detail-modal bodies a reviewer needs stay on `GET /api/tasks/:id`.
+      */
+      compactBoardFeed: true,
       limit: limit + 1,
       sort: order === "intake" ? "intake-desc" : order === "attention" ? "attention-order" : "queue-order",
       startupMemo: false,

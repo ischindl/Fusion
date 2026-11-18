@@ -128,7 +128,7 @@ describe("TaskChangesTab — worktree-backed (non-done tasks)", () => {
     await waitFor(() => {
       expect(screen.getByText("src/app.ts")).toBeTruthy();
     });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   /*
@@ -156,7 +156,7 @@ describe("TaskChangesTab — worktree-backed (non-done tasks)", () => {
     await waitFor(() => {
       expect(screen.getByText("src/app.ts")).toBeTruthy();
     });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
     expect(mockFetchTaskDiff.mock.calls.every((call: unknown[]) => !call[3])).toBe(true);
   });
 
@@ -284,7 +284,7 @@ describe("TaskChangesTab — commit-backed (done tasks)", () => {
     await waitFor(() => {
       expect(screen.getByText("src/app.ts")).toBeTruthy();
     });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("renders aggregated done-task file union and matching header count", async () => {
@@ -596,7 +596,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
     for (const path of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts", "g.ts"]) {
       expect(screen.getByText(path)).toBeTruthy();
     }
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, "proj-1");
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, "proj-1", false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha shows summary fallback when diff resolves empty", async () => {
@@ -616,7 +616,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
     });
     expect(screen.getByText("Final commit summary: 3 files changed, +10 additions, -2 deletions. Counts only the recorded merge/squash commit, not the full task lineage.")).toBeTruthy();
     expect(screen.queryByText(/Error loading changes:/)).toBeNull();
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha shows singular 'file' when filesChanged is 1", async () => {
@@ -635,7 +635,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
       expect(screen.getByText("Detailed file changes unavailable.")).toBeTruthy();
     });
     expect(screen.getByText("Final commit summary: 1 file changed, +5 additions, -0 deletions. Counts only the recorded merge/squash commit, not the full task lineage.")).toBeTruthy();
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha prefers landedFiles over stale modifiedFiles", async () => {
@@ -661,7 +661,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
     expect(screen.queryByText(/in the merged commit\b/i)).toBeNull();
     expect(screen.queryByText(/Error loading changes:/)).toBeNull();
     expect(screen.queryByText("Files Changed (2)")).toBeNull();
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha falls back to modifiedFiles when landedFiles unavailable", async () => {
@@ -687,7 +687,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
     expect(screen.queryByText(/in the merged commit\b/i)).toBeNull();
     expect(screen.queryByText(/Error loading changes:/)).toBeNull();
     expect(screen.queryByText("Files Changed (2)")).toBeNull();
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha and no mergeDetails shows fallback without summary", async () => {
@@ -706,7 +706,7 @@ describe("TaskChangesTab — regression: non-done tasks and done-without-commitS
     });
     expect(screen.getByText("No merge commit was recorded for this task.")).toBeTruthy();
     expect(screen.queryByText(/Error loading changes:/)).toBeNull();
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-001", undefined, undefined, false, expect.any(AbortSignal));
   });
 
   it("done task without commitSha falls back gracefully when fetchTaskDiff rejects", async () => {

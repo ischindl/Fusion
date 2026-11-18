@@ -504,3 +504,21 @@ not exist on this tree; the field-parity contract it is described as carrying li
   only thing standing between one in-place `updateStep` write and a poisoned plan for every later reader
   of that card, and the gate is the only reason the warning is one line per card rather than 572 lines
   per five minutes.
+
+## Extended by RUFU-479 (the board is the consumer, and defaults are a decision)
+
+- `resolveBoardFeedProjection(TASK_SLIM_PROJECTION, ...)` is **default ON** as of this card; the rollback is
+  one statement, `FUSION_BOARD_FEED_PROJECTION=0`, and an unrecognised value keeps the default so a typo
+  cannot silently disable the projection.
+- The remaining cost was not the whole-board page. It was two readers that had never been offered the
+  mechanism: `listTaskQueuePageImpl` (per-lane) and the board-workflows internal `Done` read, neither
+  compacted nor projected.
+- Measured live, first 100 cards: 6 187 083 B whole-row (61 871 B/card) -> 2 228 327 B slim -> 1 666 134 B
+  projected (16 661 B/card), 36 ms -> 11 ms of SQL. A replication that subtracts only `log` overstates the
+  shipped cost, because `search_vector` is already omitted by `LIST_READ_OMITTED_COLUMNS`.
+- The `source_metadata` key-projection costs PostgreSQL +1.49 ms per 100-card page (2.83 -> 4.316 ms) against
+  a page the node answers in seconds: the opposite sign to the rejected `log` key-projection, because
+  `source_metadata` is kilobytes and `log` is megabytes of toast.
+- The per-card byte ceilings and the parity contract live in
+  `packages/core/src/__tests__/postgres/lane-read-projection-parity.pg.test.ts`; see
+  `idle-board-read-cost-and-poll-discipline.md`.

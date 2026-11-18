@@ -18,6 +18,7 @@ import {
   type HermesBinaryStatus,
   type HermesProfileSummary,
 } from "@fusion-plugin-examples/hermes-runtime";
+import { resetGhAvailabilityCache } from "@fusion/core";
 
 import {
   probeOpenClawBinary,
@@ -161,6 +162,16 @@ const ompCliProbeCache = createCliProbeCache<OmpBinaryStatus>(
  * `resetGhAvailabilityCache` in `packages/core/src/cli/gh-cli.ts`. Wire it wherever CLI/provider
  * settings change or where a route is answering "is this usable right now" (a save-time validation
  * probe or an operator's Test / Refresh action) — neither may have to wait out the TTL.
+ *
+ * FNXC:RuntimeProbeOneOwner 2026-11-18-10:45 (RUFU-479): it now resets the `gh` availability cache too,
+ * because "one owner" cannot mean "one owner except the one that had no caller". `resetGhAvailabilityCache`
+ * was exported and documented as the invalidation hook, yet nothing in production called it, so every
+ * site that already calls THIS function - the four save/Test/Refresh arms in `register-auth-routes.ts` -
+ * refreshed the five runtime CLIs while still answering the `gh` half of the same `auth/status` body from
+ * a verdict up to `GH_CHECK_TTL_MS` (60 s) old. An operator who had just run `gh auth login` and pressed
+ * Refresh saw "not authenticated" for a minute, which is the exact staleness this invalidation path exists
+ * to forbid. Resetting both from one call is also what keeps the pairing from drifting: a surface that
+ * refreshes one presence answer and not the other is the defect, not the TTL.
  */
 export function invalidateRuntimeCliProbeCaches(): void {
   cursorCliProbeCache.invalidate();
@@ -168,6 +179,7 @@ export function invalidateRuntimeCliProbeCaches(): void {
   grokCliProbeCache.invalidate();
   claudeCliProbeCache.invalidate();
   ompCliProbeCache.invalidate();
+  resetGhAvailabilityCache();
 }
 
 export type ClaudeModelDiscoveryResult = {

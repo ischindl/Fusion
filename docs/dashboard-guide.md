@@ -3705,3 +3705,25 @@ The dashboard keeps a number of results in its own process so a busy board does 
 - **Live data is never sacrificed to a bound.** Ceiling eviction drops the **oldest inserted** entry, an expired entry is deleted rather than merely ignored, and a still-valid entry is never evicted early — a short-lived remote-access token past its expiry stops being honoured, while one inside its validity window keeps working even when the token cache is at its reporting ceiling.
 - **The heap ceiling was not raised to buy headroom.** `--max-old-space-size` is untouched by this work, because a bigger limit only postpones the same death and silently redefines the pressure threshold above. For the soak procedure (sample `/metrics` every 60 s, plot tracked bytes against heap used, expect both to flatten) and the full decision table, see `docs/solutions/performance/dashboard-heap-growth-runbook.md`.
 - **The ceiling the pressure threshold divides by is now stated, not assumed.** Every boot prints the resolved ceiling and the launch site that declared it — the CLI banner and startup log, and the supervisor's attempt/backoff/give-up lines, which also say whether a respawn carries that site forward. `GET /api/health` answers `heapLimitBytes`, `heapLimitSource` (`execArgv` / `NODE_OPTIONS` / `v8-default`) and `heapLimitIsV8Default`, and `GET /api/system-stats` carries the same two descriptors beside its existing `heapLimit`; `/metrics` keeps publishing the number as `fusion_retention_heap_limit_bytes`. One `runtime:heap-ceiling` run-audit row per boot records the fact for after the process is gone, and when the value is V8's own default — nobody chose it — the Mailbox gets one notice per day pointing at the runbook. Nothing here ever sets, raises, or defaults the ceiling, and no surface repeats your launch environment: the number plus a three-value site name is all that leaves the process.
+
+## Board read scope, revalidation, and per-lane cost (RUFU-479)
+
+What one board mount asks for, and what it stops asking for. The measured starting point was 63 requests per
+load with 42 of them starting inside one second, a 100-card page costing 8.79-10.79 s, and
+`/api/settings/global` fetched four times.
+
+| Question | Behaviour | Pinned by |
+| --- | --- | --- |
+| Which lanes does the board read? | Only the rendered lane set: 4 lane reads + 0 unscoped on a 5-column board, exactly 1 on mobile with one visible column, 0 for an off-screen view. A hidden or complete lane is never read, and narrowing the visible set aborts and re-reads just the affected lane. | `app/__tests__/board-lane-read-cost.test.tsx`, `app/hooks/__tests__/useTasks.read-scope.test.tsx` |
+| Why is there still one whole-board read? | The MOUNT read is deliberately whole-board: only that answer can say which lanes exist, and a patch cannot express a lane that disappeared (RUFU-493). | `board-boot-request-set.test.tsx` |
+| How does the board stay current? | Event-driven. Card movements arrive by SSE; `useTasks` carries no interval timer. Refreshes happen on mount/project change and through `revalidateAfterResume("visibility" | "focus" | "pageshow" | "sse-reconnect")`. The only visibility gate for polling is `useVisibilityAwarePoll`. | `visibility-poll-gating.test.ts` |
+| How many settings reads per load? | One, behind a 5 s in-memory TTL, invalidated by a save. Never persisted to browser storage: the payload can carry daemon and GitHub/GitLab tokens. | `app/api/settings/__tests__/global-settings-cache.test.ts`, boot request-set fan-out case |
+| Does the board pay for views that are not open? | No. Native-structure candidate reads (`goals`, `insights`, `evals`, `missions` + per-mission detail, roadmap list + detail) are assembled only while the mailbox view is active; a board view issues zero of them. | `board-native-structure-prefetch.test.tsx` |
+| What about chrome badges? | The stash-orphan badge and the shared Notes list are deferred to idle instead of firing inside the mount burst, and the badge read still honours the hidden-tab rule. Deferred, not dropped. | `visibility-poll-gating.test.ts`, `useNotes`/`useStashOrphanCount` witnesses |
+| Does an abandoned diff still cost git? | No. `/tasks/:id/file-diffs` carries the request's `AbortSignal` and its git children are killed on disconnect; the `?stats=1` lane stays uncancellable because its computation is shared by joined waiters. | `routes/__tests__/diff-request-cancellation.test.ts` |
+| Where do I see the remaining cost? | `GET /api/diagnostics/costs` per route (p50/p95/count/bytes, ring-buffered), plus the client's per-pattern counter at the `api()` seam. | `route-cost-*.test.ts`, `board-boot-request-set.test.tsx` |
+
+Per-card bytes on the live project this was measured against: 61 871 B for a whole row, 22 283 B for the
+slim read, 16 661 B for what the board now asks for (3.71x cheaper, and 36 ms -> 11 ms of SQL). The full
+before/after and the four rules are in
+`docs/solutions/performance/idle-board-read-cost-and-poll-discipline.md`.

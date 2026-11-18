@@ -1,5 +1,6 @@
 import type { ActivityLogEntry, RunAuditEvent } from "@fusion/core";
 import { resolveProjectColumnsForRoles, REVIEW_ROLES } from "@fusion/core";
+import { percentile } from "./metrics/runtime-sampler.js";
 
 /**
  * Discovery notes (FN-4360):
@@ -112,13 +113,12 @@ export function recoverAlreadyMergedReviewTasksRecoveriesPerDay(_events: RunAudi
   return { value: null, reason: "no-audit-coverage" };
 }
 
-function percentile(sortedValues: number[], p: number): number {
-  if (sortedValues.length === 0) {
-    return 0;
-  }
-  const index = Math.ceil((p / 100) * sortedValues.length) - 1;
-  return sortedValues[Math.min(sortedValues.length - 1, Math.max(0, index))] ?? 0;
-}
+/*
+FNXC:RouteCostAccounting 2026-11-18-07:12 (RUFU-479): this module's local nearest-rank `percentile` was a
+second copy of the rule in `runtime-sampler.ts`, differing only in that it assumed the caller had sorted
+first. Both now use the one exported percentile, so a p95 read out of the reliability panel and a p95 read
+out of the per-route cost table cannot quietly disagree about what p95 means.
+*/
 
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-30-23:55 (#2875 review — greptile P1, "resolved lanes discarded
@@ -196,11 +196,10 @@ export function inReviewDurationMetrics(
     return { p50Ms: null, p95Ms: null, sampleCount: durations.length, reason: "insufficient-samples" };
   }
 
-  const sorted = [...durations].sort((a, b) => a - b);
   return {
-    p50Ms: percentile(sorted, 50),
-    p95Ms: percentile(sorted, 95),
-    sampleCount: sorted.length,
+    p50Ms: percentile(durations, 50),
+    p95Ms: percentile(durations, 95),
+    sampleCount: durations.length,
   };
 }
 

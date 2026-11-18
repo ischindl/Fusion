@@ -113,3 +113,19 @@ path, defeating the purpose.
   `files` key, and `TaskChangesTab`'s call passes a falsy stats flag (asserted).
 
 In code, stamp `FNXC:TaskDiffStats` greps the parser, every fan-out replacement site, and the cache.
+
+## Extended by RUFU-479 (cancellation, and the subprocess budget as a measured assertion)
+
+- **Within-TTL means ZERO subprocesses.** The pairing witness
+  (`src/__tests__/diff-stats-ttl-outlasts-poll.test.ts`) compares two constants, and a long constant proves a
+  window, not a saving. `diff-stats-single-flight.test.ts` now spends a real request pair and asserts the
+  within-TTL re-request forks 0 git subprocesses.
+- **The budget is asserted at three times the commits.** `attribute-done-range-files.test.ts` gained a
+  60-own-commit range held to the same two-call bound with zero per-sha `diff-tree` calls, which is the shape
+  of the 19.96-28.35 s done-card diff the board measured.
+- **Per-request cancellation for the patch fan-out only.** `/tasks/:id/file-diffs` attaches the request's
+  `AbortSignal` (via `AsyncLocalStorage`, because `runGitCommand` is reached from many shared helpers) and
+  kills its git children on disconnect with `SIGKILL`; the `?stats=1` lane stays UNCANCELLABLE because its
+  single-flight computation answers every joined waiter and one departing client is not entitled to kill
+  shared work. See `idle-board-read-cost-and-poll-discipline.md` and
+  `routes/__tests__/diff-request-cancellation.test.ts`.

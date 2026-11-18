@@ -253,8 +253,17 @@ function mockSchedulingFetchResponse(
 describe("Settings API wrappers", () => {
   const originalFetch = globalThis.fetch;
 
-  afterEach(() => {
+  /*
+  FNXC:IdleBoardReadCost 2026-11-18-09:40 (RUFU-479): these cases assert what the TRANSPORT received, and
+  `fetchGlobalSettings` now answers the second caller from a short-TTL memory cache - which is the whole
+  point (one board load used to ask four times). A per-test transport assertion therefore has to start from
+  a cold cache, or the previous case's snapshot answers it. The cache is cleared between cases rather than
+  the assertions being weakened: what each case says about the request it makes is unchanged.
+  */
+  afterEach(async () => {
     globalThis.fetch = originalFetch;
+    const { invalidateGlobalSettingsCache } = await import("../api");
+    invalidateGlobalSettingsCache();
   });
 
   describe("fetchSettingsByScope", () => {
@@ -502,6 +511,28 @@ describe("Settings API wrappers", () => {
       // GET is the default method
       const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(call[1].method).toBeUndefined();
+    });
+
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-09:40 (RUFU-479): the new behaviour at this seam, stated as its own
+    case rather than left implied - a consumer that asks while the snapshot is inside its window is served
+    from memory and the server sees nothing.
+    */
+    it("serves a second caller inside the window without a second request", async () => {
+      const { fetchGlobalSettings } = await import("../api");
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+        json: () => Promise.resolve({ themeMode: "dark" }),
+        text: () => Promise.resolve(JSON.stringify({ themeMode: "dark" })),
+      } as unknown as Response);
+
+      await fetchGlobalSettings();
+      await fetchGlobalSettings();
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 
     it("returns GlobalSettings with known keys like themeMode", async () => {

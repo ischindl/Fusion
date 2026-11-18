@@ -20,31 +20,24 @@ incarnation can never publish rows into the current one.
 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Task } from "@fusion/core";
-import { isReviewColumnRole, type ColumnRoleFlags } from "../utils/columnRoles";
 import * as api from "../api";
 
-export interface TaskQueueScope {
-  /** Stable identity of this lane scope within the current board view. */
-  key: string;
-  /** Column ids sharing this order. */
-  columns: readonly string[];
-  /*
-  FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
-  `attention` is the third lane order and the one the operator's board asks for by default: the lane head
-  comes back ranked by what needs a human, so the card that is broken is in the payload at all. `queue`
-  and `intake` keep their existing meanings - `queue` is the order the ENGINE dispatches on and must not
-  silently acquire a ranking opinion, which is why this hook asks for `attention` rather than turning
-  `queue` into something new.
-  */
-  order: "queue" | "intake" | "attention";
-  /*
-  Claims these columns are review-owned, so the required pre-merge gate tier applies. It is a claim in
-  both directions: the server confirms it against the project's own lane vocabulary and the lane cursor is
-  bound to the RESOLVED answer, so a scope that changes gate must be a different scope here too - which is
-  why it belongs in `scopeSignature` and not merely in the request.
-  */
-  reviewScope?: boolean;
-}
+/*
+FNXC:BoardLaneReadScope 2026-11-18-06:25 (RUFU-479):
+The lane-scope VOCABULARY (which columns a board view reads) and the lane ORDER decision (which order each
+lane asks its server for) moved to `api/client/board-request-scope.ts`, the single owner every board-facing
+caller shares: the desktop board, the mobile board, and any workflow-mapping consumer. They are re-exported
+here so this hook's existing importers (`Board.tsx`, `useTaskQueuePages.attention.test.ts`) keep resolving
+them from the module they were written against.
+
+What this hook still owns is unchanged: it reads EXACTLY the scopes it is handed, one request per scope,
+fenced by project and generation, additive over the board snapshot. Deciding WHICH scopes a view holds is
+no longer its job, and that separation is the half that let a board keep reading a lane it never rendered.
+*/
+export type { TaskQueueScope, LaneQueueColumnFlags } from "../api/client/board-request-scope.js";
+export { laneQueueScopeForColumn } from "../api/client/board-request-scope.js";
+
+import type { TaskQueueScope } from "../api/client/board-request-scope.js";
 
 export interface UseTaskQueuePagesOptions {
   /** Rows requested per lane head. */
@@ -85,43 +78,6 @@ function scopeSignature(scopes: readonly TaskQueueScope[]): string {
     .map((scope) => `${scope.key}:${scope.order}:${scope.reviewScope === true ? "g" : "-"}:${[...scope.columns].sort().join(",")}`)
     .sort()
     .join("|");
-}
-
-/** The trait answers `laneQueueScopeForColumn` needs, which is the board payload's flag object subset. */
-export interface LaneQueueColumnFlags extends ColumnRoleFlags {
-  readonly manualIntake?: boolean;
-}
-
-/*
-FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
-ONE place decides which order a board lane asks its server for, so the mapping is reachable from a test
-without rendering the board, and so a lane cannot get a different answer in two callers.
-
-WHY A LANE IS NOT JUST ASKED FOR `queue`. `queue` is the order the engine DISPATCHES on; teaching it to
-prefer broken work would move real execution, so the attention rank rides on its own order mode and
-`queue` keeps the byte-for-byte behaviour its own suite pins.
-
-WHY MANUAL CAPTURE STAYS `intake`. A freshly captured idea has no failure, no gate, and no wait; its
-ranking rule is "newest first" precisely so the operator can triage the pile, and an attention ladder has
-nothing true to say about a card that has not started.
-
-WHY THE REVIEW CLAIM IS A DERIVED CLAIM AND NOT A LANE NAME. It comes from the same trait test the rest of
-the dashboard already uses to ask "is this review", including the legacy-id fallback for a column whose
-traits did not resolve, which is the same vocabulary the server re-derives before it accepts the claim. A
-lane that is not review asks for nothing, so a backlog can never be ranked by gates it has not reached.
-*/
-export function laneQueueScopeForColumn(
-  key: string,
-  flags: LaneQueueColumnFlags | undefined,
-): TaskQueueScope {
-  const manualIntake = flags?.manualIntake === true;
-  const reviewScope = !manualIntake && isReviewColumnRole(flags, key);
-  return {
-    key,
-    columns: [key],
-    order: manualIntake ? "intake" : "attention",
-    ...(reviewScope ? { reviewScope: true } : {}),
-  };
 }
 
 export function useTaskQueuePages(

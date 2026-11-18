@@ -116,3 +116,11 @@ insertion-order eviction, injectable clock for fake-clock tests).
   concurrent `/diff` + `/file-diffs` pair never re-resolves names.
 
 In code, stamp `FNXC:TaskDiffAttribution` greps both the batch site and the cache site.
+
+## Extended by RUFU-479 (the two-call budget is now asserted at 60 commits)
+
+`attribute-done-range-files.test.ts` gained a 60-own-commit range held to the same two-call bound with zero
+per-sha `diff-tree` calls. The bound is deliberately flat with respect to commit count: three times the
+commits, the same two calls. If a per-sha loop returns, the count becomes 61 and the test name says exactly
+what regressed. Motivating measurement: two done cards' `/diff` cost 19.96-28.35 s DURING a board load, in the
+same single process the board was trying to answer (`idle-board-read-cost-and-poll-discipline.md`).

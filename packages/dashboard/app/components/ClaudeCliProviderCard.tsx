@@ -130,7 +130,15 @@ export function ClaudeCliProviderCard({
     setBusy("disabling");
     setLastAction(null);
     try {
-      const gs = await fetchGlobalSettings();
+      /*
+      FNXC:IdleBoardReadCost 2026-11-18-08:42 (RUFU-479): read-modify-write reads the SERVER, never the cache.
+      This handler PUTs the WHOLE `experimentalFeatures` map with one flag changed, so the object it merged
+      onto decides whether a sibling flag survives. `fetchGlobalSettings` now answers from a short-TTL cache
+      (the same cache that made four boot-time settings reads collapse to one), and a cached snapshot here
+      would silently drop a flag another surface wrote after that snapshot was taken. `forceFresh` skips and
+      clears the cache, and `dedupe` redirects any older in-flight caller to the same fresh response.
+      */
+      const gs = await fetchGlobalSettings({ forceFresh: true });
       await updateGlobalSettings({
         experimentalFeatures: { ...(gs.experimentalFeatures ?? {}), claudeCliAcp: false },
       });

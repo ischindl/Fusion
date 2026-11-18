@@ -347,6 +347,35 @@ describe("filterFilesToOwnTaskCommits differential oracle (RUFU-207)", () => {
     expect(runner.calls.filter((args) => args[0] === "diff-tree")).toHaveLength(0);
   });
 
+  /*
+  FNXC:DoneRangeAttribution 2026-11-18-12:35 (RUFU-479): the 20-commit case above proves the shape; this one
+  prices the range the deployed board actually showed. The defect this card measured was a done-card diff
+  costing 19.96-28.35 s, and a card with a long own-range history is where a per-sha loop stops being
+  expensive and starts being the whole request. The bound is deliberately flat with respect to commit count:
+  three times the commits, the same two calls. If a per-sha loop ever comes back, the count goes to 61 and
+  this name says exactly what regressed.
+  */
+  it("enumerates a 60-own-commit range in at most two git calls with zero per-sha diff-tree calls", async () => {
+    const dir = makeRepo();
+    for (let i = 0; i < 60; i += 1) {
+      commitFiles(dir, `feat(T-7): change ${String(i).padStart(2, "0")}`, {
+        [`file${String(i).padStart(2, "0")}.ts`]: `export const n = ${i};\n`,
+      });
+    }
+    const runner = makeRecordingRunner(dir);
+    const result = await filterFilesToOwnTaskCommits({
+      worktreePath: dir,
+      baseRef: "HEAD~60",
+      taskId: "T-7",
+      runGit: runner.runGit,
+    });
+    expect(result.ownCommitShas).toHaveLength(60);
+    expect(result.files).toHaveLength(60);
+    const diffTreeCalls = runner.calls.filter((args) => args[0] === "diff-tree");
+    expect(diffTreeCalls).toHaveLength(0);
+    expect(runner.calls.length).toBeLessThanOrEqual(2);
+  });
+
   it("keeps oracle parity for a 20-own-commit range", async () => {
     const dir = makeRepo();
     const baseRef = baseRefOf(dir);

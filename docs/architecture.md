@@ -3378,3 +3378,50 @@ and finds the retry seam, the repair loop, the stall projection, and the notific
 #### Merge-boundary evidence recovery (FN-9345)
 
 The workflow merge boundary is a safety door and a recovery classifier. Missing node or foreach proof blocks the merge requester before it is called. When the task still has durable unfinished implementation and its resolved lifecycle lanes prove a review-to-WIP remediation target, the graph emits `merge-boundary-evidence-recovery`, logs the named repair, preserves progress/worktree state, and resumes the normal implementation owner. Direct admission and retry-boundary admission use that same path. Legacy unproven rows or states without a proven unfinished owner remain fail-closed; recovery never synthesizes proof or overrides user pauses, external blocks, terminal lanes, or operator auto-merge policy.
+
+## Lane-read field contract invariant (RUFU-479)
+
+A lane read is not a task read. What `listTaskQueuePage` and the completed-lane read return is a
+board-shaped record, and a future reader must not mistake a minimal `done` row for a defect:
+
+1. `log` and `searchVector` are excluded at the SELECT (the slim projection), and
+   `compactBoardFeed`-compacted rows additionally drop the heavy bodies the board cannot render
+   (`summary`, `comments`, `steeringComments`, `stepReports`, `recommendations`) plus `tokenUsage*` when the
+   cost badge is hidden. `source_metadata` arrives key-projected to the shipped allowlist.
+2. `log: []` on a list row means "not fetched", never "no history". Full detail comes from the single-task
+   read. A UI that needs a dropped field asks for it on the detail read; it does not widen the lane read,
+   because the whole measured win is on the read side (100 cards: 6 187 083 B whole-row vs 1 666 134 B
+   projected, 61 871 B/card vs 16 661 B/card, and 36 ms vs 11 ms of SQL).
+3. The projection is a strict subset of `TASK_SLIM_PROJECTION` - the same keys, never a new one - and the
+   parity contract is that hydrating a projected row and compacting produces the identical `Task` to
+   hydrating a slim row and compacting. `postgres/board-feed-payload-projection.pg.test.ts` and
+   `postgres/lane-read-projection-parity.pg.test.ts` hold that shut; the latter also carries the per-card
+   byte ceilings (20 000 active / 10 000 done) derived from the live distribution, so a regression to a wide
+   read is caught by a factor of three rather than by a reviewer's attention.
+4. A card face that must never be blank stays in the projection even when it is expensive
+   (`mergeDetails`, `modifiedFiles`): the RUFU-455/FN-1035 blank-PR-URL class of defect is a user-visible
+   loss, and byte cost is not a licence to blank a card.
+5. One deliberate exception to lane scoping: the board's MOUNT read is whole-board, because only that answer
+   can say which lanes exist and a patch cannot express a removed lane (RUFU-493). "Every read is lane-scoped"
+   is therefore a statement about the board's lane-read set, and `board-lane-read-cost.test.tsx` asserts it
+   over that set.
+
+## External presence probes have one owner, including their invalidation (RUFU-479)
+
+Two ratchets cover one class, and the gap between them is how a stale answer shipped:
+
+- **Call sites.** `routes/__tests__/gh-probe-call-site-guard.test.ts` inventories which paths may call the
+  BLOCKING `isGhAvailable()` / `isGhAuthenticated()` pair. Polled read surfaces use the async cached twins
+  (`/api/auth/status`, `/api/settings`, `usage.ts`); the allow-list holds only action routes and lazy
+  capability predicates, which spawn `gh` many times anyway. A new read surface defaults to forbidden.
+- **Invalidation.** The call-site ratchet cannot see who CLEARS a cache. `resetGhAvailabilityCache()` was
+  exported and documented as the invalidation hook and had no production caller at all, while the sibling
+  `invalidateRuntimeCliProbeCaches()` had four callers in `register-auth-routes.ts` - each of which returns a
+  body that ALSO carries the gh availability and authentication verdicts. So a save/Test/Refresh cleared five
+  runtime CLI probes and kept serving a gh answer up to `GH_CHECK_TTL_MS` (60 s) old, which is exactly the
+  window an operator is looking at when they pressed Refresh after `gh auth login`. The rule now: the owner
+  that invalidates the runtime CLI probes invalidates the gh pair too, in the same call
+  (`src/runtime-provider-probes.ts`), because the pair is answered in one response and must not drift apart by
+  construction. `src/__tests__/auth-probe-cache.test.ts` witnesses the ownership, and asserts the
+  no-invalidation half as well: a different configured binary path is its own cache entry, so pointing at a
+  new binary never inherits the old binary's truth.

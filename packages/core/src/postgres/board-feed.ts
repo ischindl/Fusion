@@ -171,13 +171,43 @@ export function resolveBoardFeedProjection(
 /** The flag name, exported so the ratchet test and the operator-facing changeset name one string. */
 export const BOARD_FEED_PROJECTION_ENV = "FUSION_BOARD_FEED_PROJECTION";
 
-/**
- * One flag, default OFF. Rollback is pointing the read path back at the old query by unsetting it —
- * no migration to undo, because this slice writes no new state.
- */
+/** Spellings that mean "keep the old wide query" — the one-statement rollback RUFU-902 promised. */
+const PROJECTION_OFF_SPELLINGS = new Set(["0", "false", "no", "off"]);
+
+/** Spellings that mean "project", kept explicit so an empty-string env does not read as an opt-in. */
+const PROJECTION_ON_SPELLINGS = new Set(["1", "true", "yes", "on"]);
+
+/*
+FNXC:BoardFeedProjection 2026-11-18-04:52 (RUFU-479): this flag is now DEFAULT ON.
+RUFU-902 shipped the projection behind a default-OFF flag and named the one measurement that had to
+land before it could be switched on: "Measure PostgreSQL CPU before enabling: key-projecting
+`source_metadata` decompresses it server-side, the trade RUFU-615 rejected for `log`." That measurement
+is now taken against the live board (read-only; project `proj_9326d74a133b421a`, 911 live rows; the
+first 100 cards of the page order):
+
+  * transfer for the heavy columns of one 100-card page: 1 402 058 B wide to 848 198 B projected
+    (1.65x fewer bytes; RUFU-902's fixture-shaped bench measured 1.93x across all 182 columns);
+  * PostgreSQL execution time of the decompression arm itself: 2.83 ms whole-blob to 4.32 ms
+    key-projected, i.e. +1.49 ms of server CPU per 100-card page;
+  * set against a page the deployed node answers in 8.79-10.79 s.
+
+What RUFU-615 rejected for `log` was 4.5-11.5 s of server CPU bought for a transfer cut. This buys the
+same class of cut for about 0.05 percent of the page's own wall time, so the trade lands the other way
+exactly as the block above predicted. Switching the flag on is the remaining half of the read-projection
+work, not new projection work.
+
+The environment variable keeps its meaning as the operator's rollback switch, widened honestly rather
+than inverted: unset means ON (the shipped default), the four affirmative spellings mean ON, and the
+four negative spellings mean "answer with the old wide query". A value in neither set falls through to
+the default instead of becoming an accidental rollback, and a typo therefore costs performance and never
+correctness — both shapes are proven to hydrate to the identical `Task` by `board-feed.test.ts`.
+*/
 export function isBoardFeedProjectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[BOARD_FEED_PROJECTION_ENV];
-  if (raw === undefined) return false;
+  if (raw === undefined) return true;
   const normalized = String(raw).trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  if (PROJECTION_OFF_SPELLINGS.has(normalized)) return false;
+  if (PROJECTION_ON_SPELLINGS.has(normalized)) return true;
+  // An unrecognised value keeps the default rather than silently becoming a rollback.
+  return true;
 }

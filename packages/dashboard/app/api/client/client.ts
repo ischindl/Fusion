@@ -4,6 +4,7 @@
  */
 import { getAuthToken, withTokenHeader } from "../../auth";
 import { readPriorityClass, scheduleRead } from "./read-scheduler.js";
+import { observeRequestStat } from "./request-stats.js";
 import type { DedupeOptions } from "./dedupe.js";
 // FNXC:TaskDeleteAttribution 2026-07-26-17:05: import the browser-safe leaf, not the package root — the root alias resolves to `core/src/types.ts` in the client bundle and does not carry these constants.
 import { FUSION_CLIENT_HEADER, FUSION_DASHBOARD_UI_CLIENT } from "@fusion/core/task-delete-attribution";
@@ -128,6 +129,23 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
   const res = method === "GET"
     ? await scheduleRead(readPriorityClass(path), send, opts.signal ?? undefined)
     : await send();
+
+  /*
+  FNXC:RouteCostAccounting 2026-11-18-07:25 (RUFU-479):
+  One count per URL pattern for the whole boot, recorded at the single seam every request already passes
+  through. The measured failure it makes visible is a CLIENT fact that no server metric can see: one board
+  load fired 42 requests inside the same second and fetched `/api/settings/global` four times. The route
+  cost table on the server answers what an endpoint costs; this answers how often the tab asked, and the
+  two together are what turns "the board is slow" into a named route and a named caller.
+
+  Counts and byte totals only - no query string, no body, no header - because this endpoint's traffic
+  includes settings payloads that carry daemon and git tokens, and a diagnostic counter is not a place to
+  retain them.
+  */
+  observeRequestStat(path, {
+    bytes: Number(res.headers?.get?.("content-length") ?? 0) || undefined,
+    failed: res.ok === false,
+  });
 
   /*
    * FNXC:DashboardApi 2026-07-15-13:25:

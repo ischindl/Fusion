@@ -19,7 +19,8 @@ import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
-import { useTaskQueuePages, laneQueueScopeForColumn, type TaskQueueScope } from "../hooks/useTaskQueuePages";
+import { useTaskQueuePages, type TaskQueueScope } from "../hooks/useTaskQueuePages";
+import { buildBoardLaneScopes } from "../api/client/board-request-scope";
 import { useHeaderWorkflowSlot } from "../hooks/useHeaderWorkflowSlot";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
@@ -448,26 +449,19 @@ function BoardContent({ tasks: providedTasks, projectId, maxConcurrent, maxWorkt
   et accumulateur Done ne changent pas de propriétaire ; une lane indisponible dégrade simplement
   vers la page générique.
   */
-  const queueHeadScopes = useMemo<TaskQueueScope[]>(() => {
-    const source = workflowMode && selectedWorkflow ? selectedWorkflow.columns : undefined;
-    if (!source) return [];
-    const scopes: TaskQueueScope[] = [];
-    for (const column of source) {
-      if (column.flags?.hiddenFromBoard === true) continue;
-      if (column.flags?.complete === true) continue;
-      /*
-      FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
-      The lane head now arrives ranked by attention, which is the half that makes the first screen mean
-      something: this board page and the lane head are both TRUNCATED reads, so a card sitting past the
-      limit is not in the payload and no client-side sort can promote it. Asking for `attention` is what
-      puts the one failed card among two hundred idle ones INTO the payload. The mapping itself - which
-      lane asks for which order, and which lanes claim the required-gate tier - is `laneQueueScopeForColumn`,
-      named so that the rule has one answer and a test that does not have to render this component.
-      */
-      scopes.push(laneQueueScopeForColumn(column.id, column.flags));
-    }
-    return scopes;
-  }, [selectedWorkflow, workflowMode]);
+  const queueHeadScopes = useMemo<TaskQueueScope[]>(
+    /*
+    FNXC:BoardLaneReadScope 2026-11-18-06:30 (RUFU-479):
+    The vocabulary policy (hidden columns and the terminal lane are never read; every other published
+    column is) moved out of this component into `api/client/board-request-scope.ts`, so the desktop board,
+    the mobile board and any workflow-mapping consumer answer "which lanes do I read?" from one rule
+    instead of three copies that can drift. The behaviour this memo had is unchanged, including the
+    `workflowMode && selectedWorkflow` guard that keeps the read set empty while the vocabulary is unknown
+    - reading lanes before the board knows its lanes is exactly the unscoped read this exists to avoid.
+    */
+    () => buildBoardLaneScopes(workflowMode && selectedWorkflow ? selectedWorkflow.columns : undefined),
+    [selectedWorkflow, workflowMode],
+  );
   const { tasks: queueHeadTasks } = useTaskQueuePages(projectId, queueHeadScopes, { enabled: active, limit: 50 });
   const tasks = useMemo(() => {
     if (queueHeadTasks.length === 0) return providedTasks;

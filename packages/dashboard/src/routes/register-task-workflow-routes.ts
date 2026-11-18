@@ -1899,7 +1899,15 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             fields: [],
             derive: false,
           }),
-          scopedStore.listCompletedTasks({ limit: 50, slim: true }),
+          /*
+          FNXC:BoardWorkflows 2026-11-18-05:00 (RUFU-479): this Done-page read exists only to contribute
+          task IDS to the mapping below (`completedPage.tasks.map((task) => task.id)`), yet it asked for the
+          wide row, so the coalesced board-workflows read paid to transfer and parse `summary`, both comment
+          arrays and every step body of 50 finished cards and used none of it. `compactBoardFeed` is what
+          activates the SQL-side projection (the flag defaults ON), so this internal read now stops moving
+          that payload at all. Nothing here can observe the dropped fields, because nothing here reads them.
+          */
+          scopedStore.listCompletedTasks({ limit: 50, slim: true, compactBoardFeed: true }),
         ]);
         taskIds = [...new Set([
           ...currentTasks.map((task) => task.id),

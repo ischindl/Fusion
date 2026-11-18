@@ -49,19 +49,23 @@ export type TaskDiffResponse<S extends boolean> = S extends true ? TaskDiffStats
  * Fetch diff for a task's changes.
  *
  * @param statsOnly - When true, requests `?stats=1`: aggregate counters only, no per-file patches.
+ * @param signal - Aborts the request. Optional because most callers want the answer; the ones that pass it
+ * are the ones whose TARGET changes (a card selected away from, a tab closed), where continuing to wait is
+ * not patience but a wasted read slot on a single-queue server.
  */
 export function fetchTaskDiff<S extends boolean = false>(
   taskId: string,
   worktree?: string,
   projectId?: string,
   statsOnly?: S,
+  signal?: AbortSignal,
 ): Promise<TaskDiffResponse<S>> {
   const params = new URLSearchParams();
   if (worktree) params.set("worktree", worktree);
   if (projectId) params.set("projectId", projectId);
   if (statsOnly) params.set("stats", "1");
   const query = params.size > 0 ? `?${params.toString()}` : "";
-  return api<TaskDiffResponse<S>>(`/tasks/${encodeURIComponent(taskId)}/diff${query}`);
+  return api<TaskDiffResponse<S>>(`/tasks/${encodeURIComponent(taskId)}/diff${query}`, signal ? { signal } : undefined);
 }
 
 export interface TaskCommitAssociationRow {

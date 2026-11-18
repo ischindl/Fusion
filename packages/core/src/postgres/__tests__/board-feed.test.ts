@@ -390,21 +390,37 @@ describe("board-feed projection — strictly fewer columns and bytes per row", (
 
 /* ------------------------------------------------------------------ 4. flag */
 
-describe("board-feed projection — one flag, default OFF", () => {
-  it("is OFF with no environment at all, and with every unset spelling", () => {
-    expect(isBoardFeedProjectionEnabled({})).toBe(false);
-    for (const value of ["", " ", "0", "false", "no", "off", "random"]) {
-      expect(isBoardFeedProjectionEnabled({ [BOARD_FEED_PROJECTION_ENV]: value }), `${value} enabled the flag`).toBe(false);
+/*
+FNXC:BoardFeedProjection 2026-11-18-05:02 (RUFU-479): this block asserted "default OFF" for the shape
+RUFU-902 shipped. The projection is now the shipped default, so the assertions are rewritten to the new
+truth rather than deleted: the environment variable is a ROLLBACK switch, its negative spellings are the
+only thing that returns the wide query, and an unrecognised value may not silently become a rollback.
+The measurement that justified the flip (live board, +1.49 ms of PostgreSQL CPU per 100-card page against
+1.65x fewer transferred bytes on a page the deployed node answers in ~9 s) is recorded on the function.
+*/
+describe("board-feed projection — one flag, default ON with a one-variable rollback", () => {
+  it("is ON with no environment at all — the shipped default needs no opt-in", () => {
+    expect(isBoardFeedProjectionEnabled({})).toBe(true);
+  });
+
+  it("is OFF only for the four documented rollback spellings", () => {
+    for (const value of ["0", "false", "FALSE", " no ", "Off"]) {
+      expect(isBoardFeedProjectionEnabled({ [BOARD_FEED_PROJECTION_ENV]: value }), `${value} did not roll back`).toBe(false);
     }
   });
 
-  it("is ON only for the four documented affirmative spellings", () => {
+  it("stays ON for the affirmative spellings and for a value that names neither side", () => {
     for (const value of ["1", "true", "TRUE", " yes ", "On"]) {
       expect(isBoardFeedProjectionEnabled({ [BOARD_FEED_PROJECTION_ENV]: value }), `${value} did not enable the flag`).toBe(true);
     }
+    // An empty string or a typo keeps the default instead of becoming an accidental rollback: the cost of
+    // a bad value is performance, never correctness, because both shapes hydrate to the identical Task.
+    for (const value of ["", " ", "random"]) {
+      expect(isBoardFeedProjectionEnabled({ [BOARD_FEED_PROJECTION_ENV]: value }), `${value} became an accidental rollback`).toBe(true);
+    }
   });
 
-  it("names one environment variable, so rollback is one unset", () => {
+  it("names one environment variable, so rollback is one export", () => {
     expect(BOARD_FEED_PROJECTION_ENV).toBe("FUSION_BOARD_FEED_PROJECTION");
   });
 });

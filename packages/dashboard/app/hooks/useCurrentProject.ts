@@ -70,7 +70,31 @@ export function useCurrentProject(
     const currentCache = settingsCacheRef.current ?? {};
     if (currentCache[nodeKey] === projectId) return;
 
-    const newCache = { ...currentCache, [nodeKey]: projectId };
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-11:20 (RUFU-479): the write is CLAIMED before the first await, and the
+    order is load-bearing. Project-list polling hands this hook fresh arrays, which is why the guard above
+    exists at all (FNXC:DashboardProjectSelection 2026-10-12): reading the server base made the guard stop
+    working, because `settingsCacheRef` only changed after the fetch settled, so every rerender inside that
+    window re-passed it and bought its own settings read. Measured here by the poll-rerender case: one
+    manual switch turned into six reads. Claiming synchronously keeps the guard closed while the merge read
+    is in flight, and the merge below still lets our key win over whatever the server returned.
+    */
+    const claimed = { ...currentCache, [nodeKey]: projectId };
+    settingsCacheRef.current = claimed;
+
+    /*
+    FNXC:IdleBoardReadCost 2026-11-18-08:45 (RUFU-479): `dashboardCurrentProjectIdByNode` is a MAP this
+    caller writes whole, and it holds one entry per node - so whoever merged the map decides whether the
+    OTHER nodes' selections survive. The hydrating read that filled `settingsCacheRef` is now served from a
+    short-TTL cache (that is what turned four boot-time settings reads into one), so the write path takes its
+    base from the server with `forceFresh` instead of from that snapshot. A failed fresh read degrades to the
+    in-memory map - the pre-existing behaviour - rather than skipping the save.
+    */
+    const serverCache = await fetchGlobalSettings({ forceFresh: true })
+      .then((settings) => settings.dashboardCurrentProjectIdByNode ?? {})
+      .catch(() => claimed);
+    // Our key wins over the server snapshot; only the SIBLING entries come from the freshly-read map.
+    const newCache = { ...serverCache, [nodeKey]: projectId };
     settingsCacheRef.current = newCache;
     await updateGlobalSettings({ dashboardCurrentProjectIdByNode: newCache }).catch(() => {
       // Non-critical - persistence failed.
@@ -281,14 +305,24 @@ export function useCurrentProject(
     [persistCurrentProjectId, persistGlobalProjectSelection],
   );
 
-  const clearCurrentProject = useCallback(() => {
+  const clearCurrentProject = useCallback(async () => {
     explicitlyClearedRef.current = true;
     absentCountRef.current = 0;
     autoDefaultCountRef.current = 0;
     setCurrentProjectState(null);
     persistCurrentProjectId(null);
 
-    const newCache = { ...settingsCacheRef.current };
+    /* Same merge-onto-the-server rule as `persistGlobalProjectSelection`: this deletes ONE key from a map
+    that carries every other node's selection, so its base is the server snapshot, not the cached one - and
+    for the same reason the claim is published synchronously before the read. */
+    const claimedClear = { ...(settingsCacheRef.current ?? {}) };
+    delete claimedClear[nodeKey];
+    settingsCacheRef.current = claimedClear;
+
+    const serverCache = await fetchGlobalSettings({ forceFresh: true })
+      .then((settings) => settings.dashboardCurrentProjectIdByNode ?? {})
+      .catch(() => claimedClear);
+    const newCache = { ...serverCache };
     delete newCache[nodeKey];
     settingsCacheRef.current = newCache;
     updateGlobalSettings({ dashboardCurrentProjectIdByNode: newCache }).catch(() => {

@@ -1,17 +1,27 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { currentDiffRequestSignal } from "./diff-request-signal.js";
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Execute a git command and return stdout as text.
+ *
+ * FNXC:DiffLaneCancellation 2026-11-18-10:08 (RUFU-479): when this runs inside a cancellable diff request
+ * (`withDiffRequestCancellation`), the request's signal is attached, so a client that gave up stops the
+ * subprocess instead of letting it run to completion in a lane the whole single-process dashboard shares.
+ * `killSignal: "SIGKILL"` is set only on that path: a diff is read-only work with nothing to shut down
+ * gracefully, and the grace period that matters is the one the HTTP client already waited. On the
+ * un-cancelled path the previous default (SIGTERM on timeout) is left exactly as it was.
  */
-export async function runGitCommand(args: string[], cwd?: string, timeout = 10000): Promise<string> {
+export async function runGitCommand(args: string[], cwd?: string, timeout = 10000, signal?: AbortSignal): Promise<string> {
+  const effectiveSignal = signal ?? currentDiffRequestSignal();
   const result = await execFileAsync("git", args, {
     cwd,
     timeout,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf-8",
+    ...(effectiveSignal ? { signal: effectiveSignal, killSignal: "SIGKILL" as const } : {}),
   });
 
   if (typeof result === "string") {

@@ -11,6 +11,7 @@ import { ApiError, notFound, rethrowAsApiError } from "../api-error.js";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
 import { resolveDiffBase, runGitCommand } from "./resolve-diff-base.js";
+import { diffRequestCancellation } from "./diff-request-signal.js";
 import { countPatchLines, parseNumstatOutput, type DiffLineCounts } from "./diff-counts.js";
 import { filterFilesToOwnTaskCommits } from "./attribute-done-range-files.js";
 import {
@@ -1600,6 +1601,13 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
     }
   });
 
+  /*
+  FNXC:DiffLaneCancellation 2026-11-18-10:30 (RUFU-479): mounted as a path-scoped `use` rather than as a second
+  handler argument, because express's route-param narrowing (`params.id: string`) is only inferred for a
+  single-handler registration; passing the middleware inline widens `params.id` to `string | string[]` and the
+  lane's `getTask(req.params.id)` call stops typechecking. Same scope, one line lower, types intact.
+  */
+  router.use("/tasks/:id/file-diffs", diffRequestCancellation);
   router.get("/tasks/:id/file-diffs", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);

@@ -504,6 +504,16 @@ export const RETENTION_INVENTORY = [
     ]
   },
   {
+    "file": "packages/dashboard/src/metrics/route-cost.ts",
+    "name": "routes",
+    "kind": "Map",
+    "classification": "bounded",
+    "sources": [],
+    "ceilingConstant": "ROUTE_COST_MAX_ROUTES",
+    "justification": "count ceiling `ROUTE_COST_MAX_ROUTES` declared in packages/dashboard/src/metrics/route-cost.ts",
+    "expiryEvidence": []
+  },
+  {
     "file": "packages/dashboard/src/milestone-slice-interview.ts",
     "name": "rateLimits",
     "kind": "Map",

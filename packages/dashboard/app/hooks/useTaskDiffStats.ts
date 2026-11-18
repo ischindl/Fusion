@@ -173,6 +173,15 @@ export function useTaskDiffStats(
     }
 
     let cancelled = false;
+    /*
+    FNXC:DiffLaneCancellation 2026-11-18-09:55 (RUFU-479): `cancelled` made the RESULT harmless — a late
+    answer for a card you stopped looking at cannot overwrite state — but it left the REQUEST alive. On this
+    server a diff read occupies one of four client read slots and, on a cache miss, a git lane the node is
+    measuring at 19.96-28.35 s, so an abandoned badge poll kept costing after it stopped being wanted. The
+    controller is per effect run and aborted by the same cleanup that sets `cancelled`, so the two
+    guarantees move together: nobody reads the result AND nobody is still waiting for it.
+    */
+    const controller = new AbortController();
 
     async function load(forceRefresh = false) {
       // Check cache first - return immediately without loading flicker (unless force refresh)
@@ -203,7 +212,7 @@ export function useTaskDiffStats(
         unchanged — the key stays (taskId, projectId, worktree, version, mode) — because the stats-only flag
         is transport, not identity: the numbers under this key are the same numbers.
         */
-        const data = await fetchTaskDiff(taskId, activeWorktree, projectId, true);
+        const data = await fetchTaskDiff(taskId, activeWorktree, projectId, true, controller.signal);
         if (!cancelled) {
           setState({ key: requestKey, stats: data.stats, loading: false });
           // Store in cache
@@ -234,6 +243,7 @@ export function useTaskDiffStats(
 
     return () => {
       cancelled = true;
+      controller.abort();
       forceRefreshRef.current = () => {};
     };
   }, [taskId, column, commitSha, projectId, enabled, worktree, stepVersion, snapshotVersion, mergeSignature, pollIntervalMs, shouldFetchDoneTask, shouldFetchActiveTask, requestKey, activeWorktree, cacheVersion, mode]);

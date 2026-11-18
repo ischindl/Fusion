@@ -114,6 +114,7 @@ import {
 import { loadViewChunkManifest, type ViewChunkManifestEntry } from "./view-chunk-manifest.js";
 import { maybeStartOtelExporter, type OtelExporterHandle } from "./otel-exporter.js";
 import { createMetricsSampler } from "./metrics/index.js";
+import { createRouteCostMiddleware } from "./metrics/route-cost.js";
 import { createDashboardDomainRegistry, createRegisteredProjectIdReader } from "./metrics/served-project-stores.js";
 import { requireAsyncLayer } from "./require-async-layer.js";
 import {
@@ -1617,6 +1618,17 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   blocks or serializes the render path.
   */
   app.use(metricsSampler.middleware());
+
+  /*
+  FNXC:RouteCostAccounting 2026-11-18-07:15 (RUFU-479):
+  The aggregate ring above can say the node is slow; it cannot say WHICH handler is slow, which is why a
+  board page measured at 8.79-10.79 s solo (and 15.5 s during the burst, while `/api/settings/global` on
+  the same server answered in 5 ms) was only visible in a browser trace. This middleware records the same
+  full-pipeline duration per ROUTE TEMPLATE, bounded on both axes (`REQUEST_LATENCY_RING_CAP` samples per
+  route, `ROUTE_COST_MAX_ROUTES` routes), and is read at `GET /api/diagnostics/costs`. Mounted beside the
+  latency recorder, before auth, so a request that is later refused still accounts for what it cost.
+  */
+  app.use(createRouteCostMiddleware());
 
   // Daemon mode: bearer token authentication middleware
   // Auth is enabled when daemon option is provided OR FUSION_DAEMON_TOKEN env var is set.

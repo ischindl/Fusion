@@ -1640,3 +1640,41 @@ anything — that is what lets a test say "the next turn recovered" literally.
 No test reaches the network or a real Stash instance. Keep using the injected-client fake for URL
 shape, payload shape, cache and TTL behavior, where a fast recorder with an injected clock is the right
 tool; use the loopback transport when the claim is about the wire.
+
+## The lane-scoped request-set harness is the surface-enumeration checklist for polling work (RUFU-479)
+
+"Fix the invariant, not the repro" needs an enumeration mechanism when the invariant is about REQUESTS, and
+a heap profile is not one. Three harnesses divide the work, and a polling or read-cost change is not done
+until the one that owns its claim is green:
+
+- `app/__tests__/board-boot-request-set.test.tsx` pins the SET (which paths, how many, with which query
+  parameters). `bootstrap-read-scheduler.test.ts` pins the QUEUE (classification, the 4-slot bound, mutation
+  bypass); a bounded queue full of requests that should not exist is still a board that answers nothing, so
+  neither file substitutes for the other.
+- `app/__tests__/board-lane-read-cost.test.tsx` + `app/hooks/__tests__/useTasks.read-scope.test.tsx` pin the
+  SCOPE: one read per visible lane, an off-screen view reads zero, narrowing re-reads only what it narrowed.
+- `app/hooks/__tests__/visibility-poll-gating.test.ts` pins SUSPENSION across a representative sample of
+  pollers, not one repro.
+
+Rules these files enforce and a new case must keep:
+
+1. **No assertion reads a clock.** Shape only: paths, counts, parameters. The motivating endpoints measured
+   61 s and 82 s in two adjacent calls of ONE mount, so a timing assertion rots on the next warm cache.
+2. **Read request parameters through a URL parser, never by substring.** A substring test for `scope=lanes`
+   also matched the corrupted `?projectId=X?scope=lanes` the first cut really emitted, and certified as
+   bounded the exact read the server answered unbounded.
+3. **Absent and zero are different claims.** A route nobody asked for is ABSENT; a counter reports 0. An
+   absence assertion that passes because the instrument is missing is the failure mode this harness exists to
+   prevent.
+4. **A per-pattern client counter must agree with the transport recording**, so coalescing shows as one in
+   both places.
+
+Two traps from this card that belong to the checklist rather than to a ticket:
+
+- **A guard that closes behind an `await` is not a guard.** Dedupe guards keyed on a ref must publish the
+  claimed value synchronously; reading a server snapshot first re-opened the guard for the whole fetch window
+  and turned one project switch into six settings reads.
+- **A published ceiling must come from the distribution of the shape it bounds.** The first byte ceiling
+  (12 600 B/card) sat below the live p50 of the projected row (14 553 B), so real data violated it and the
+  first discovery would have been a CI run. Re-derived as 20 000 / 10 000 B/card, still 3x below the
+  whole-row figure, with the dropped columns asserted absent outright rather than merely small.

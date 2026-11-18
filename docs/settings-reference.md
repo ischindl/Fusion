@@ -2375,3 +2375,29 @@ The dashboard always reloads once it detects a new build version. After an opera
 - **Scope:** global
 - **Default:** `false` (a missing value remains disabled)
 - **Effect:** exposes **Whiteboard** with its Alpha badge on supported navigation surfaces. When disabled, deep links and restored Whiteboard views normalize to Board and no Whiteboard button, badge, or container is rendered.
+
+## Global settings read cache and invalidation (RUFU-479)
+
+`GET /api/settings/global` was fetched FOUR times by one board load: every consumer mounted, asked, and paid,
+against a payload that can carry `daemonToken`, `githubAuthToken` and `gitlabAuthToken`.
+
+Behaviour, and the two rules that come with it:
+
+- `fetchGlobalSettings()` shares concurrent in-flight reads and serves a **5 s** in-memory TTL
+  (`GLOBAL_SETTINGS_TTL_MS`) so a burst costs one request. A late response from before an invalidation cannot
+  repopulate the cache: an epoch is compared on settle.
+- `updateGlobalSettings()` invalidates BEFORE the PUT, and callers may force a read with
+  `fetchGlobalSettings({ forceFresh: true })`.
+- **Rule 1 - never persist the payload.** It stays in module memory. Nothing settings-shaped may be written to
+  `localStorage` or `sessionStorage`; the boot request-set harness asserts that after a real read.
+- **Rule 2 - a read-modify-write must be `forceFresh`.** `dashboardCurrentProjectIdByNode` and
+  `experimentalFeatures` are maps written WHOLE, so merging onto a snapshot up to a TTL old silently drops a
+  sibling key written by another tab or surface. The two project-selection sites
+  (`useCurrentProject.persistGlobalProjectSelection`, `useCurrentProject.clearCurrentProject`) and
+  `ClaudeCliProviderCard.handleFallbackToDashP` read fresh for exactly that reason. The claimed value is
+  published to the hook's in-memory map BEFORE the fresh read is awaited - a dedupe guard whose claim lands
+  after the await is open for the whole fetch window, which is how one manual project switch turned into six
+  settings reads.
+- A test that asserts transport counts must call `invalidateGlobalSettingsCache()` first: `app/__tests__/api-settings.test.ts`
+  invalidates in `afterEach`, because those cases count real requests and a warm cache would make a duplicate
+  read look fixed.
