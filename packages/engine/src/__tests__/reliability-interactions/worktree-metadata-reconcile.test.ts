@@ -148,3 +148,101 @@ describe("reliability interactions: worktree metadata reconcile", () => {
     expect((store as any).updateTask).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * FNXC:PlanningLaneWorktreeIdentity 2026-11-18-20:40 (RUFU-893, Step 4):
+ * THE SYMPTOM AND ITS ABSENCE, PINNED IN THE SWEEP'S OWN FILE. The five reported cards were planning-lane
+ * rows carrying a `branch` and/or a `worktree` that git could not corroborate. Measured on the pre-change
+ * tree (`forensics` task document): 28 planning-lane mirrors held such a pointer, 18 of them the branch-only
+ * shape, and a full pass repaired ZERO of them, because the entry gate began `if (!task.worktree) continue;`
+ * and never looked at a card that claimed only a branch. Both cases below are stated as verdicts over the
+ * real git seams so the file keeps its no-subprocess character; the commands themselves are characterized in
+ * `self-healing-planning-worktree-identity.real-git.test.ts`.
+ *
+ * Run against the pre-change code these two assertions fail in opposite directions: the first because the
+ * card was never admitted, the second because the clear was unconditional and would have dropped a pointer
+ * naming 3 undelivered commits. That is the pair the intake asked to be pinned together.
+ */
+class StatedProbesManager extends SelfHealingManager {
+  constructor(
+    store: TaskStore & EventEmitter,
+    private readonly verdicts: {
+      ref: "present" | "absent" | "unknown";
+      registration: "registered" | "absent" | "unknown";
+      containment: "contained" | "divergent" | "unknown";
+      divergentCommitCount?: number;
+    },
+  ) {
+    super(store, { rootDir: "/repo" });
+  }
+
+  protected override async probePlanningLaneBranchPresence(): Promise<"present" | "absent" | "unknown"> {
+    return this.verdicts.ref;
+  }
+
+  protected override async probePlanningLaneBranchRegistration(): Promise<"registered" | "absent" | "unknown"> {
+    return this.verdicts.registration;
+  }
+
+  protected override async probePlanningLaneBranchContainment(): Promise<{
+    verdict: "contained" | "divergent" | "unknown";
+    uniqueCommitCount?: number;
+  }> {
+    return {
+      verdict: this.verdicts.containment,
+      ...(this.verdicts.divergentCommitCount !== undefined ? { uniqueCommitCount: this.verdicts.divergentCommitCount } : {}),
+    };
+  }
+}
+
+describe("reliability interactions: worktree metadata reconcile (RUFU-893 symptom pair)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("clears the branch-only planning pointer the pre-change entry gate never admitted", async () => {
+    const store = makeStore([task("RUFU-254", { column: "todo", worktree: null, branch: "fusion/rufu-254" })]);
+    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
+
+    const manager = new StatedProbesManager(store, {
+      ref: "absent",
+      registration: "absent",
+      containment: "unknown",
+    });
+
+    expect(await manager.reconcileTaskWorktreeMetadata()).toBe(1);
+    expect((store as any).updateTask).toHaveBeenCalledWith("RUFU-254", {
+      worktree: null,
+      branch: null,
+      branchWriteOrigin: "engine",
+    });
+    /* Metadata hygiene only: no column move, no status write, and the clear is the audit row's whole story. */
+    expect((store as any).moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-recover-worktree-metadata-cleared",
+    }));
+  });
+
+  it("refuses the same shape while its branch still carries undelivered commits", async () => {
+    const store = makeStore([task("RUFU-1044", { column: "todo", worktree: null, branch: "fusion/rufu-1044" })]);
+    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
+
+    const manager = new StatedProbesManager(store, {
+      ref: "present",
+      registration: "absent",
+      containment: "divergent",
+      divergentCommitCount: 3,
+    });
+
+    expect(await manager.reconcileTaskWorktreeMetadata()).toBe(0);
+    expect((store as any).updateTask).not.toHaveBeenCalled();
+    expect(await (store as any).getTask("RUFU-1044")).toMatchObject({ branch: "fusion/rufu-1044" });
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:reconcile-planning-lane-worktree-identity-no-action",
+      metadata: expect.objectContaining({ code: "ref-divergent", outcome: "withheld" }),
+    }));
+    expect((store as any).recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-recover-worktree-metadata-cleared",
+    }));
+  });
+});

@@ -221,7 +221,7 @@ import {
   buildDuplicateReplanExhaustedError,
 } from "./duplicate-marker-clear.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
-import { RemovalReason, canonicalizePath, classifyTaskWorktree, describeRegisteredWorktrees, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
+import { RemovalReason, canonicalizePath, classifyTaskWorktree, describeRegisteredWorktrees, isInsideWorktreesDir, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
 // FNXC:WorktreePreservation 2026-11-08-15:15 (RUFU-278): the classifier comes from the preservation leaf, not the
 // pool barrel this file already imports removeWorktree from, so a test doubling the barrel cannot erase the
 // distinction between a protection and a failure here.
@@ -356,6 +356,19 @@ import { advanceIntegrationBranchRef } from "./merge/merger-ref-update-advance.j
 import { isInsideConfiguredWorktreesDir, isReclaimableWorktreeCandidate, isWorktreeContainerDir, resolveAiMergeSearchRoots, resolveWorktreesDir, resolveWorktreesDirScanRoots } from "./worktree/worktree-paths.js";
 import { removeDirectoryWithRetry } from "./worktree/worktree-removal-retry.js";
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
+import {
+  decidePlanningLaneWorktree,
+  planningLaneIdentityClearSentence,
+  planningLaneIdentityRefusalSentence,
+  type PlanningLaneClass,
+  type PlanningLaneContainment,
+  type PlanningLanePointerClearBasis,
+  type PlanningLanePointerDecision,
+  type PlanningLanePointerRefusalCode,
+  type PlanningLaneRegistration,
+  type PlanningLaneRefPresence,
+} from "./worktree/planning-lane-worktree-identity.js";
+import { probeBranchContainment } from "./merge/branch-presence-probe.js";
 import { preservedWorktreeTargetPathForTask } from "./worktree/worktree-pinning.js";
 /*
 FNXC:AcquisitionConflictRevalidation 2026-11-01-13:35 (RUFU-356):
@@ -1853,6 +1866,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * (not just taskId) because "why is this card still parked" is the question the row exists to answer.
    */
   private staleAcquisitionConflictNoActionAudited = new Set<string>();
+  /*
+  FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:25 (RUFU-893):
+  One `-no-action` row plus one History line per `(card, refusal code)` for the planning-lane identity
+  gate, held on the manager the same way `staleAcquisitionConflictNoActionAudited` holds RUFU-356's. A
+  sustained refusal (a divergent branch nobody rebases, a store that cannot answer a probe) is countable
+  once instead of once per sweep pass forever, while a NEW code on the same card is still announced.
+  */
+  private planningLaneIdentityRefusalAudited = new Set<string>();
   /*
    * FNXC:StrandedHoldContinuation 2026-07-26-14:15:
    * FN-8592 no-action findings are candidate-only but can persist across
@@ -8203,6 +8224,233 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
+  /*
+  FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:45 (RUFU-893):
+  THE PLANNING LANE HAS ONE OWNER FOR A CARD'S worktree/branch IDENTITY, and it is this sweep. Before the
+  change the clear at the end of `reconcileTaskWorktreeMetadata` was unconditional once a claimed directory
+  looked stale, so "the directory is gone" stood in for "the identity is dead" — and the identity is a
+  branch ref that a sibling lane then force-deletes (`reconcileCompletedTask` → `git branch -D`), an action
+  that cannot distinguish a squash-merged tip from a branch that was simply never merged. These helpers hold
+  everything the gate needs: the lane read, the three git verdicts, and the two announcements. The verdict
+  table itself is the pure leaf in `worktree/planning-lane-worktree-identity.ts`; no branch of it is
+  duplicated here.
+  */
+
+  /**
+   * The intake/hold lanes, resolved by ROLE so a renamed or custom board is covered — the literal
+   * `"todo"` is what silently disabled this sweep's FN-5256 liveness guard on a renamed board
+   * (FNXC:WorkflowResolvedColumns 2026-07-31-16:40). `declared-columns` is the untraited-project opt-in:
+   * this is a sweep, where over-inclusion is discarded by the per-card checks downstream, and an untraited
+   * board would otherwise contribute no lane at all and its cards would never be examined.
+   *
+   * `null` is reserved for the vocabulary being UNREADABLE — the definition read threw. It is deliberately
+   * NOT what `resolveProjectColumnsForRoles` returns when a project simply has no custom workflows: that
+   * answer carries the legacy ids and is a real vocabulary, so a card in `todo` is still a planning-lane
+   * card. Returning the empty set instead of `null` would invert the meaning of a degraded read into
+   * "no card is a planning-lane card", which reads to an operator as "nothing needs repair".
+   */
+  protected async resolvePlanningLaneIdentityColumns(): Promise<ReadonlySet<string> | null> {
+    try {
+      return await resolveProjectColumnsForRoles(this.store, ["intake", "hold"], { untraitedProject: "declared-columns" });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      worktreeMetadataReconcileLog.warn(
+        `planning-lane vocabulary unreadable, every clear this pass will be refused: ${errorMessage}`,
+      );
+      return null;
+    }
+  }
+
+  /** The integration branch a ref is measured against. A repository that cannot answer is `null`, and a `null` makes containment `unknown` — never `contained`. */
+  protected async resolvePlanningLaneIntegrationBranch(): Promise<string | null> {
+    try {
+      return await resolveIntegrationBranch(this.options.rootDir, undefined);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      worktreeMetadataReconcileLog.warn(`integration branch unreadable: ${errorMessage}`);
+      return null;
+    }
+  }
+
+  /** Containment seam. Overridable so a unit suite can state a verdict instead of building a repository. */
+  protected async probePlanningLaneBranchContainment(
+    branchName: string,
+    integrationBranch: string | null,
+  ): Promise<{ verdict: "contained" | "divergent" | "unknown"; uniqueCommitCount?: number }> {
+    return probeBranchContainment(this.options.rootDir, branchName, integrationBranch);
+  }
+
+  /** Registration seam, delegated to RUFU-439's full-porcelain probe — the only registration read that reports `unknown` instead of swallowing failure into an empty inventory. */
+  protected async probePlanningLaneBranchRegistration(branchName: string): Promise<PlanningLaneRegistration> {
+    return this.probeBranchWorktreeRegistration(branchName);
+  }
+
+  /** Ref-presence seam, delegated to the shared tri-state presence probe (its own `execBranchProbe` seam stays the injectable one). */
+  protected async probePlanningLaneBranchPresence(branchName: string): Promise<PlanningLaneRefPresence> {
+    return this.probeRepoBranch(this.options.rootDir, branchName);
+  }
+
+  /**
+   * Ask the leaf about one card, spending at most three git reads and none of them when a veto already
+   * answers. The veto path passes `unknown` for the verdicts it never asked about: the leaf's veto branch
+   * runs before any probe field is read, so an unasked verdict is never consulted — and it is never
+   * written anywhere, because a veto produces a refusal code, not a probe answer.
+   */
+  private async decidePlanningLaneWorktreeIdentity(input: {
+    task: Task;
+    settings: Settings;
+    laneClass: PlanningLaneClass;
+    persistedPathPresent: boolean;
+    branchMapHasBranch: boolean;
+    resolveIntegrationBranch: () => Promise<string | null>;
+  }): Promise<{
+    decision: PlanningLanePointerDecision;
+    branchName: string;
+    integrationBranch: string | null;
+    divergentCommitCount: number | null;
+  }> {
+    const { task, settings, laneClass, persistedPathPresent, branchMapHasBranch } = input;
+    const branchName = resolveTaskWorkingBranch(task);
+    /*
+    `pausedReason` is deliberately NOT consulted: a resume can leave the badge on a card that is no longer
+    paused (RUFU-439's clear nulls it precisely because it drifts), while `paused`/`userPaused` are the
+    dispositions themselves. The sweep's earlier `continue`s already removed a live session and an
+    executing card, so what is left here is a pause an operator or the engine authored and still stands.
+    */
+    const heldOrLive = task.userPaused === true
+      || task.paused === true
+      || (typeof task.checkedOutBy === "string" && task.checkedOutBy.length > 0);
+    const workspaceCard = isWorkspaceTask(task);
+    const operatorSuppliedBranch = classifyTaskBranchOrigin(task, branchName) === "operator-supplied";
+    const persistedPathIsManaged = task.worktree
+      ? isInsideWorktreesDir(this.options.rootDir, task.worktree, settings)
+      : false;
+
+    if (
+      laneClass === "unrecognised"
+      || laneClass === "completion-fanout-named"
+      || heldOrLive
+      || workspaceCard
+      || operatorSuppliedBranch
+      /*
+      A live checkout naming this branch is positive evidence from the pass's own inventory read, and the
+      leaf's `registered` branch precedes every path and ref rule, so asking git anything further would
+      buy nothing. Skipping it is what keeps `keep` free of subprocesses for the common case.
+      */
+      || branchMapHasBranch
+    ) {
+      return {
+        decision: decidePlanningLaneWorktree({
+          laneClass,
+          refPresence: "unknown",
+          registration: branchMapHasBranch ? "registered" : "unknown",
+          containment: "not-applicable",
+          persistedPathPresent,
+          persistedPathIsManaged,
+          heldOrLive,
+          workspaceCard,
+          operatorSuppliedBranch,
+        }),
+        branchName,
+        integrationBranch: null,
+        divergentCommitCount: null,
+      };
+    }
+
+    const refPresence = await this.probePlanningLaneBranchPresence(branchName);
+    /*
+    The pass already read the whole worktree inventory into `branchMap`, so a hit there is positive
+    evidence and costs no second subprocess. Its ABSENCE is not evidence of absence — that read is a
+    branch→path map that cannot distinguish "not registered" from "the inventory read failed" — so an
+    absent map entry falls through to RUFU-439's probe, which reports `unknown` when git will not answer.
+    */
+    const registration: PlanningLaneRegistration = await this.probePlanningLaneBranchRegistration(branchName);
+
+    let containment: PlanningLaneContainment = "not-applicable";
+    let divergentCommitCount: number | null = null;
+    let integrationBranch: string | null = null;
+    if (registration !== "registered" && refPresence === "present") {
+      integrationBranch = task.baseBranch || await input.resolveIntegrationBranch();
+      const verdict = await this.probePlanningLaneBranchContainment(branchName, integrationBranch);
+      containment = verdict.verdict;
+      divergentCommitCount = verdict.verdict === "divergent" ? (verdict.uniqueCommitCount ?? null) : null;
+    }
+
+    return {
+      decision: decidePlanningLaneWorktree({
+        laneClass,
+        refPresence,
+        registration,
+        containment,
+        persistedPathPresent,
+        persistedPathIsManaged,
+        heldOrLive,
+        workspaceCard,
+        operatorSuppliedBranch,
+      }),
+      branchName,
+      integrationBranch,
+      divergentCommitCount,
+    };
+  }
+
+  /**
+   * A refusal is loss-free — the pointers, the card, and the branch all stay exactly where they were — but
+   * it may not be SILENT, because the operator's alternative reading of a standing pointer is "nothing
+   * needed repair here". One History line and one audit row per `(card, code)`, in that order, for the same
+   * reason the clear writes its line first: the pair must not be reconstructible only from the audit store.
+   *
+   * The spec bullet names `ref-divergent` as the code that must carry the line, because that is the one
+   * refusal holding a salvage signal (an outstanding-commit count). The line is written for every code
+   * deliberately: this card exists because a false pointer was invisible, and "git could not answer" or
+   * "that path belongs to another lane" are exactly the readings an operator cannot recover from an audit
+   * row they have no route to query. It stays bounded — once per `(card, code)` per process, the same shape
+   * RUFU-356 uses for its own refusals — so the added visibility cannot become History noise.
+   */
+  private async recordPlanningLaneIdentityRefusal(
+    task: Task,
+    code: PlanningLanePointerRefusalCode,
+    facts: { branchName: string; integrationBranch: string | null; divergentCommitCount: number | null },
+  ): Promise<void> {
+    const key = `${task.id}:${code}`;
+    if (this.planningLaneIdentityRefusalAudited.has(key)) return;
+    this.planningLaneIdentityRefusalAudited.add(key);
+    try {
+      await this.store.logEntry(task.id, planningLaneIdentityRefusalSentence(code, facts));
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      worktreeMetadataReconcileLog.warn(`failed to record the refusal line for ${task.id}: ${errorMessage}`);
+    }
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-planning-lane-worktree-identity", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-planning-lane-worktree-identity-no-action" as DatabaseMutationType,
+      target: task.id,
+      /* Closed set: the branch name, the worktree path, the sha, and the refusal sentence are unrepresentable here by construction. */
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        code,
+        outcome: "withheld",
+      },
+    }, { log });
+  }
+
+  /** What the sweep did, said before it does it. The clear itself has the audit row written after it. */
+  private async recordPlanningLaneIdentityClear(
+    task: Task,
+    basis: PlanningLanePointerClearBasis,
+  ): Promise<void> {
+    try {
+      await this.store.logEntry(task.id, planningLaneIdentityClearSentence(basis));
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      worktreeMetadataReconcileLog.warn(`failed to record the clear line for ${task.id}: ${errorMessage}`);
+    }
+  }
+
   private async emitWorktreeMetadataAuditEvent(input: {
     taskId: string;
     mutationType:
@@ -8214,30 +8462,30 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     previousBranch: string | null;
     newBranch: string | null;
   }): Promise<void> {
-    try {
-      const auditor = createRunAuditor(this.store, {
-        runId: generateSyntheticRunId("self-heal", input.taskId),
-        agentId: "self-healing",
+    /*
+    FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:45 (RUFU-893):
+    The bounded seam, on the FN-9175 rule that no engine lane may make best-effort telemetry a lifecycle
+    dependency. The previous `createRunAuditor(...).database(...)` awaited the sink on the same path as the
+    metadata write, so a store whose audit writer cannot boot (`fn extension TaskStore boot timed out after
+    30000ms`, RUFU-275's measured class) turned a successful repair into a thrown pass. The event names and
+    the five metadata keys are unchanged — this is the lane an operator queries for "which sweep moved my
+    pointers" — and `emitBoundedRunAudit` never throws, so the surrounding catch is now belt-and-braces.
+    */
+    await emitBoundedRunAudit(this.store, {
+      taskId: input.taskId,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("self-heal", input.taskId),
+      domain: "database",
+      mutationType: input.mutationType as DatabaseMutationType,
+      target: input.taskId,
+      metadata: {
         taskId: input.taskId,
-        phase: "worktree-metadata-reconcile",
-      });
-      await auditor.database({
-        type: input.mutationType,
-        target: input.taskId,
-        metadata: {
-          taskId: input.taskId,
-          previousWorktree: input.previousWorktree,
-          newWorktree: input.newWorktree,
-          previousBranch: input.previousBranch,
-          newBranch: input.newBranch,
-        },
-      });
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      worktreeMetadataReconcileLog.warn(
-        `Failed to record ${input.mutationType} for ${input.taskId}: ${errorMessage}`,
-      );
-    }
+        previousWorktree: input.previousWorktree,
+        newWorktree: input.newWorktree,
+        previousBranch: input.previousBranch,
+        newBranch: input.newBranch,
+      },
+    }, { log });
   }
 
   private assertSafeToAutoRebind(task: Task): AutoRebindSafetyResult {
@@ -8551,7 +8799,42 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const worktreeReconcileTerminalColumns = await resolveProjectColumnsForRoles(this.store, TERMINAL_ROLES);
       const worktreeReconcileWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
       const worktreeReconcileReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      /*
+      FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:30 (RUFU-893):
+      The planning lanes are resolved BY ROLE (`intake`/`hold`), never from a `"todo"`/`"triage"` literal,
+      because a literal is what silently disabled this sweep's own liveness guard on a renamed board
+      (FNXC:WorkflowResolvedColumns 2026-07-31-16:40, three sweeps, same mistake). `declared-columns` is
+      the opt-in for a project that expresses no lifecycle trait at all, where every declared column is a
+      planning lane by default — without it a fully untraited board resolves to the legacy ids alone and
+      its cards are never examined.
+
+      `null` means the vocabulary could not be consulted at all. It is NOT an empty candidate set: the
+      gate below refuses every clear it cannot attribute to a named owner and announces the code, so a
+      degraded workflow-definition read withholds the destructive action instead of disabling the guard.
+      */
+      const worktreeReconcilePlanningColumns = await this.resolvePlanningLaneIdentityColumns();
+      let worktreeReconcileRefused = 0;
+      let worktreeReconcileKept = 0;
+      let worktreeReconcileExamined = 0;
+      /* One integration-branch read per pass, and only for a card whose ref actually needs it. */
+      let integrationBranchRead: Promise<string | null> | null = null;
+      const resolveIntegrationBranchOnce = (): Promise<string | null> => {
+        integrationBranchRead ??= this.resolvePlanningLaneIntegrationBranch();
+        return integrationBranchRead;
+      };
       for (const task of allTasks) {
+        /*
+        FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:30 (RUFU-893, RUFU-448 containment):
+        EVERY STORE CALL THIS CARD MAKES IS CONTAINED HERE, which is the shape RUFU-448 gave the
+        review-revision park sweep for the same measured reason: under the previous shape one refusing
+        write on one card reached the pass-level catch, which ended the loop and returned 0, so every
+        card after it in board order went unexamined while looking clean — the exact standing-pointer
+        symptom this card was filed for, reproducible on the pre-change tree with two cards and one
+        rejecting store. One card's I/O failure is that card's problem. The pass-level catch stays for
+        what it actually covers: a settings or board read that makes the whole sweep impossible. The
+        indentation of the existing body is deliberately untouched so the diff stays reviewable.
+        */
+        try {
         /*
         FNXC:ExternalBlockRecovery 2026-08-28-05:33:
         A frozen task keeps its exact worktree identity even when Git registration is temporarily
@@ -8559,26 +8842,68 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         any lane while the outside obstacle remains active.
         */
         if (isTaskExternallyBlocked(task)) continue;
-        if (!task.worktree) continue;
+        /*
+        FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:30 (RUFU-893):
+        THE ADMISSION GAP THAT STRANDED THE MAJORITY OF THESE CARDS. The gate used to be
+        `if (!task.worktree) continue;`, so a card carrying a BRANCH pointer and no path pointer was never
+        examined at all — measured before the change, 18 of the 28 planning-lane cards on this project sat
+        in exactly that shape, which is also the shape `merge/post-landing-worktree-cleanup.ts` produces on
+        purpose (it writes `{ worktree: null }` and leaves the branch name). The pointer pair describes one
+        identity, and a branch is the half that carries commits, so the pass now admits either half.
+
+        The widening is scoped to the planning lane: a branch-only pointer in a WIP or review column is the
+        RUFU-450 landed-card shape whose `skipped-active` announcement this pass must not newly emit, and a
+        card named by the completion fan-out keeps its existing admitted shape byte-for-byte, because that
+        lane's own tests document a landed card keeping a stale branch name.
+        */
+        if (!task.worktree && !task.branch) continue;
+        const branchOnlyPointer = !task.worktree;
+        const planningLaneIdentity = worktreeReconcilePlanningColumns?.has(task.column) === true;
+        if (branchOnlyPointer
+          && (worktreeReconcileWipColumns.has(task.column)
+            || worktreeReconcileReviewColumns.has(task.column)
+            || !planningLaneIdentity)) {
+          continue;
+        }
         if (!options?.includeTaskIds?.has(task.id) && worktreeReconcileTerminalColumns.has(task.column)) {
           continue;
         }
 
         const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
         if (executingIds.has(task.id)) continue;
-        if (activeSessionRegistry.isPathActive(task.worktree)) continue;
+        if (task.worktree && activeSessionRegistry.isPathActive(task.worktree)) continue;
 
         const normalizedBranch = resolveTaskWorkingBranch(task);
-        const resolvedTaskWorktree = resolve(task.worktree);
-        const realpathTaskWorktree = safeRealpath(resolvedTaskWorktree);
-        const stale = !existsSync(task.worktree) || !registeredRealpaths.has(realpathTaskWorktree);
+        /*
+        FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:30 (RUFU-893):
+        The staleness test is about a DIRECTORY, so it is only answerable when the card claims one. A
+        branch-only pointer has no directory to be stale; it is a candidate whenever it stands in a planning
+        lane, and whether its identity is dead is decided below by the git verdicts, not here by a path.
+        */
+        const persistedPathPresent = task.worktree ? existsSync(task.worktree) : false;
+        const stale = branchOnlyPointer
+          || !persistedPathPresent
+          || !registeredRealpaths.has(safeRealpath(resolve(task.worktree!)));
         if (!stale) continue;
 
-        const previousWorktree = task.worktree;
+        /*
+        `?? null` is load-bearing since the admission widened: at HEAD the `if (!task.worktree) continue`
+        guard narrowed this field to `string`, and a branch-only candidate legitimately has none. The audit
+        contract already spells "no previous pointer" as `null`, so the payload shape is unchanged.
+        */
+        const previousWorktree = task.worktree ?? null;
         const previousBranch = task.branch ?? null;
         const liveWorktree = branchMap.get(normalizedBranch);
 
-        if (liveWorktree) {
+        /*
+        FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:30 (RUFU-893):
+        `&& !branchOnlyPointer` narrows this arm to exactly the cards that could reach it before the change.
+        Inventing a path pointer for a card that never claimed one is acquisition's job
+        (`recreateMissingTaskWorktree`), not a metadata sweep's, and the new rule answers the same fact as
+        `keep`: a live checkout naming this branch means the pointer's premise is alive. Every fixture that
+        reached this arm before still reaches it, with the same patch and the same event name.
+        */
+        if (liveWorktree && !branchOnlyPointer) {
           await this.store.updateTask(task.id, { worktree: liveWorktree });
           await this.emitWorktreeMetadataAuditEvent({
             taskId: task.id,
@@ -8596,7 +8921,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
 
         const scopeOverrideMergeActiveSafe =
-          task.scopeOverride === true
+          !branchOnlyPointer
+          && task.scopeOverride === true
           /* Same resolved sets as the liveness guard below, so the two cannot disagree about live lanes. */
           && !worktreeReconcileWipColumns.has(task.column)
           && (!worktreeReconcileReviewColumns.has(task.column) || (typeof task.status === "string" && RECONCILE_SCOPE_OVERRIDE_MERGE_ACTIVE_STATUS_SET.has(task.status)));
@@ -8643,6 +8969,65 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           continue;
         }
 
+        /*
+        FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:35 (RUFU-893):
+        THE CLEAR IS NOW EARNED, NOT ASSUMED. Everything above this point still decides only whether the
+        card is a CANDIDATE — that a claimed directory is gone, or that a claimed branch is not checked out
+        and not executing. What was never asked before the write is whether the ref still EXISTS, because
+        `git branch -D` cannot tell a squash-merged tip from a branch that was simply never merged, and the
+        pass that clears the pointer hands both names to that same deletion. Measured on this project before
+        the change: 12 planning-lane pointers named a ref git answered `absent` for and 128 answered
+        `present`; of the four cards naming a present ref, a rebase-ancestry check proved three of them
+        contained in `main` (safe to clear) and one — RUFU-1044 — DIVERGENT, the shape the deletion would
+        have destroyed. That single card is why this gate exists.
+
+        The verdict comes from the pure leaf, the probes come from `decidePlanningLaneWorktreeIdentity`, and
+        a refusal is loss-free: the pointers, the card, and the branch all stay exactly where they were.
+        */
+        const identityLaneClass: PlanningLaneClass = options?.includeTaskIds?.has(task.id)
+          ? "completion-fanout-named"
+          : planningLaneIdentity
+            ? "planning"
+            : "unrecognised";
+        worktreeReconcileExamined++;
+        const identity = await this.decidePlanningLaneWorktreeIdentity({
+          task,
+          settings,
+          laneClass: identityLaneClass,
+          persistedPathPresent,
+          branchMapHasBranch: branchMap.has(normalizedBranch),
+          resolveIntegrationBranch: resolveIntegrationBranchOnce,
+        });
+
+        if (identity.decision.action === "keep") {
+          worktreeReconcileKept++;
+          worktreeMetadataReconcileLog.debug(
+            `keeping ${task.id}: branch ${normalizedBranch} identity still live (${identity.decision.code ?? "registered"})`,
+          );
+          continue;
+        }
+
+        if (identity.decision.action === "refuse") {
+          await this.recordPlanningLaneIdentityRefusal(task, identity.decision.code!, {
+            branchName: identity.branchName,
+            integrationBranch: identity.integrationBranch,
+            divergentCommitCount: identity.divergentCommitCount,
+          });
+          worktreeReconcileRefused++;
+          continue;
+        }
+
+        /*
+        FNXC:ReviewRevisionParkLogOrder 2026-11-18-18:35 (RUFU-893, same order rule as RUFU-448 finding 2):
+        THE OPERATOR'S EXPLANATION IS WRITTEN BEFORE THE POINTERS ARE ERASED, which makes `cleared ⇒
+        announced` a property of the sweep rather than a race. The reverse order cannot repair itself: the
+        clear drops both pointers, and candidacy needs one of them, so a card whose History write rejected
+        stopped being a candidate on the next pass and its explanation was gone for good — a card whose
+        branch was deleted with the only record of why sitting in the audit store. Written first, a failed
+        History write leaves the card a candidate and the next pass lands line and clear together. The audit
+        row stays AFTER the applied clear because its row means “a clear really happened”.
+        */
+        await this.recordPlanningLaneIdentityClear(task, identity.decision.basis ?? "git-ref-absent");
         await this.store.updateTask(task.id, { worktree: null, branch: null, branchWriteOrigin: "engine" });
         await this.emitWorktreeMetadataAuditEvent({
           taskId: task.id,
@@ -8656,6 +9041,21 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           `cleared ${task.id}: ${previousWorktree} (${previousBranch ?? "<none>"})`,
         );
         repaired++;
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          /*
+          The one fact this line has to carry is WHICH card broke the pass, because the pre-change shape
+          lost that fact entirely and every card behind it with it (RUFU-448's measurement, reproduced here
+          on two cards and one rejecting store).
+          */
+          worktreeMetadataReconcileLog.warn(`reconcileTaskWorktreeMetadata skipped ${task.id}: ${errorMessage}`);
+        }
+      }
+
+      if (worktreeReconcileExamined > 0) {
+        worktreeMetadataReconcileLog.log(
+          `pass totals: examined=${worktreeReconcileExamined} cleared=${repaired} kept=${worktreeReconcileKept} refused=${worktreeReconcileRefused}`,
+        );
       }
 
       return repaired;

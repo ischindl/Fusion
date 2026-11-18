@@ -1106,6 +1106,24 @@ export type DatabaseMutationType =
   /** Deduped per (card, refusal reason) companion row for a candidate the sweep deliberately left parked. Same metadata. */
   | "task:reconcile-stale-acquisition-conflict-no-action"
   /*
+  FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:55 (RUFU-893):
+  The planning-lane half of the worktree/branch identity lane REFUSED to clear a card's pointers. Before
+  this event existed the refusal was invisible: the pre-change pass cleared unconditionally, so a card that
+  kept its pointers looked identical to a card nothing needed to touch, and the operator's alternative
+  reading was "nothing here needs repair". Metadata is a closed set of ids and fixed enums —
+  { taskId, column, code, outcome } — where `code` is `ref-divergent | probe-unknown |
+  unmanaged-path-present | workspace-card | operator-branch | held-or-live | lane-vocabulary-unreadable`
+  and `outcome` is `withheld`. The branch name, the worktree path, the commit count, and the refusal
+  sentence live on the card's History line and NEVER in this row: the row says which class of proof was
+  missing, the card says what to do about it. Deduped per (card, code) on a manager-held set, mirroring
+  RUFU-356's shape above.
+
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue (the precedents are RUFU-462's
+  `runtime:heap-ceiling` and RUFU-279's `memory:*` trio): documented as prose in `docs/run-audit.md`, which
+  `run-audit-catalogue.test.ts` locks table-for-table.
+   */
+  | "task:reconcile-planning-lane-worktree-identity-no-action"
+  /*
   FNXC:LegacyAdoption 2026-07-19-04:30 (U9b / R10 / KTD-8):
   Startup legacy-row adoption through the KTD-8 adoption table. Metadata is
   ids/counts/outcomes-only: { taskId, action, priorStatus, column, backfilledStepCount,

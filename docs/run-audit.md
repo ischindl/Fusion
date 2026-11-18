@@ -1692,3 +1692,51 @@ one. It is declared in the engine's `DatabaseMutationType` because its emitter r
 engine's `emitBoundedRunAudit` seam, and — like every row in this file — it cannot alter, delay, or fail
 the repair it reports: an absent, throwing, rejecting, or hanging sink leaves the transition, the re-arm,
 and the History line identical.
+
+### The planning-lane worktree pointer whose owner had to prove it (RUFU-893)
+
+`task:reconcile-planning-lane-worktree-identity-no-action` records one pass in which
+`SelfHealingManager.reconcileTaskWorktreeMetadata` examined a planning-lane card, could not prove from
+live git that its `worktree`/`branch` pointers were dead, and therefore left them standing. Before this
+the sweep's planning-lane half cleared those two fields on one observation — whether a directory existed
+at the persisted path — while three different code paths (the acquisition error park, the completion
+fan-out, the archive disposer) already answered the same question with a tri-state ref probe. The
+measured cost was five cards sitting in `todo` with a branch whose `refs/heads/` entry had been pruned:
+no owner existed for a planning-lane card with a neutral status, since `reconcile-missing-worktree-merge-active`
+is restricted to `in-review` merge-active cards, `reconcile-stale-acquisition-conflict` candidates only
+from a card's own rebound lane, `reconcileTerminalBranchConflictParks` reads only complete-role lanes, and
+`reconcile-orphaned-workspace-worktree` is workspace-only. A pointer whose premise is a fact about git must
+be released by a git measurement, which is now the only thing that releases it.
+
+Metadata is ids and fixed enums only: `taskId`, `column`, `code`, `outcome`, and `outcome` is always the
+fixed `"withheld"`. **No branch name, no worktree path, no sha, and not one word of the refusal sentence
+enter the row** — those four are the measurement an operator needs, and they live on the card's History
+line, which is where the reader already is. A refusal is deduped per `(card, code)`, so a card that keeps
+refusing for the same reason reports once rather than once per pass, while a new reason for the same card
+is announced; the pass additionally logs its own totals (`examined / kept / cleared / refused`), so "the
+sweep found nothing" and "the sweep refused everything it found" are different sentences in the log.
+
+`code` is the closed refusal vocabulary: `ref-divergent` (the branch still carries commits the integration
+branch never saw, so the pointers are the only record of unlanded work — the History line names the
+commit count), `probe-unknown` (git refused to answer, and an unreadable repository is not proof of
+absence), `lane-vocabulary-unreadable` (the role-resolved lane set could not be read, or reads fine but
+places this card's lane nowhere this sweep owns), `held-or-live` (operator pause, checkout claim, or
+external block stands behind the identity), `workspace-card` (`workspaceWorktrees` is non-empty),
+`operator-branch` (`classifyTaskBranchOrigin` resolved the pointer as operator-supplied), and
+`unmanaged-path-present` (the persisted directory exists but is not the managed per-id path, so only this
+card knows it). `ref-divergent` and `probe-unknown` are the two codes the pre-change tree had no word
+for at all, and they are the two that cost real work: a `git branch -D` of a branch whose commits were
+never merged is unrecoverable by any later sweep.
+
+The clear arm keeps its existing name and patch shape — `task:auto-recover-worktree-metadata-cleared` with
+`{ worktree: null, branch: null, branchWriteOrigin: "engine" }` — as do the rebind and `scopeOverride` arms
+and the FN-5256 `task:auto-recover-worktree-metadata-skipped-active` skip; the sweep still has exactly one
+owner and this event is the only literal `run-audit.ts` gained. No refusal path deletes anything: no ref,
+no directory, no `.git/worktrees/` administration entry, no column move, no `status`/`error` write, no
+pause, no stall reason. The four emissions also moved onto `emitBoundedRunAudit`, so an absent, throwing,
+rejecting, or hanging sink cannot stop a transition it is only reporting.
+
+This event sits deliberately OUTSIDE the curated delivery-pipeline catalogue that
+`run-audit-catalogue.test.ts` locks table-for-table: a planning-lane card is not expected to be refused, so
+a catalogue row would imply a step every card passes through. It is documented as prose here, declared in
+the engine's `DatabaseMutationType`, and emitted under the synthetic `self-healing` agent and run id.
