@@ -294,6 +294,50 @@ describe("acquireTaskWorktree — task-pinned mode", () => {
     }));
   });
 
+  /*
+  FNXC:TaskIdGrammar 2026-11-18-06:30 (RUFU-730):
+  The counterpart to acceptance #5 above, and the reason RUFU-730 left `isForeignTaskPinnedBranch` on
+  `fusion/fn-\d+` while generalizing every observing parser in the product. Everything here is identical to
+  that case except the PREFIX of the foreign branch, and the outcomes differ: an `FN-` foreign branch is
+  treated as a proven foreign owner and the checkout is destroyed (`removeWorktree` + recreate), while a
+  `RUFU-` foreign branch is not recognized, so acquisition falls through to renamed-branch recovery, which
+  has to prove this task owns the directory and refuses when it cannot. Widening the grammar would convert
+  that refusal into an unproven `git worktree remove` for every non-`FN` project. If this case ever starts
+  seeing `removeWorktree`, the grammar was widened and needs the destructive-path proof RUFU-352 asked for.
+  */
+  it("does NOT destructively reclaim a pinned dir whose foreign branch carries a non-FN prefix", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(classifyTaskWorktree).mockResolvedValue({ ok: true } as any);
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: "fusion/rufu-0000", worktreePath: PINNED }]);
+    const createWorktree = vi.fn(async (branch: string, path: string) => ({ path, branch }));
+    const audit = { git: vi.fn().mockResolvedValue(undefined), filesystem: vi.fn() } as any;
+    const store = {
+      ...makeStore(),
+      getTask: vi.fn().mockResolvedValue({ id: "FN-7996", updatedAt: new Date().toISOString() }),
+      listTasks: vi.fn().mockResolvedValue([]),
+      updateTaskAtomic: vi.fn(),
+    } as any;
+
+    // Renamed-branch recovery owns this shape and cannot prove ownership of a stranger's checkout, so it
+    // refuses. The assertion that matters is the one below: nothing was deleted.
+    await expect(
+      acquireTaskWorktree({
+        task: { ...baseTask, worktree: PINNED, branch: "fusion/fn-7996" },
+        rootDir: ROOT,
+        store,
+        settings: pinnedSettings,
+        createWorktree,
+        audit,
+      }),
+    ).rejects.toThrow();
+
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(audit.git).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "worktree:incomplete-detected" }),
+    );
+  });
+
   it("preserves an unregistered same-name dir before recreating in place", async () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(classifyTaskWorktree).mockResolvedValue({ ok: false, classification: "unregistered", reason: "not registered" } as any);

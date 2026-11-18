@@ -3418,3 +3418,77 @@ Two ratchets cover one class, and the gap between them is how a stale answer shi
   construction. `src/__tests__/auth-probe-cache.test.ts` witnesses the ownership, and asserts the
   no-invalidation half as well: a different configured binary path is its own cache entry, so pointing at a
   new binary never inherits the old binary's truth.
+
+## Task-id grammar ownership invariant (RUFU-730)
+
+A task id appears in free text — commit subjects, trailer lines, card titles, completion summaries, thrown
+lookup errors — and every place that reads one must read the SAME grammar. The invariant is that
+**`@fusion/core` owns the one task-id grammar and the engine re-exports it; a second `[A-Z][A-Z0-9]*-\d+`
+literal is the defect, not a shortcut.**
+
+- **The dictionary is a pure leaf.** `packages/core/src/tasks/task-id-token.ts` exports `TASK_ID_TOKEN_SOURCE`
+  (bare token — correct only where surrounding syntax already bounds the id: an anchor, a `):` commit-subject
+  end, end-of-line), `TASK_ID_TOKEN_PROSE_SOURCE` (adds the `(?![\w-])` right boundary),
+  `createTaskIdProseRegExp()` (fresh instance per call, id as capture group 1 — the only safe way to iterate,
+  since the shared `g`-flagged `TASK_ID_TOKEN_RE` is `matchAll`-only: `exec`/`test` would return one match per
+  call by advancing the `lastIndex` every later scanner inherits), `isTaskIdToken()` (the anchored predicate),
+  and `taskIdPrefixOf()` (the prefix of a whole canonical id, `null` for anything else — the vocabulary half
+  of the card-reference verdict that the title normalizer needs). It imports nothing, because core may not
+  import the engine (circularity, and `@fusion/*` imports must stay statically analyzable —
+  `setCreateFnAgent` DI exists for that reason).
+  `packages/engine/src/execution/branch-conflicts.ts` re-exports the sources by plain name so RUFU-352's five
+  consumers did not have to move.
+- **`\b` is not a right boundary.** `\b` after `\d+` is satisfied by a hyphen, so a naive `\b(TOKEN)\b` scan
+  over `step-3-build` reports the phantom card `STEP-3`. In an orchestrable surface that is not benign: room
+  coordination turns a matched id into `defer-suggested` with "do NOT call fn_task_create", so an invented id
+  silently blocks legitimate filing while a missed id costs one clarifying question. This is why the prose
+  variant carries its own boundary and why it is exported rather than open-coded per site.
+- **Widen observation and refusal; a rewrite needs provenance.** Generalizing a parser that only reads is
+  safe in one direction: it can over-match a compound and refuse or notice more, never less. A parser whose
+  output REWRITES a row is not read-only, and RUFU-730's first cut learned that from a code review: composing
+  the prose token with no further test made the title normalizer delete every id-shaped compound in an
+  operator's title — measured on the module's own grammar, `Add UTF-8 support to the importer` became
+  `Add support to the importer`, `Prepare SOC-2 audit evidence` became `Prepare audit evidence`,
+  `Parse RFC-2616 header folding` became `Parse header folding`, and `Fix TLS-1.2 handshake alert` became
+  `Fix .2 handshake alert` — each silently, each logged as "stripped legacy task-id reference". The
+  `FN-\d+` regex it replaced left all four untouched, so the widening itself had opened the class. The rule
+  now: `hasTitleIdDrift` and `normalizeTitleForTaskId` (`tasks/task-title-id-drift.ts`) read a token as a
+  card reference only when its PREFIX is provably minted — the row's own prefix (the row exists, so this
+  board minted it) or `FN`, the fallback minting prefix in `tasks/distributed-task-id.ts`
+  (`settings?.taskPrefix ?? "FN"`, which is also why a board that renamed its prefix still carries `FN-*`
+  cards). Anything else counts as a reference only when a caller NAMES it through the additive
+  `knownPrefixes` argument — the seam for a store-backed prefix census, which no caller passes today.
+  `extractTaskIdTokens` deliberately stays the grammar view, because the drift contract needs it to report a
+  foreign-prefix id that the strip will then keep, while the four callers' `removed=[...]` History line is
+  built from `removedTaskIdTokens` — the set the strip actually takes — so a card never reports a cleanup that
+  did not happen. Direction matters: a missed cleanup leaves a stale title
+  that stays visible and reparable, while a wrong strip silently rewrites operator text and reports a cleanup
+  that never happened.
+- **Widen observation and refusal; do not widen deletion.** The sites that remain
+  `FN-\d+` on purpose each feed a destructive decision, and each carries an `FNXC:TaskIdGrammar` comment
+  naming the authority it would grant:
+  - `deriveTaskIdFromFusionBranch` (`execution/branch-conflicts.ts`) — every consumer gates a git deletion
+    (fully-subsumed auto-reclaim, stale-active-branch reclaim, `inspectBranchConflict`'s self-owned fallback).
+  - `isForeignTaskPinnedBranch` (`worktree/worktree-acquisition.ts`) — a match declares the pinned checkout
+    foreign-owned and reclaims it with `removeWorktree` + recreate-in-place; a non-match falls through to
+    renamed-branch recovery, which must first PROVE this task owns the directory and refuses otherwise.
+  - `extractTaskIdFromTempMergeDir` and `isTaskNotFoundError` (`healing/self-healing-path-utils.ts`) — a
+    parsed id is what lets `isTempMergeEntryReleased` answer "this clean-room's card is gone", which swaps the
+    reap floor from `STALE_TEMP_MERGE_WORKTREE_MS` (2 h) to `DONE_TASK_TEMP_WORKTREE_GRACE_MS` (10 min) before
+    a forced `git worktree remove`. The narrow answer costs a scratch directory two extra hours of life on a
+    floor that still reaps; the wide answer deletes a live card's merge clean-room after ten minutes.
+  Widening any of them requires a card carrying its own destructive-path proof (the RUFU-352 ruling), not a
+  grammar refactor that happens to reach them.
+- **The narrow language is pinned by behavior, not by source text.**
+  `packages/engine/src/__tests__/task-id-grammar-destructive-narrow.test.ts` calls the three exported narrow
+  functions and asserts they resolve `FN-` and name no card for `RUFU-`/`SANE-`;
+  `worktree-acquisition-pinned.test.ts` asserts at the real acquisition seam that `removeWorktree` is NOT
+  called when the foreign branch carries a non-`FN` prefix, against the sibling case where an `FN-` foreign
+  branch IS reclaimed. Neither copies a pattern — a test that re-declares the regex would be the second
+  source of truth the invariant forbids, and asserting a comment's existence asserts nothing. Measured
+  falsification: widening `isForeignTaskPinnedBranch` by one line makes exactly the non-`FN` case fail.
+- **Generalizing a refusal guard is not generalizing its vocabulary.** `SELF_DEFEATING_OPERATION_VERBS`
+  (`task-store/errors.ts`) is a closed list and holds no `delete`; RUFU-730 widened only which id spellings
+  the guard can see, so a non-`FN` board now gets the refusal, the operator-facing sentence naming the real
+  operand (`operates on RUFU-517 … and cannot also depend on it`), and the auto-reconcile that had been
+  invisible to it. Whether more verbs belong in that list is a separate operator decision.

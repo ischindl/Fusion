@@ -35,7 +35,7 @@ import {EvalStore} from "../eval/eval-store.js";
 import {AsyncEvalStore} from "../async-stores/async-eval-store.js";
 import {BackwardCompat, ProjectRequiredError} from "../central/migration.js";
 import {CentralCore} from "../central/central-core.js";
-import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {normalizeTitleForTaskId, removedTaskIdTokens} from "../tasks/task-title-id-drift.js";
 import {generateTaskLineageId} from "../tasks/task-lineage.js";
 import {sanitizeFileScopeInPromptContent} from "../task-store/file-scope.js";
 import {writePromptFileAtomic} from "./prompt-file.js";
@@ -411,7 +411,7 @@ export async function duplicateTaskImpl(
         // FN-5077: duplicated drift-stripped fragments may normalize to null and should remain unset.
         const normalizedTitle = normalizeTitleForTaskId(sourceTask.title, newId);
         if (normalizedTitle.changed) {
-          const removed = extractTaskIdTokens(sourceTask.title ?? "").filter((token) => token !== newId.toUpperCase());
+          const removed = removedTaskIdTokens(sourceTask.title, newId);
           storeLog.log(`[title-id-drift] normalized title for ${newId}: removed=[${removed.join(",")}]`);
         }
         /*

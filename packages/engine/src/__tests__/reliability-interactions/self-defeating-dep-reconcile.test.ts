@@ -60,6 +60,16 @@ describeIfGit("reliability interactions: self-defeating dep reconciliation", () 
       updated?.log.some((entry) => JSON.stringify(entry).includes("Auto-reconciled self-defeating dependency")),
     ).toBe(true);
 
+    /*
+    FNXC:RunAuditSink 2026-11-18-06:10 (RUFU-730):
+    RUFU-453 moved a best-effort audit emit into a per-store drain that coalesces a 25 ms window, so an
+    accepted emit is NOT yet a row. This assertion counts a row the same process just produced, which is
+    exactly the case `docs/run-audit.md` says must take `flushRunAuditSink()` first - the harness drains in
+    `afterEach` only to keep one test's telemetry out of the next test's clean database, which happens too
+    late for a count taken inside the body. Without this line both this case and the RUFU- case below read
+    zero rows and fail on the audit assertion while the reconcile itself succeeded.
+    */
+    await fx.store.flushRunAuditSink();
     const events = await fx.store.getRunAuditEventsAsync({
       taskId: fx.task.id,
       domain: "database",
@@ -111,5 +121,62 @@ describeIfGit("reliability interactions: self-defeating dep reconciliation", () 
 
     const updated = await fx.store.getTask(fx.task.id);
     expect(updated?.dependencies).toEqual(["FN-100"]);
+  });
+
+  /*
+  FNXC:DependencyIntegrity 2026-11-18-05:59 (RUFU-730):
+  The mutating consumer of the generalized grammar. This is the site-2 symptom on the sweep itself: at HEAD
+  the reconcile found nothing to repair here, because `detectSelfDefeatingDependency` was `FN-\d+`-only and
+  a `RUFU-` card is invisible to it, so the card stayed parked behind the very task its own title says it
+  will finalize. Same harness and same raw-seeding reason as the FN case above (FN-073 refuses the dangling
+  edge at create and at update), and the same three surfaces asserted: the repair, its card History line,
+  and the audit metadata shape, which must stay identical whatever the prefix is.
+  */
+  it("reconciles a non-FN offender and records audit + task log", async () => {
+    const fx = await makeReliabilityFixture({
+      taskId: "RUFU-730-A",
+      task: {
+        column: "todo",
+        title: "safe title",
+      } as any,
+    });
+    fixtures.push(fx);
+
+    const survivor = await fx.store.createTask({
+      title: "surviving prerequisite",
+      description: "live dependency target",
+      column: "todo",
+      steps: [],
+    } as any);
+
+    await fx.store.listTasks({ column: "todo", slim: true });
+    await fx.seedRawTaskColumns(fx.task.id, {
+      title: "Finalize RUFU-100: close loop",
+      dependencies: ["RUFU-100", survivor.id],
+    });
+
+    const recovered = await fx.manager.reconcileSelfDefeatingDependencies();
+    expect(recovered).toBe(1);
+
+    const updated = await fx.store.getTask(fx.task.id);
+    expect(updated?.dependencies).toEqual([survivor.id]);
+    expect(
+      updated?.log.some((entry) => JSON.stringify(entry).includes("Auto-reconciled self-defeating dependency")),
+    ).toBe(true);
+
+    await fx.store.flushRunAuditSink();
+    const events = await fx.store.getRunAuditEventsAsync({
+      taskId: fx.task.id,
+      domain: "database",
+      mutationType: "task:auto-reconciled-self-defeating-dep",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.target).toBe(fx.task.id);
+    expect(events[0]?.metadata).toMatchObject({
+      matchedVerb: "finalize",
+      operandTaskId: "RUFU-100",
+      originalDependencies: ["RUFU-100", survivor.id],
+      nextDependencies: [survivor.id],
+    });
   });
 });

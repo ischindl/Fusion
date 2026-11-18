@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseNoOpCompletionMarker } from "../merge/no-op-completion-marker.js";
 
 import {
   parseExplicitDuplicateMarker,
@@ -142,5 +143,23 @@ describe("parseDuplicateMarkerFromSessionText", () => {
     expect(parseDuplicateMarkerFromSessionText("")).toBeNull();
     expect(parseDuplicateMarkerFromSessionText("   \n  ")).toBeNull();
     expect(parseDuplicateMarkerFromSessionText("Wrote the spec; not a duplicate.")).toBeNull();
+  });
+});
+
+/*
+FNXC:DuplicateIntake 2026-11-18-05:59 (RUFU-730):
+Two parsers read the two shapes of one sentinel sentence: this one the exact single-line redirect,
+`parseNoOpCompletionMarker` the executor's free-text completion summary. RUFU-730 moved the second onto the
+shared task-id dictionary and deliberately left this pattern's stricter anchored grammar alone, so this is
+the agreement check proving that recorded divergence costs nothing observable: for an id the canonical
+minting grammar produces with a letters-only prefix, both parsers must name the SAME canonical card. A drift
+here would mean a card the planner marks duplicate is redirected by one surface and quietly closed by the
+other.
+*/
+describe("cross-parser agreement on the DUPLICATE: sentinel", () => {
+  it.each(["RUFU-318", "SANE-452", "FN-6239"])("both parsers name the same canonical id for %s", (id) => {
+    const sentinel = `DUPLICATE: ${id}`;
+    expect(parseExplicitDuplicateMarker(sentinel)?.canonicalId).toBe(id);
+    expect(parseNoOpCompletionMarker(sentinel)?.canonicalId).toBe(id);
   });
 });

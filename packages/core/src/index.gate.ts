@@ -1283,6 +1283,7 @@ export {
   extractTaskIdTokens,
   hasTitleIdDrift,
   normalizeTitleForTaskId,
+  removedTaskIdTokens,
 } from "./tasks/task-title-id-drift.js";
 export {
   BRANCH_CONFLICT_RECOVERY_EXHAUSTED_PAUSE_REASON,
@@ -3138,6 +3139,7 @@ export {
   hasSyncPassphraseConfigured,
 } from "./secrets/secrets-sync-passphrase.js";
 export { suggestTaskPrefix } from "./tasks/task-prefix.js";
+export { TASK_ID_TOKEN_SOURCE, TASK_ID_TOKEN_PROSE_SOURCE, createTaskIdProseRegExp, isTaskIdToken, taskIdPrefixOf } from "./tasks/task-id-token.js";
 /*
 FNXC:WorkspaceWorktree 2026-08-20-02:45:
 The engine-core gate barrel must expose the shared workspace worktree layout helpers because engine path resolution imports them at runtime.

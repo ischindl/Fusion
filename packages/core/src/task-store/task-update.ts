@@ -26,7 +26,7 @@ import "../builtin-traits.js";
 import {validateNodeOverrideChange, resolveNodeOverrideLanes} from "../mesh/node-override-guard.js";
 import {shouldInvalidateEffectiveRoute} from "../mesh/effective-route-invalidation.js";
 import {isTaskTerminalNodeIdAsync} from "../workflows/workflow-ir-resolver.js";
-import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {normalizeTitleForTaskId, removedTaskIdTokens} from "../tasks/task-title-id-drift.js";
 import {resolveTaskTitleWrite} from "../ai/ai-summarize.js";
 import {buildBootstrapPrompt} from "../mesh/mesh-task-replication.js";
 import {validateFileScopeInPromptContent} from "../task-store/file-scope.js";
@@ -338,7 +338,7 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         const normalizedTitle = normalizeTitleForTaskId(task.title, id);
         if (normalizedTitle.changed) {
           titleNormalized = true;
-          const removed = extractTaskIdTokens(task.title ?? "").filter((token) => token !== id.toUpperCase());
+          const removed = removedTaskIdTokens(task.title, id);
           task.title = normalizedTitle.title ?? undefined;
           task.log.push({
             timestamp: new Date().toISOString(),

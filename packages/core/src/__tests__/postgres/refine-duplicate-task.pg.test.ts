@@ -371,12 +371,26 @@ pgDescribe("refineTask / duplicateTask backend mode (PostgreSQL)", () => {
   /*
   Free-typed feedback routinely names the task being refined, so the title-id-drift normalizer
   is now on this path in a way the old parent-derived title rarely exercised.
-  Scope note: `TASK_ID_TOKEN_RE` in task-title-id-drift.ts matches the `FN-` prefix ONLY, so a
-  project using a different `taskPrefix` keeps the typed id in the title. That is a pre-existing
-  limitation of the shared normalizer, not of this path — asserted here with a literal FN- token
-  so the test states what the code actually does rather than what the prefix setting suggests.
+
+  FNXC:TaskIdGrammar 2026-11-18-06:10 (RUFU-730):
+  This note used to record the opposite: that `TASK_ID_TOKEN_RE` matched the `FN-` prefix ONLY, so a project
+  on another `taskPrefix` kept the typed id in the title, and the FN- literal below was there to state what
+  the code actually did. RUFU-730 removed that limitation - the scan and the strip now compose the shared
+  dictionary in `packages/core/src/tasks/task-id-token.ts`.
+
+  FNXC:TitleNormalization 2026-11-18-07:22 (RUFU-730, code-review P1):
+  "whatever the prefix" in the old case name was the overclaim the review measured. This harness mints `FN-*`
+  ids (`task-id-minting-partition.test.ts` pins that default), and the strip asks whether a token NAMES A
+  CARD ON THIS BOARD - the row's own prefix, plus `FN`, the product's fallback minting prefix - not whether
+  it has the shape of an id. The two halves provable at this seam are therefore: this board's own prefix
+  strips, and a prefix this board does not mint is left verbatim, because nothing at this call site can show
+  that `RUFU-318` names a card rather than a specification, an encoding, or a protocol version - and guessing
+  wrong rewrites operator text and logs a cleanup that never happened. The board-that-mints-`RUFU-*` half is
+  pinned where the rule lives (`__tests__/task-title-id-drift-grammar.test.ts`: `RUFU-523` on `RUFU-524`, and
+  a caller-named prefix), not here, because asserting it would need this harness to mint a foreign prefix,
+  which this case does not set up.
   */
-  it("strips an FN- task-id token the operator typed into the feedback", async () => {
+  it("strips a feedback task-id token only when this board mints that prefix", async () => {
     const h = await makeHarness();
     try {
       const source = await h.store.createTask({
@@ -391,6 +405,17 @@ pgDescribe("refineTask / duplicateTask backend mode (PostgreSQL)", () => {
       expect(refined.title).not.toContain("FN-4847");
       // The untouched feedback is still recoverable from the description.
       expect(refined.description).toContain("FN-4847: still drops the badge");
+
+      // A prefix this board does not mint names no card, so the operator's wording survives.
+      const refinedForeign = await h.store.refineTask(source.id, "RUFU-318: still drops the badge");
+      expect(refinedForeign.title).toContain("RUFU-318");
+      expect(refinedForeign.description).toContain("RUFU-318: still drops the badge");
+
+      // And an identifier that merely looks like one survives too - the class the code review measured
+      // ("Add UTF-8 support to the importer" lost its "UTF-8" to the shape-only strip).
+      const refinedEncoding = await h.store.refineTask(source.id, "UTF-8: still drops the badge");
+      expect(refinedEncoding.title).toContain("UTF-8");
+      expect(refinedEncoding.description).toContain("UTF-8: still drops the badge");
     } finally {
       await teardown();
     }

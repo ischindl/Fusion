@@ -364,6 +364,24 @@ A distinct canonical task branch proves another task owns the registered checkou
 through renamed-branch adoption, whose task-store snapshot is only valid for a potentially renamed
 branch; reclaim the proven foreign checkout at the same pinned path instead.
 */
+/*
+FNXC:TaskIdGrammar 2026-11-18-06:30 (RUFU-730):
+Still `fusion/fn-\d+` while the sibling `taskStartPointBranchPattern` above it was generalized by RUFU-352:
+that one only warns, this one decides whether a checkout gets DESTROYED. When the probe says the pinned path
+is a registered, usable worktree standing on a branch matching this pattern, acquisition concludes a FOREIGN
+TASK owns it and reclaims by `removeWorktree` + recreate-in-place. When the pattern does not match, the same
+directory takes the renamed-branch recovery path instead, which must first prove this task owns the
+worktree (`proveTaskWorktreeRebind`) and refuses otherwise.
+
+So widening the grammar converts a proof-gated path into an unproven deletion for every non-`FN` project:
+`fusion/rufu-274` standing in `RUFU-730`'s pinned directory would be reclaimed on the word of a regex
+instead of on ownership evidence. Under-matching costs a rename-recovery attempt that can fail closed; that
+is the cheaper error, and per the RUFU-352 ruling this stays narrow until a card carries the destructive
+proof. Measured falsification: widening this one line makes exactly one test in the file fail - the
+non-`FN` case below - which is what makes the pair a real pin. It is pinned at the acquisition seam in
+`packages/engine/src/__tests__/worktree-acquisition-pinned.test.ts`, and the three exported narrow grammars
+are pinned together in `packages/engine/src/__tests__/task-id-grammar-destructive-narrow.test.ts`.
+*/
 function isForeignTaskPinnedBranch(branch: string | undefined, expectedBranch: string): boolean {
   return Boolean(branch && branch !== expectedBranch && /^fusion\/fn-\d+$/i.test(branch));
 }

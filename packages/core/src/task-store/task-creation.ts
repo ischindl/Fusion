@@ -22,7 +22,7 @@ import {buildHumanMergeApprovalCreationState} from "../merge/human-merge-approva
 import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
 import {resolveTaskTitleWrite, sanitizeTitle, summarizeTitle} from "../ai/ai-summarize.js";
 import {resolveTaskOutputLanguage} from "../ai/ai-output-language.js";
-import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {normalizeTitleForTaskId, removedTaskIdTokens} from "../tasks/task-title-id-drift.js";
 import {resolveTitleSummarizerSettingsModel} from "../ai/model-resolution.js";
 import {resolveEffectiveSettingsById} from "../workflows/workflow-settings-resolver.js";
 import {getErrorMessage} from "../process/error-message.js";
@@ -1411,7 +1411,7 @@ export async function _createTaskInternalImpl(store: TaskStore, input: TaskCreat
         timestamp: now,
         action: "Title normalized: stripped legacy task-id reference",
       });
-      const removed = extractTaskIdTokens(title ?? "").filter((token) => token !== id.toUpperCase());
+      const removed = removedTaskIdTokens(title, id);
       storeLog.log(`[title-id-drift] normalized title for ${id}: removed=[${removed.join(",")}]`);
     }
 

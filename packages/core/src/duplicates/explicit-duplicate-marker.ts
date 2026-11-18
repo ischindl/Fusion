@@ -10,6 +10,20 @@ export interface ExplicitDuplicateMarkerResolution {
   conflict: boolean;
 }
 
+/*
+FNXC:DuplicateIntake 2026-11-18-05:59 (RUFU-730):
+This is the SECOND parser of the same `DUPLICATE:` sentinel sentence, and its id grammar deliberately
+DIFFERS from the shared dictionary in `packages/core/src/tasks/task-id-token.ts` that RUFU-730 moved
+`parseNoOpCompletionMarker` onto. Recorded here so the divergence reads as a decision, not a stray third
+grammar: this pattern is anchored at BOTH ends on a single-line sentinel (`^…\s*$` over one non-blank
+line), so the syntax already bounds the id and the prose variant's `(?![\w-])` right boundary is not
+needed. What would change is breadth: `[A-Z]+-\d+` is LETTERS-only-prefix, while the canonical token
+admits digits inside the prefix, so composing it would newly accept `A1-2` and `SANE4-42` at this surface.
+This is the refusal/redirect surface - a matched id sends an operator's card to that canonical twin - so it
+keeps the stricter grammar, while the completion-summary parser (which only reports, and whose input is
+free text) takes the shared one. Both agree on every id the canonical minting grammar produces with a
+letters-only prefix, which is what the cross-parser agreement case pins.
+*/
 const DUPLICATE_MARKER_PATTERN = /^DUPLICATE:\s*([A-Z]+-\d+)\s*$/i;
 
 function stripCodeFenceLayer(content: string): string {

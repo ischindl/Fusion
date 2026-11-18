@@ -9,6 +9,30 @@ import {
   type TaskStore,
 } from "@fusion/core";
 
+/*
+FNXC:TaskIdGrammar 2026-11-18-06:30 (RUFU-730):
+Both patterns below are DELIBERATELY still `FN-\d+`, and RUFU-730 reviewed them and chose not to widen them.
+Every other `FN-\d+` parser in the product was generalized in this card because it only OBSERVES or REFUSES;
+these two feed a DELETION, and the asymmetry is measured, not rhetorical:
+
+- `extractTaskIdFromTempMergeDir` is the only thing that lets `isTempMergeEntryReleased` (self-healing.ts)
+  answer "this clean-room's card is already gone", and that answer is what selects the early-release reap
+  floor. `tempSweepReapAgeMs` then picks `DONE_TASK_TEMP_WORKTREE_GRACE_MS` (10 min) instead of
+  `STALE_TEMP_MERGE_WORKTREE_MS` (2 h) before a forced `git worktree remove` plus directory deletion. A
+  widened grammar therefore does not add information, it shortens the grace window 12x for cards whose
+  scratch layout that sweep has never been observed against.
+- `isTaskNotFoundError` is the `catch` arm of that same release decision: matching the sentence treats the
+  card as gone and hands the scratch directory to the early floor. A broader match fires on any sentence
+  shaped like `task X not found`, from any source, and the deletion it authorises is irreversible.
+
+The failure direction is the reason to leave them alone. Under-matching here costs a scratch directory up to
+2 extra hours of life, and the sweep still reaps it on the long floor. Over-matching deletes a live card's
+merge clean-room after 10 minutes. A card may only widen these by carrying its own destructive-path proof,
+exactly as RUFU-352 ruled for `deriveTaskIdFromFusionBranch` and `isForeignTaskPinnedBranch`.
+
+Pinned behaviorally (not by source text) in
+`packages/engine/src/__tests__/task-id-grammar-destructive-narrow.test.ts`.
+*/
 export function extractTaskIdFromTempMergeDir(dirname: string): string | null {
   const match = /^fusion-ai-merge-(fn-\d+)-[a-z0-9]+$/i.exec(dirname);
   return match?.[1]?.toUpperCase() ?? null;

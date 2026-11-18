@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { TASK_ID_TOKEN_SOURCE, TASK_ID_TOKEN_PROSE_SOURCE } from "@fusion/core";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 import { listIntegrationBranchWorktrees } from "../merge/merger-ref-update-advance.js";
 
@@ -519,36 +520,30 @@ read `undefined` and classify real work as unattributed. `extractAttributedTaskI
 instead of a match object, which removes that footgun from all five call sites.
 
 FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
-The token is now exported as the engine's ONE task-id grammar source. RUFU-292 generalized commit
-attribution across five branch-conflict sites but left three families still hardcoded to `FN-\d+`: orphan
-rehoming (`merger-orphan-rehome.ts`), the foreign worktree start-point warning
-(`worktree-acquisition.ts`), and room coordination/ambiguity id extraction (`triage-domain/`). Those now
-compose this token instead of forking a second dictionary — a duplicated grammar is how a prefix
-generalization silently stops being general, and each family below reproduced the same non-FN failure
-RUFU-292 had already fixed (a `RUFU-274`/`SANE-452` card read as naming no card at all).
+RUFU-292 generalized commit attribution across five branch-conflict sites but left three families still
+hardcoded to `FN-\d+`: orphan rehoming (`merger-orphan-rehome.ts`), the foreign worktree start-point
+warning (`worktree-acquisition.ts`), and room coordination/ambiguity id extraction (`triage-domain/`).
+Those compose this token instead of forking a second dictionary - a duplicated grammar is how a prefix
+generalization silently stops being general, and each family reproduced the same non-FN failure RUFU-292
+had already fixed (a `RUFU-274`/`SANE-452` card read as naming no card at all).
 
-Deliberately NOT generalized, by operator ruling: `deriveTaskIdFromFusionBranch` and
-`parseFusionTaskBranch` stay FN-only, as does any branch-shape test that gates destructive reclaim or
-deletion authority (`isForeignTaskPinnedBranch`). Widening attribution for observation and recovery is
-safe; widening it for a destructive write is a separate authority decision.
+Deliberately NOT generalized, by operator ruling: `deriveTaskIdFromFusionBranch` stays FN-only, as does
+any branch-shape test that gates destructive reclaim or deletion authority
+(`isForeignTaskPinnedBranch`). Widening attribution for observation and recovery is safe; widening it for
+a destructive write is a separate authority decision.
+
+FNXC:TaskIdGrammar 2026-11-18-05:58 (RUFU-730):
+The token's DEFINITION moved to `packages/core/src/tasks/task-id-token.ts` and this file re-exports it, so
+the two names below stay importable by the five compositions here and by the engine tests unchanged.
+The token first lived in this file, but `@fusion/core` may not import the engine, so three core parsers
+that needed the same grammar (`merge/no-op-completion-marker.ts`, `task-store/errors.ts`,
+`tasks/task-title-id-drift.ts`) could not reach it and stayed `FN-\d+`-only - the exact
+second-source-of-truth asymmetry RUFU-292 and RUFU-352 exist to remove. Core owns the dictionary now
+because core is the lower layer; read the prose-boundary rationale (the `(?![\w-])` right boundary, and
+why `\b` alone invents a phantom `STEP-3` card out of "step-3-build") at that file rather than here.
 */
-export const TASK_ID_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+export { TASK_ID_TOKEN_SOURCE, TASK_ID_TOKEN_PROSE_SOURCE };
 
-/*
-FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
-`TASK_ID_TOKEN_SOURCE` alone is only correct where the surrounding syntax already bounds the id — a commit
-subject ends the token at `):` and a trailer at end-of-line, so RUFU-292 never needed a right boundary.
-Scanning free text does. `\b` after `\d+` is satisfied by a hyphen, so a naive `\b(TOKEN)\b` over
-"step-3-build" reports the phantom card `STEP-3`. In an orchestrable surface that error is not benign:
-room coordination turns a matched id into `defer-suggested` with "do NOT call fn_task_create", so an
-invented id silently blocks legitimate filing, while a missed id only costs one extra clarifying question.
-This source adds the trailing `(?![\w-])` so a token embedded in a longer hyphenated compound never
-matches, and it is exported rather than open-coded per site for the same reason the token is — a
-second hand-rolled boundary is how these grammars drift apart again.
-
-Structured branch names do not need it: the `^fusion/<token>$` gate is already bounded by its anchors.
-*/
-export const TASK_ID_TOKEN_PROSE_SOURCE = `${TASK_ID_TOKEN_SOURCE}(?![\\w-])`;
 const CONVENTIONAL_COMMIT_TYPES = "feat|fix|test|chore|docs|refactor|perf|build";
 
 function escapeRegExp(value: string): string {
@@ -1350,6 +1345,12 @@ reclaim, plus `inspectBranchConflict`'s self-owned fallback), so widening it wou
 authority to non-`FN` projects rather than restore information they already had. Commit-level
 attribution needs no such authority grant and is what unblocks acquisition for a non-`FN` prefix, so
 it is fixed there. Widening this belongs on a card carrying its own destructive-path proof.
+
+FNXC:TaskIdGrammar 2026-11-18-06:30 (RUFU-730):
+RUFU-730 generalized every remaining `FN-\d+` parser that only observes or refuses, reviewed this one, and
+left it byte-identical for the reason stated above. It is now pinned behaviorally by
+`packages/engine/src/__tests__/task-id-grammar-destructive-narrow.test.ts`, so a future widening has to
+change a named test rather than silently re-authorize deletion over a non-`FN` branch.
 */
 export function deriveTaskIdFromFusionBranch(branchName: string): string | null {
   const match = /^fusion\/(fn-\d+)$/i.exec(branchName.trim());

@@ -8,6 +8,7 @@
  * callers that import from "../store.js" or "@fusion/core" are unaffected.
  */
 import type { Column, ColumnId } from "../types.js";
+import { createTaskIdProseRegExp, isTaskIdToken } from "../tasks/task-id-token.js";
 import type { TransitionRejection } from "../tasks/transition-types.js";
 
 export class TaskHasDependentsError extends Error {
@@ -195,6 +196,26 @@ export function detectSelfSpawnedDependency(
   return match ? { dependencyId: match.id } : null;
 }
 
+/*
+FNXC:DependencyIntegrity 2026-11-18-05:59 (RUFU-730):
+This predicate is a REFUSAL gate, not an observation: `createTask` (`task-creation.ts`) and a dependency
+mutation (`update-task-deps.ts`) throw `SelfDefeatingDependencyError` from it, and
+`reconcileSelfDefeatingDependencies` (engine self-healing) silently DROPS the operand edge from a `triage`/
+`todo` card on it. Its three id-grammar literals used to be hardcoded to `FN-\d+`, so on any other
+`settings.taskPrefix` a card titled `Finalize RUFU-517: mark steps done` created with
+`dependencies: ["RUFU-517"]` was accepted, blocked nothing, and was invisible to the reconcile - a card
+whose own job is to terminalize its own blocker, parked forever behind it. All three literals now compose
+the shared dictionary in `packages/core/src/tasks/task-id-token.ts`; changing one of the three without the
+other two leaves the guard dead, which is why they move as a set.
+
+Widening a refusal gate is only ever safe in one direction: it can over-refuse, never under-refuse, and an
+over-refusal is a message an operator reads and re-issues. Two things therefore did NOT change here.
+`SELF_DEFEATING_OPERATION_VERBS` below is a CLOSED vocabulary and this card touches no verb - whether
+`delete`, `remove`, or `terminate` belong in it is a separate refusal-policy decision. And the
+one-id-in-the-title rule (`titleIdTokens.length !== 1`) is untouched: a title naming two cards is ambiguous
+input, not a self-defeating one. Note the generalization also tightens one case, deliberately: a hyphenated
+compound like `FN-123-456` no longer yields the phantom operand `FN-123`, per the prose-boundary rule.
+*/
 export function detectSelfDefeatingDependency(
   title: string | undefined,
   dependencies: readonly string[],
@@ -205,13 +226,13 @@ export function detectSelfDefeatingDependency(
   const normalizedDeps = new Set(
     dependencies
       .map((dep) => dep.trim().toUpperCase())
-      .filter((dep) => /^FN-\d+$/i.test(dep)),
+      .filter((dep) => isTaskIdToken(dep)),
   );
   if (normalizedDeps.size === 0) return null;
 
-  const titleFnIds = [...trimmedTitle.matchAll(/\bFN-(\d+)\b/gi)];
-  if (titleFnIds.length !== 1) return null;
-  const operandTaskId = `FN-${titleFnIds[0][1]}`;
+  const titleIdTokens = [...trimmedTitle.matchAll(createTaskIdProseRegExp(true))];
+  if (titleIdTokens.length !== 1) return null;
+  const operandTaskId = titleIdTokens[0][1]!.toUpperCase();
 
   let matchedVerb: string | null = null;
   for (const verb of SELF_DEFEATING_OPERATION_VERBS) {

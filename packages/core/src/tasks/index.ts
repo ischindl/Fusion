@@ -29,6 +29,7 @@ export * from "./task-creation-hooks.js";
 export * from "./task-fields.js";
 export * from "./task-helpers.js";
 export * from "./task-id-integrity.js";
+export * from "./task-id-token.js";
 export * from "./task-lineage.js";
 export * from "./task-list-format.js";
 export * from "./task-move-disposer.js";

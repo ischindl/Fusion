@@ -1,4 +1,5 @@
 import { PLAN_REVIEW_GROUP_ID } from "../workflows/builtin-plan-review-group.js";
+import { createTaskIdProseRegExp } from "../tasks/task-id-token.js";
 import type { WorkflowStepResult } from "../types/workflow/workflow-steps.js";
 
 export type NoOpCompletionMarkerKind = "premise-stale" | "no-op" | "duplicate" | "redundant";
@@ -36,8 +37,19 @@ export function parseNoOpCompletionMarker(summary: string | undefined): NoOpComp
     if (!match) continue;
 
     const reason = trimmed.slice(match[0].length).trim();
+    /*
+    FNXC:DuplicateIntake 2026-11-18-05:59 (RUFU-730):
+    The canonical-id capture composes the shared task-id grammar. It used to be `\b(FN-\d+)\b`, so an
+    executor writing `DUPLICATE: RUFU-318 already specifies the read-back contract` - a legitimate close
+    on a project whose `settings.taskPrefix` is not `FN` - produced a marker with NO `canonicalId`, and the
+    caller that redirects the card to its canonical twin had nothing to redirect to: the duplicate quietly
+    closed as a plain zero-commit close. Composing the prose variant (not the bare token) is what keeps the
+    free-text scan honest: the reason is prose, so the `(?![\w-])` right boundary is required or
+    "step-3-build" would name a phantom card. The leading-prefix rule above and the mid-summary refusal
+    stay exactly as they were; only the id spelling this accepts got wider.
+    */
     const idMatch = kind === "duplicate" || kind === "redundant"
-      ? reason.match(/\b(FN-\d+)\b/i)
+      ? reason.match(createTaskIdProseRegExp())
       : null;
 
     return {

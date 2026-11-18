@@ -1662,6 +1662,7 @@ export {
   extractTaskIdTokens,
   hasTitleIdDrift,
   normalizeTitleForTaskId,
+  removedTaskIdTokens,
 } from "./tasks/task-title-id-drift.js";
 export {
   BRANCH_CONFLICT_RECOVERY_EXHAUSTED_PAUSE_REASON,
@@ -3660,6 +3661,7 @@ export {
   hasSyncPassphraseConfigured,
 } from "./secrets/secrets-sync-passphrase.js";
 export { suggestTaskPrefix } from "./tasks/task-prefix.js";
+export { TASK_ID_TOKEN_SOURCE, TASK_ID_TOKEN_PROSE_SOURCE, createTaskIdProseRegExp, isTaskIdToken, taskIdPrefixOf } from "./tasks/task-id-token.js";
 
 // ── U1: PostgreSQL connection layer (backend resolution + connection pool) ──
 export {

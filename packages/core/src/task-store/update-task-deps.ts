@@ -19,7 +19,7 @@ import {join} from "node:path";
 import {existsSync} from "node:fs";
 import type {Task, Column, RunMutationContext, RunAuditEventInput} from "../types.js";
 import "../builtin-traits.js";
-import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {normalizeTitleForTaskId, removedTaskIdTokens} from "../tasks/task-title-id-drift.js";
 import {generateTaskLineageId} from "../tasks/task-lineage.js";
 import {deriveFallbackTaskTitle} from "../ai/ai-summarize.js";
 import {sanitizeFileScopeInPromptContent} from "../task-store/file-scope.js";
@@ -134,7 +134,7 @@ export async function refineTaskImpl(store: TaskStore, id: string, feedback: str
         // routinely names the task being refined ("FN-1234 still drops the badge").
         const normalizedTitle = normalizeTitleForTaskId(refinementTitle, newId);
         if (normalizedTitle.changed) {
-          const removed = extractTaskIdTokens(refinementTitle).filter((token) => token !== newId.toUpperCase());
+          const removed = removedTaskIdTokens(refinementTitle, newId);
           storeLog.log(`[title-id-drift] normalized title for ${newId}: removed=[${removed.join(",")}]`);
         }
         const sourceGithubLinked = sourceTask.githubTracking?.enabled === true || Boolean(sourceTask.githubTracking?.issue);
