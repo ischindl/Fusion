@@ -27,6 +27,11 @@ function makeStore(task: Task, events: unknown[] = []): TaskStore & EventEmitter
     mergeTask: async () => undefined,
     getRootDir: () => "",
     recordRunAuditEvent: async (event: unknown) => { events.push(event); },
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the soft-blocker sweep died before its first decision in both landed-content cases. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: () => 0,
   }) as unknown as TaskStore & EventEmitter;
 }
 

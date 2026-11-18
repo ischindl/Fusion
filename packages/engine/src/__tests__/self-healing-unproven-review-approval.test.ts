@@ -76,6 +76,11 @@ function harness(rows: Task[], options: {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const auditEvents: Record<string, unknown>[] = [];
   const store = {
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:00 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the unproven-approval repair sweep died before its first decision. Constant epoch = honest fake (the seeded IR is never mutated). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     listWorkflowDefinitions: vi.fn(async () => [{ ir: workflow(options.reviewColumn) }]),
     listTasks: vi.fn(async (query: { column?: string }) => [...byId.values()].filter((row) => !query.column || row.column === query.column)),
     getTask: vi.fn(async (id: string) => byId.get(id)),

@@ -199,6 +199,11 @@ function getSelfHealingLogger(): MockLogger {
 function createMockStore(overrides: Record<string, unknown> = {}): TaskStore & EventEmitter {
   const emitter = new EventEmitter();
   const store = Object.assign(emitter, {
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:00 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this shared fake predated it, so every sweep driven through it died before its first decision (the outer catch collapsed the TypeError into a log.warn, and the cases surfaced as "expected +0 to be N"). Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     getSettings: vi.fn().mockResolvedValue({
       autoUnpauseEnabled: true,
       autoUnpauseBaseDelayMs: 100,

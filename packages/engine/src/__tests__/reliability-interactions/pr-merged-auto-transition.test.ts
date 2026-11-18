@@ -51,6 +51,11 @@ function store(primary: Task, extras: Task[] = []): TaskStore & EventEmitter {
     logEntry: vi.fn(async () => undefined),
     appendAgentLog: vi.fn(async () => undefined),
     clearStaleExecutionStartBranchReferences: vi.fn(() => []),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the sweep died before its first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     recordRunAuditEvent: vi.fn(async () => undefined),
     walCheckpoint: vi.fn(() => ({ busy: 0, log: 0, checkpointed: 0 })),
     getRootDir: vi.fn(() => "/tmp/test"),

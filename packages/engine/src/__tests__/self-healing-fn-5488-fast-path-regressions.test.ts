@@ -41,6 +41,11 @@ function makeStore(tasksInput: Task[]) {
 
   const store = {
     getSettings: vi.fn().mockResolvedValue(settings),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the fast paths under test died before their first decision (8 occurrences). Constant epoch = honest fake (configureTaskWorkflowSelections seeds definitions but nothing mutates them). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     listTasks: vi.fn().mockImplementation(async (opts?: { column?: Task["column"]; includeArchived?: boolean }) => {
       const all = [...tasks.values()];
       if (!opts?.column) return all;

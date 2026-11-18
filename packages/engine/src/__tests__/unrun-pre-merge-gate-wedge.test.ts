@@ -81,24 +81,9 @@ function resultlessReviewTask(overrides: Partial<Task> = {}): Task {
 function recoveryStore(task: Task) {
   const seedWorkspaceCodeReviewContinuationIfIdle = vi.fn(async () => ({ seeded: true }));
   return {
-    /*
-    FNXC:WorkflowBatchCacheEpoch 2026-11-01-19:16 (RUFU-300 Step 5 fixture repair, RUFU-584 seam):
-    RUFU-584 replaced SelfHealingManager's per-sweep IR caches with one epoch-guarded pair and
-    `batchWorkflowIrCache()` calls `this.store.workflowDefinitionEpoch()` UNGUARDED, so this reduced fake
-    made `recoverMergeableReviewTasks` die as `TypeError: ... is not a function` before its first decision.
-    Base-proved: 8 legs here plus 6 in `verdictless-pre-merge-gate-rerun.test.ts` fail identically at
-    d3a59f0491 with `Mergeable review recovery failed: this.store.workflowDefinitionEpoch is not a
-    function`, so the red is a fixture gap RUFU-584 left behind, not an assertion this task changed.
-    A constant epoch is the honest fake: this file never writes a workflow definition, so a cache that
-    never invalidates reports exactly what the real store would. Same repair precedent as
-    `self-healing-stale-overlap-blocker.test.ts` and `self-healing-agent-link-drift.test.ts`.
-    */
-    workflowDefinitionEpoch: vi.fn(() => 0),
     updateTaskAtomic: vi.fn(async (_id: string, reduce: (t: Task) => Partial<Task> | null) => { const patch = reduce(task); if (patch) Object.assign(task, patch); return task; }),
     getTask: vi.fn(async () => task),
     getSettings: vi.fn(async () => ({ autoMerge: true })),
-    getStaleReviewCallbackWaiverReceipts: vi.fn().mockResolvedValue([]),
-    getProjectId: vi.fn().mockReturnValue("test-project"),
     getTaskWorkflowSelection: vi.fn(() => ({ workflowId: "builtin:coding", stepIds: ["code-review"] })),
     getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["code-review"] })),
     getWorkflowDefinition: vi.fn(async () => ({ ir: codingIr })),
@@ -118,6 +103,21 @@ function recoveryStore(task: Task) {
     writes a workflow selection or definition mid-pass, so cache invalidation is never the subject. The
     one case that DOES re-resolve a changed selection asserts through `getTaskWorkflowSelectionAsync`, which
     the sweep reads directly, not through the epoch cache.
+
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:35 (RUFU-686: collapse of the RUFU-300 duplicate block):
+    RUFU-300 (2026-11-01-19:16) had independently repaired this seam - base-proved: 8 legs here plus 6 in
+    `verdictless-pre-merge-gate-rerun.test.ts` failing identically at d3a59f0491 with `Mergeable review
+    recovery failed: this.store.workflowDefinitionEpoch is not a function`; same precedent as
+    `self-healing-stale-overlap-blocker.test.ts` and `self-healing-agent-link-drift.test.ts` - but its block
+    landed as DUPLICATES of keys already in this literal: a second `workflowDefinitionEpoch` plus
+    `getStaleReviewCallbackWaiverReceipts` and `getProjectId` duplicating the FNXC:StaleReviewWaiverFixture
+    pair below. Object literals resolve duplicate keys last-one-wins, so the values in force today are
+    exactly the surviving ones (epoch 0, waiver ledger `vi.fn(async () => [])`, project id "fn-9243") and the
+    earlier lines - including `getProjectId: vi.fn().mockReturnValue("test-project")` - were dead code that
+    read as configuration. The collapse therefore keeps the winning pair: keeping "test-project" would flip
+    a live fixture value. ESLint's global ignores exclude engine `__tests__`, so `no-dupe-keys` could never
+    fire and the duplication stayed invisible. The removed block's facts are folded here; no assertion
+    changed.
     */
     workflowDefinitionEpoch: vi.fn(() => 0),
     workflowSelectionEpoch: vi.fn(() => 0),

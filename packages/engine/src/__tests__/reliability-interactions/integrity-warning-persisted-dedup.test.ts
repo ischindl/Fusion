@@ -63,6 +63,11 @@ function makeStore(task: Task, events: unknown[] = []): TaskStore & EventEmitter
     walCheckpoint: vi.fn(() => ({ busy: 0, log: 0, checkpointed: 0 })),
     mergeTask: vi.fn(async () => undefined),
     getRootDir: vi.fn(() => ""),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    reconcileDoneTaskIntegrity() reaches the workflow read through batchWorkflowIrCache(), which since 58d561b1c1 reads store.workflowDefinitionEpoch() UNGUARDED; this fake predated it and all 4 dedup cases here died before their first decision. A constant epoch is the honest fake - no case writes a workflow definition. Full evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 

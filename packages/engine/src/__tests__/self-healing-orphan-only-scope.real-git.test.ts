@@ -59,6 +59,11 @@ function createStore(tasks: TaskMap, logsByTask: Map<string, AgentLogEntry[]>): 
     updateSettings: vi.fn(async () => settings),
     mergeTask: vi.fn(async () => undefined),
     getRootDir: vi.fn(() => ""),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so recoverOrphanOnlyScopeViolations died before its first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 

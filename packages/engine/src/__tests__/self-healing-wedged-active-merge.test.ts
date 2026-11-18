@@ -65,6 +65,11 @@ describe("SelfHealingManager wedged active merge recovery", () => {
       recordRunAuditEvent: vi.fn().mockImplementation(async (event: Record<string, unknown>) => {
         auditEvents.push(event);
       }),
+      /*
+      FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+      batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so recoverInterruptedMergingTasks/recoverStuckMergeDeadlocks died before their first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+      */
+      workflowDefinitionEpoch: vi.fn(() => 0),
       getCompletionHandoffAcceptedMarker: vi.fn().mockReturnValue(null),
       parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
     } as unknown as TaskStore;

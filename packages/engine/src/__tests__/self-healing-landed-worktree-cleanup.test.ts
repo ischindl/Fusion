@@ -46,6 +46,11 @@ function createStore(task: Task) {
       return options?.column ? values.filter((entry) => entry.column === options.column) : values;
     }),
     listWorkflowDefinitions: vi.fn(async () => []),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the landed-worktree cleanup sweep died before its first decision in all 3 cases here. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     getTaskWorkflowSelection: vi.fn(() => undefined),
     getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
     getCompletionHandoffAcceptedMarker: vi.fn(async () => null),

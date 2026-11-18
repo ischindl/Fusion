@@ -88,6 +88,25 @@ function createStore(seed: Task[]): { store: Store; tasks: Map<string, Task> } {
     */
     parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
     getCompletionHandoffAcceptedMarker: vi.fn().mockReturnValue(null),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:12 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the policy-cycle sweeps died before their first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+
+    FNXC:ReviewStallFenceFake 2026-11-18-03:12 (RUFU-686 fixture repair): a SECOND drift gap the epoch fix exposed - runPolicyCycle() calls surfaceInReviewStalls(), which since the observation-fence work writes through applyInReviewStallObservationFenced, and the dead merge-queue readers call peekMergeQueue; neither seam existed here. Semantics mirror the fenced fake in human-merge-approval-recovery.test.ts (null patch refuses, else append the log entry and apply the field patch); an empty merge queue is the honest state - no case here enqueues through the real queue.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
+    peekMergeQueue: vi.fn(async () => []),
+    applyInReviewStallObservationFenced: vi.fn(async (id: string, compute: (current: Task) => Record<string, unknown> | null) => {
+      const current = tasks.get(id);
+      if (!current) return { applied: false, reason: "refused" };
+      const patch = compute(current);
+      if (!patch) return { applied: false, reason: "refused" };
+      const { logEntry, ...fields } = patch;
+      const next = { ...current, ...fields } as Task;
+      if (logEntry) next.log = [...(next.log ?? []), logEntry as Task["log"][number]];
+      tasks.set(id, next);
+      return { applied: true, task: next };
+    }),
   } as unknown as Store;
 
   return { store, tasks };

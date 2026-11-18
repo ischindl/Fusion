@@ -23,6 +23,12 @@ import { SelfHealingManager } from "../self-healing.js";
 import { EMPTY_REVIEW_DIFF_FINGERPRINT } from "../worktree/review-diff-fingerprint.js";
 
 /*
+FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:05 (RUFU-686 fixture repair, RUFU-584 seam):
+58d561b1c1 made `batchWorkflowIrCache()` read `store.workflowDefinitionEpoch()` UNGUARDED; every per-case store fake in this file predates it, so each ladder-entry recovery died on the TypeError before its first decision (the sweep's outer catch collapsed it into a log.warn, and the cases surfaced as unmet spy expectations). A constant epoch is the honest fake here - no case writes a workflow definition. Spread into each fake below. Full evidence chain: archived-review-failure-merge-wedge.test.ts.
+*/
+const WORKFLOW_EPOCH_FAKE = { workflowDefinitionEpoch: vi.fn(() => 0) };
+
+/*
 FNXC:ReviewConvergenceEvidence 2026-09-13-04:34:
 Graph and recovery entry points share the same finite review budget. Exhaustion may enter the common terminal router for visible parking, but it cannot schedule another autonomous remediation, reviewer, or arbitration action.
 */
@@ -106,6 +112,7 @@ describe("FN-149 remediation graph ladder entry", () => {
       return row;
     });
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         codeReviewMaxRevisions: 1,
         reviewConvergenceEscalationEnabled: true,
@@ -151,6 +158,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const sendTaskBackForFix = vi.fn(async () => {});
     const parkPlanReviewReplanCapExhausted = vi.fn(async () => {});
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         planReviewMaxRevisions: 1,
         reviewConvergenceEscalationEnabled: true,
@@ -202,6 +210,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const sendTaskBackForFix = vi.fn(async () => {});
     const claimedStages: number[] = [];
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({})),
       getTask: vi.fn(async () => row),
       getTaskWorkflowSelection: vi.fn(async () => undefined), getWorkflowDefinition: vi.fn(async () => undefined),
@@ -236,6 +245,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     };
     const sendTaskBackForFix = vi.fn(async () => {});
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         reviewConvergenceEscalationEnabled: true,
         reviewConvergenceEscalationProvider: "current-provider",
@@ -272,6 +282,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const sendTaskBackForFix = vi.fn(async () => {});
     const parkPlanReviewReplanCapExhausted = vi.fn(async () => {});
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         planReviewReplanCap: 0,
         reviewConvergenceEscalationEnabled: true,
@@ -305,6 +316,7 @@ describe("FN-149 remediation graph ladder entry", () => {
       return row;
     });
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         reviewConvergenceEscalationEnabled: true,
         reviewConvergenceEscalationProvider: "mock",
@@ -347,6 +359,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     };
     const sendTaskBackForFix = vi.fn(async () => {});
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         reviewConvergenceEscalationEnabled: true,
         reviewConvergenceEscalationProvider: "current-provider",
@@ -380,6 +393,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const sendTaskBackForFix = vi.fn(async () => {});
     const claimedStages: number[] = [];
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({})),
       getTask: vi.fn(async () => row),
       getTaskWorkflowSelection: vi.fn(async () => undefined), getWorkflowDefinition: vi.fn(async () => undefined),
@@ -403,6 +417,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const row = workspaceLive();
     const sendTaskBackForFix = vi.fn(async () => undefined);
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true })),
       getTaskWorkflowSelection: vi.fn(async () => undefined),
       getWorkflowDefinition: vi.fn(async () => undefined),
@@ -435,6 +450,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     });
     const scheduleWorkflowRerun = vi.fn();
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true })),
       getTask: vi.fn(async () => row),
       getTaskWorkflowSelection: vi.fn(async () => undefined),
@@ -477,6 +493,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     const row = workspaceLive();
     const sendTaskBackForFix = vi.fn(async () => undefined);
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         autoMerge: true,
         reviewConvergenceEscalationEnabled: true,
@@ -510,6 +527,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     row.reviewConvergenceStage = 1;
     vi.mocked(runReviewArbitration).mockResolvedValueOnce("arbitrated");
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true })),
       getTask: vi.fn(async () => row),
       getTaskWorkflowSelection: vi.fn(async () => undefined),
@@ -566,6 +584,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     };
     const recoverFailedPreMergeStep = vi.fn(async () => true);
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true, globalPause: false, enginePaused: false, maxPostReviewFixes: 3 })),
       listTasks: vi.fn(async () => [row]),
       getTask: vi.fn(async () => row),
@@ -598,6 +617,7 @@ describe("FN-149 remediation graph ladder entry", () => {
     };
     const recoverFailedPreMergeStep = vi.fn(async () => true);
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true, globalPause: false, enginePaused: false, maxPostReviewFixes: 1, codeReviewMaxRevisions: 1 })),
       listTasks: vi.fn(async () => [row]), getTask: vi.fn(async () => row),
       updateTask: vi.fn(async () => {}), logEntry: vi.fn(async () => {}),
@@ -631,6 +651,7 @@ function emptyReviewRow() {
 
 function emptyReviewStore(row: any) {
   return {
+    ...WORKFLOW_EPOCH_FAKE,
     getSettings: vi.fn(async () => ({ autoMerge: true, globalPause: false, enginePaused: false })),
     getTask: vi.fn(async () => row),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => { Object.assign(row, patch); return row; }),
@@ -675,6 +696,7 @@ describe("FN-315 self-healing remediation accounting chain", () => {
 
   function recoveryStore(row: any) {
     return {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({ autoMerge: true, globalPause: false, enginePaused: false, maxPostReviewFixes: 2 })),
       listTasks: vi.fn(async ({ column }: { column?: string } = {}) => !column || row.column === column ? [row] : []),
       getTask: vi.fn(async () => row),
@@ -920,6 +942,7 @@ describe("FN-225 definite empty review entry points", () => {
     digestRow.workflowStepResults[0].reviewInputFingerprint = "a".repeat(64);
     const rows = [emptyRow, digestRow];
     const store = {
+      ...WORKFLOW_EPOCH_FAKE,
       getSettings: vi.fn(async () => ({
         autoMerge: true,
         globalPause: false,

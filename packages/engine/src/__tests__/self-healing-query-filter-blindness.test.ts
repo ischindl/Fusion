@@ -117,6 +117,11 @@ function productionFaithfulStore(tasks: Task[]) {
   const store = Object.assign(new EventEmitter(), {
     getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false }) as Settings),
     listTasks,
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:00 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this production-faithful fake predated it, so 8 of this file's query-blindness ratchet cases died before the sweep's first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     getTask: vi.fn(async (id: string) => tasksById.get(id)),
     updateTask: vi.fn(async (id: string, patch: Partial<Task>) => {
       const next = { ...tasksById.get(id)!, ...patch } as Task;
@@ -376,6 +381,11 @@ describe("self-healing sweeps are bounded by a hardcoded column QUERY, not by th
     const tasksById = new Map([[midImplementation.id, midImplementation]]);
     const store = Object.assign(new EventEmitter(), {
       getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false }) as Settings),
+      /*
+      FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:25 (RUFU-686 fixture repair, RUFU-584 seam):
+      batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; these inline fakes predated it, so the legacy-done and already-merged sweeps died before their first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+      */
+      workflowDefinitionEpoch: vi.fn(() => 0),
       listTasks: vi.fn(async (options?: { column?: string }) => {
         const all = [...tasksById.values()];
         return options?.column === undefined ? all : all.filter((t) => t.column === options.column);
@@ -428,6 +438,11 @@ describe("self-healing sweeps are bounded by a hardcoded column QUERY, not by th
     const tasksById = new Map([[legacyCard.id, legacyCard]]);
     const store = Object.assign(new EventEmitter(), {
       getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false }) as Settings),
+      /*
+      FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:25 (RUFU-686 fixture repair, RUFU-584 seam):
+      batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; these inline fakes predated it, so the legacy-done and already-merged sweeps died before their first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+      */
+      workflowDefinitionEpoch: vi.fn(() => 0),
       listTasks: vi.fn(async (options?: { column?: string }) => {
         const all = [...tasksById.values()];
         return options?.column === undefined ? all : all.filter((t) => t.column === options.column);
@@ -504,6 +519,11 @@ describe("self-healing sweeps are bounded by a hardcoded column QUERY, not by th
     const tasksById = new Map([[parked.id, parked]]);
     const store = Object.assign(new EventEmitter(), {
       getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false }) as Settings),
+      /*
+      FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:25 (RUFU-686 fixture repair, RUFU-584 seam):
+      batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; these inline fakes predated it, so the legacy-done and already-merged sweeps died before their first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+      */
+      workflowDefinitionEpoch: vi.fn(() => 0),
       listTasks: vi.fn(async (options?: { column?: string }) => {
         const all = [...tasksById.values()];
         return options?.column === undefined ? all : all.filter((t) => t.column === options.column);

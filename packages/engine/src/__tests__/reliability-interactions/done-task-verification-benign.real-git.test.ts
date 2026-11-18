@@ -45,6 +45,11 @@ function makeStore(task: Task, settings: Partial<Settings> = {}, events: unknown
     walCheckpoint: vi.fn(() => ({ busy: 0, log: 0, checkpointed: 0 })),
     mergeTask: vi.fn(async () => undefined),
     getRootDir: vi.fn(() => ""),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the reconcileDoneTaskIntegrity sweep died before its first decision in all 3 benign-verification cases. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 

@@ -46,6 +46,11 @@ function createMockStore(overrides: Record<string, unknown> = {}): TaskStore & E
     updateTask: vi.fn().mockResolvedValue({} as Task),
     moveTask: vi.fn().mockResolvedValue(undefined),
     logEntry: vi.fn().mockResolvedValue(undefined),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so clearStaleBlockedBy died before its first decision here. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     getAgentLogs: vi.fn().mockResolvedValue([]),
     ...overrides,
   }) as unknown as TaskStore & EventEmitter;

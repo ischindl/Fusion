@@ -55,6 +55,11 @@ function makeStore(tasks: Task[], events: unknown[] = [], settings?: Partial<Set
     recordRunAuditEvent: async (event: unknown) => {
       events.push(event);
     },
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:58 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the auto-finalize interaction sweeps died before their first decision in all 5 cases. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 

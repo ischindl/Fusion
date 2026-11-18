@@ -49,6 +49,11 @@ describe("SelfHealingManager stale merge fanout recovery (FN-4241)", () => {
       FNXC:OverlapSelfHealing 2026-06-26-12:00:
       clearStaleBlockedBy fakes must expose every store method its file-scope-overlap path can call so recovery-count assertions stay deterministic across shard order.
       */
+      /*
+      FNXC:WorkflowBatchCacheEpoch 2026-11-18-03:00 (RUFU-686 fixture repair, RUFU-584 seam):
+      batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so the fan-out recovery died before its first decision. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+      */
+      workflowDefinitionEpoch: vi.fn(() => 0),
       getTask: vi.fn().mockImplementation(async (id: string) => tasks.get(id) ?? null),
       parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
       getCompletionHandoffAcceptedMarker: vi.fn().mockReturnValue(null),

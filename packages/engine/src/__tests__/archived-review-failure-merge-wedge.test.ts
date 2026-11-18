@@ -46,6 +46,20 @@ function recoveryStore(task: Task) {
     getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["plan-review"] })),
     getWorkflowDefinition: vi.fn(async () => ({ ir: codingIr })),
     listWorkflowDefinitions: vi.fn(async () => [{ ir: codingIr }]),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:35 (RUFU-686 fixture repair, RUFU-584 seam):
+    58d561b1c1 (RUFU-584) replaced SelfHealingManager's per-sweep IR caches with one epoch-guarded pair
+    and `batchWorkflowIrCache()` calls `this.store.workflowDefinitionEpoch()` UNGUARDED, so this reduced
+    fake made `recoverMergeableReviewTasks` die as `TypeError: ... is not a function` before its first
+    decision. The sweep's outer catch reduces the whole pass to one `log.warn`, which is why the visible
+    symptom was a bare missing-enqueue assertion, never the real cause. Base-proved at 78e819b84c: 2
+    sweep cases here fail with "Mergeable review recovery failed: this.store.workflowDefinitionEpoch is
+    not a function"; the formatter case never touches the sweep. A constant epoch is the honest fake:
+    no case in this file writes a workflow definition, and the repeated sweeps on one manager only
+    rewrite `workflowStepResults`, so a pass cache that never invalidates reports exactly what the real
+    store would. Same repair precedent as `self-healing-stale-overlap-blocker.test.ts`.
+    */
+    workflowDefinitionEpoch: () => 0,
     listWorkflowWorkItemsForTask: vi.fn(async () => []),
     listTasks: vi.fn(async (options?: { column?: string }) => options?.column === "in-review" ? [task] : []),
     logEntry: vi.fn(async () => undefined),

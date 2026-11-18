@@ -53,6 +53,11 @@ function storeWith(tasks: Task[]): TaskStore & EventEmitter {
     */
     parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
     getCompletionHandoffAcceptedMarker: vi.fn().mockReturnValue(null),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    This fake predates 58d561b1c1, which made batchWorkflowIrCache() read store.workflowDefinitionEpoch() UNGUARDED; the sweep died on the TypeError before its first decision and both fan-out count checks read 0 recoveries. A constant epoch is the honest fake here - no case writes a workflow definition. Full evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 

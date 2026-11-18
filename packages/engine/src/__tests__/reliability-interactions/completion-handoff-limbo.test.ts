@@ -46,6 +46,11 @@ function createStore(task: Task, mergeQueuedTaskIds: string[] = []) {
     }))),
     logEntry: vi.fn(async () => undefined),
     recordRunAuditEvent: vi.fn(async () => undefined),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    recoverCompletionHandoffLimbo() calls batchWorkflowIrCache() first (self-healing.ts:21693) and 58d561b1c1 made it read store.workflowDefinitionEpoch() UNGUARDED; this fake predated it, so all 14 limbo assertions here observed a sweep that died before its first decision. A constant epoch is the honest fake - no case writes a workflow definition. Full evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     _get: () => current,
   } as any;
 }

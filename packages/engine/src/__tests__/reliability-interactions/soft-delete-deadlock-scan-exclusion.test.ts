@@ -59,6 +59,11 @@ function createStore(tasks: TestTask[], leakDeleted = false) {
     */
     parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
     getCompletionHandoffAcceptedMarker: vi.fn().mockReturnValue(null),
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-18-02:52 (RUFU-686 fixture repair, RUFU-584 seam):
+    batchWorkflowIrCache() has read store.workflowDefinitionEpoch() UNGUARDED since 58d561b1c1; this fake predated it, so clearStaleBlockedBy died before its first decision in both overlap cases here. Constant epoch = honest fake (no case writes a definition). Evidence chain: archived-review-failure-merge-wedge.test.ts.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
     recordRunAuditEvent: vi.fn(async () => ({})),
   };
   return store as any;
