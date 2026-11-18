@@ -186,6 +186,30 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
   });
 
   /*
+  FNXC:PgCredentialRefusal 2026-11-18-05:33 (RUFU-724):
+  FN-9563 made the core pg-gate lane build its golden PostgreSQL template during
+  participating global setup, so a credential-bearing target is now a hard
+  dependency of the merge gate itself, not just of the non-blocking Full Suite.
+  Before this pin the merge-gate describe carried no PostgreSQL assertion at all
+  (only the Full Suite jobs were pinned), so dropping or renaming the gate job's
+  service container or its job-level env would have turned the lane red on CI and
+  28P01-ing on every dev box replicating CI, with no test naming the change.
+  Mirror the Full Suite pin onto the gate job, asserting the exact credential URL
+  literal so a rename fails here instead of surfacing as an opaque auth error.
+  */
+  it("keeps PostgreSQL provisioned and credentialed for the merge-gate pg lane", () => {
+    const job = workflow.jobs?.gate;
+    expect(job?.services?.postgres?.image).toBe("postgres:15");
+    expect(job?.services?.postgres?.env?.POSTGRES_USER).toBe("postgres");
+    expect(job?.services?.postgres?.env?.POSTGRES_PASSWORD).toBe("postgres");
+    expect(job?.services?.postgres?.env?.POSTGRES_DB).toBe("postgres");
+    expect(job?.services?.postgres?.ports).toContain("5432:5432");
+    expect(job?.services?.postgres?.options).toContain("pg_isready");
+    expect(job?.env?.FUSION_PG_TEST_URL_BASE).toBe("postgresql://postgres:postgres@localhost:5432");
+    expect(job?.env?.PGPASSWORD).toBe("postgres");
+  });
+
+  /*
   FNXC:CIGateSpeed 2026-07-22-23:30:
   The Gate job's dist cache is INCREMENTAL (`gate-dist-*` with restore-keys), which is only
   safe because `pnpm build` always runs after restore and reconciles a near-match restore via
