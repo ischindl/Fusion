@@ -278,7 +278,7 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     // glyphs, so this source contract proves the enlargement remains limited
     // to the primary controls and cannot regress into the options group.
     const iconRule = mobileSection.match(
-      /\.quick-entry-primary-group \.btn-icon svg,\s*\n\s*\.quick-entry-primary-group \[data-testid="quick-entry-priority-button"\] svg,\s*\n\s*\.quick-entry-primary-group \[data-testid="quick-entry-fast-toggle"\] svg\s*\{([^}]*)\}/,
+      /\.quick-entry-primary-group \.btn-icon svg,\s*\n\s*\.quick-entry-primary-group \[data-testid="quick-entry-fast-toggle"\] svg\s*\{([^}]*)\}/,
     );
     expect(iconRule).not.toBeNull();
     expect(iconRule![1]).toMatch(/width:\s*var\(--space-lg\);/);

@@ -214,7 +214,6 @@ On desktop/tablet, open **Planning** from the left sidebar to start or resume a 
 - AI reasoning (thinking output) is preserved and visible throughout the session — expand the reasoning toggle to review the model's analysis before answering each question or accepting the summary
 - Produces summary + key deliverables
 - Creates one detailed task from the validated plan; complex requests retain their original task identity, plan, documents, and dependencies
-- Summary view includes a **Priority** selector (`low`, `normal`, `high`, `urgent`) so task creation can set priority before task creation
 - Sessions persist when the planning surface is closed or you navigate away — resume from the Planning sidebar list at any time; reasoning context is restored automatically
 - Back navigation rewinds the server-side planning session to the previous answered question so you can revise earlier answers and continue from the corrected turn
 - On the summary screen, **Refine Further** continues through the backend planning session (including resumed completed sessions) and waits for a real follow-up question or updated summary; it does not switch to an empty question view
@@ -240,7 +239,6 @@ Expand the creation panel (▼) to access additional controls:
 - **Deps** (🔗) — Link existing tasks as dependencies
 - **Attach** — Add image attachments
 - **Models** (🧠) — Set per-task model overrides (executor, validator, planning)
-- **Priority** (🚩) — Set task priority (`low`, `normal`, `high`, `urgent`) before creation; the selected value is applied to the created task (it does not reset to default unless omitted)
 - **Agent** — Assign an agent to the task
 - **Branch settings** (`branch` / `baseBranch`) remain available in full task forms and task detail editing (not in Quick Entry)
 - **Review** — Set review rigor level (None, Plan Only, Plan and Code, Full)

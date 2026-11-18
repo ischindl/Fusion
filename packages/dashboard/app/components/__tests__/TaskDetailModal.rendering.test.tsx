@@ -1689,19 +1689,16 @@ describe("TaskDetailModal", () => {
   });
 
   describe("footer quick actions", () => {
-    it("renders Priority and Fast as labeled Actions menu items with selected state", async () => {
-      render(<TaskDetailModal initialTab="details" task={makeTask({ column: "todo", priority: "high", executionMode: "fast" })} onClose={noop} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
+    it("renders Fast as a labeled Actions menu item with selected state", async () => {
+      render(<TaskDetailModal initialTab="details" task={makeTask({ column: "todo", executionMode: "fast" })} onClose={noop} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
 
-      const priority = screen.getByTestId("detail-priority-option-high");
       const fast = screen.getByTestId("detail-execution-mode-toggle");
-      expect(priority).toHaveTextContent("High");
-      expect(priority).toHaveAttribute("aria-pressed", "true");
       expect(fast).toHaveAccessibleName("Execution mode: fast");
       expect(fast).toHaveAttribute("aria-pressed", "true");
     });
 
-    it("keeps Attach, GitHub, Oversight, Priority, and Fast in Quick Add order", async () => {
+    it("keeps Attach, GitHub, Oversight and Fast in Quick Add order", async () => {
       render(<TaskDetailModal initialTab="details" task={makeTask({ column: "todo", plannerOversightLevel: "observe" })} onClose={noop} onDeleteTask={noopDelete} onMergeTask={noopMerge} onOpenDetail={noopOpenDetail} addToast={noop} />);
       fireEvent.click(screen.getByRole("button", { name: "Actions" }));
 
@@ -1709,7 +1706,6 @@ describe("TaskDetailModal", () => {
         screen.getByTestId("detail-inline-attach"),
         screen.getByTestId("detail-inline-github-toggle"),
         screen.getByTestId("detail-actions-oversight-heading"),
-        screen.getByTestId("detail-actions-priority-heading"),
         screen.getByTestId("detail-execution-mode-toggle"),
       ];
       for (let index = 1; index < orderedItems.length; index += 1) {

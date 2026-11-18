@@ -10,6 +10,7 @@ import {
   createMobilePillSmokeViewportMetrics,
   createSmokeHtml,
   mobilePillGeometryMatches,
+  TASK_DETAIL_ACTIONS_MENU_EXPECTATIONS,
   prepareBrowserSmoke,
   QUICK_ADD_SAVE_FIXTURE_COUNT,
 } from "../../scripts/browser-layout-smoke.mjs";
@@ -359,8 +360,6 @@ describe("browser layout smoke fixture", () => {
       "detail-actions-oversight-heading",
       "detail-oversight-level-standard",
       "detail-session-advisor-toggle",
-      "detail-actions-priority-heading",
-      "detail-priority-option-normal",
       "detail-execution-mode-toggle",
     ]) {
       expect(html).toContain(`data-testid="${testId}"`);
@@ -369,7 +368,29 @@ describe("browser layout smoke fixture", () => {
     expect(html).toContain('class="detail-actions-menu-item detail-actions-menu-note"');
     expect(html).not.toContain("detail-meta-inline-controls");
     expect(html).not.toContain("detail-oversight-menu-trigger");
-    expect(html).not.toContain("detail-priority-trigger");
+  });
+
+  /*
+  FNXC:TaskQueueOrder 2026-11-18-08:21:
+  FN-509 deleted the Priority group from this fixture, which took five rows out of every variant. The
+  old expectation was a flat list of `data-testid` substrings, so it could only notice a deletion by
+  going red; these assertions parse each emitted variant and compare against the counts derived from
+  `TASK_DETAIL_ACTIONS_MENU_VARIANTS`, the same table that generates the markup. A group added, removed,
+  or mis-ordered now reports which variant disagrees, and the retired rows staying away is asserted
+  positively rather than inferred from a count.
+  */
+  it("emits each footer Actions variant with the item and note counts its own options imply", () => {
+    const html = createSmokeHtml();
+    for (const { variant, itemCount, noteCount } of TASK_DETAIL_ACTIONS_MENU_EXPECTATIONS) {
+      const section = html.match(
+        new RegExp(`<section[^>]*data-smoke="task-detail-actions-menu-${variant}"[^>]*>([\\s\\S]*?)</section>`),
+      );
+      expect(section, variant).not.toBeNull();
+      expect([...section![1].matchAll(/class="detail-actions-menu-item/g)].length, variant).toBe(itemCount);
+      expect([...section![1].matchAll(/detail-actions-menu-note/g)].length, variant).toBe(noteCount);
+      expect(section![1], variant).not.toContain("detail-actions-priority-heading");
+      expect(section![1], variant).not.toContain("detail-priority-option-");
+    }
   });
 
   /*
@@ -397,8 +418,9 @@ describe("browser layout smoke fixture", () => {
       expect(fixtureLocales.filter((candidate) => candidate === locale)).toHaveLength(4);
     }
     expect(new Set(fixtureIds.map((match) => match[0]))).toHaveLength(fixtureIds.length);
-    expect(html.match(/data-testid="quick-entry-(?:attach|github-toggle|session-advisor-toggle|priority-button|fast-toggle)"/g))
-      .toHaveLength(QUICK_ADD_SAVE_FIXTURE_COUNT * 5);
+    expect(html.match(/data-testid="quick-entry-(?:attach|github-toggle|session-advisor-toggle|fast-toggle)"/g))
+      .toHaveLength(QUICK_ADD_SAVE_FIXTURE_COUNT * 4);
+    expect(html).not.toContain('data-testid="quick-entry-priority-button"');
     for (const [, label] of shippedQuickAddSaveLabels) {
       expect(html).toContain(label);
     }

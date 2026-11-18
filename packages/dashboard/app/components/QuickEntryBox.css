@@ -195,9 +195,9 @@ FNXC:BoardComposer 2026-07-10-12:00:
 The action row is organized as two logical clusters instead of one undifferentiated wrap of chips:
 - `.quick-entry-options-group` — task options (workflow, optional steps, subtask, deps,
   models, node, agent), wrapping left-to-right with one consistent chip gap.
-- `.quick-entry-primary-group` — attach + GitHub tracking + Priority + Fast + Save; the primary
-  action stays last in DOM order. Priority and Fast are icon-only here; the priority glyph follows
-  the shared up/high, down/low, flag/normal, alert/urgent mapping.
+- `.quick-entry-primary-group` — attach + GitHub tracking + Fast + Save; the primary
+  action stays last in DOM order. Fast is icon-only here. (FN-509 retired the Priority glyph and
+  its up/high, down/low, flag/normal, alert/urgent mapping with the rest of the level contract.)
 Chip HEIGHT consistency is already enforced by the FN-7680/FN-7683 fixed-box rule on
 `.quick-entry-actions .btn` above (descendant selector — still applies inside these wrappers); these
 rules only own grouping/spacing/alignment.
@@ -256,11 +256,11 @@ FNXC:QuickAddActionRow 2026-07-08-00:00:
 FN-7680 — Save (`btn btn-task-create btn-sm`) rendered a different box height
 than its `.quick-entry-actions` siblings. Root cause is content-height drift
 across button variants, not one single property: text buttons (Save, Fast,
-Subtask, the workflow/priority/deps `.dep-trigger` triggers) get an 18px line
+Subtask, the workflow/deps `.dep-trigger` triggers) get an 18px line
 box from the inherited body line-height at 12px font-size, while icon-only
 buttons (Attach, GitHub toggle) collapse to their bare ~14px icon because
-`.btn-icon` sets `line-height: 0`; separately, `.dep-trigger` buttons (Priority,
-Deps, and — pre-FN-7677 — the workflow trigger) inherit the shared
+`.btn-icon` sets `line-height: 0`; separately, `.dep-trigger` buttons (Deps,
+and — pre-FN-7677 — the workflow trigger, and Priority until FN-509 retired it) inherit the shared
 `.dep-trigger, .inline-create-model-trigger` rule's shorter 3px/8px padding
 instead of `.btn-sm`'s 4px/10px. Rather than chase each contributor
 individually (padding, line-height, icon size) per button variant, assert one
@@ -868,7 +868,6 @@ FN-7682 — the tokenized-CSS test forbids raw px in the workflow-selector rules
   }
 
   .quick-entry-primary-group .btn-icon svg,
-  .quick-entry-primary-group [data-testid="quick-entry-priority-button"] svg,
   .quick-entry-primary-group [data-testid="quick-entry-fast-toggle"] svg {
     width: var(--space-lg);
     height: var(--space-lg);

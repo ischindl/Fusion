@@ -3923,9 +3923,9 @@ describe("ListView", () => {
 
   it("defaults todo section to board-consistent oldest-first ordering", () => {
     const tasks = [
-      createMockTask({ id: "FN-100", column: "todo", priority: "low", createdAt: "2024-01-01T08:00:00.000Z" }),
-      createMockTask({ id: "FN-101", column: "todo", priority: "urgent", createdAt: "2024-01-01T10:00:00.000Z" }),
-      createMockTask({ id: "FN-102", column: "todo", priority: "high", createdAt: "2024-01-01T07:00:00.000Z" }),
+      createMockTask({ id: "FN-100", column: "todo", createdAt: "2024-01-01T08:00:00.000Z" }),
+      createMockTask({ id: "FN-101", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
+      createMockTask({ id: "FN-102", column: "todo", createdAt: "2024-01-01T07:00:00.000Z" }),
     ];
 
     renderListView({ tasks });
@@ -3935,8 +3935,8 @@ describe("ListView", () => {
 
   it("defaults done section to board-consistent completion recency", () => {
     const tasks = [
-      createMockTask({ id: "FN-200", column: "done", priority: "urgent", columnMovedAt: "2024-01-01T08:00:00.000Z" }),
-      createMockTask({ id: "FN-201", column: "done", priority: "low", columnMovedAt: "2024-01-01T10:00:00.000Z" }),
+      createMockTask({ id: "FN-200", column: "done", columnMovedAt: "2024-01-01T08:00:00.000Z" }),
+      createMockTask({ id: "FN-201", column: "done", columnMovedAt: "2024-01-01T10:00:00.000Z" }),
     ];
 
     renderListView({ tasks });
@@ -3946,8 +3946,8 @@ describe("ListView", () => {
 
   it("defaults in-review section to board-consistent merge-active pinning", () => {
     const tasks = [
-      createMockTask({ id: "FN-300", column: "in-review", status: "review-ready", priority: "urgent" }),
-      createMockTask({ id: "FN-301", column: "in-review", status: "merging-fix", priority: "normal" }),
+      createMockTask({ id: "FN-300", column: "in-review", status: "review-ready" }),
+      createMockTask({ id: "FN-301", column: "in-review", status: "merging-fix" }),
     ];
 
     renderListView({ tasks });

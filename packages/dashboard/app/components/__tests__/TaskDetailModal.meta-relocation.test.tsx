@@ -147,21 +147,20 @@ describe("Task Detail metadata relocation", () => {
 });
 
 describe("Task Detail footer quick actions", () => {
-  it("lists the five labeled affordance groups in Quick Add order", async () => {
+  it("lists the four labeled affordance groups in Quick Add order", async () => {
     renderHost(makeTask({ sourceType: "dashboard_ui" }));
     const menu = await openTaskDetailActionsMenu();
 
     const attach = within(menu).getByTestId("detail-inline-attach");
     const github = within(menu).getByTestId("detail-inline-github-toggle");
     const oversight = within(menu).getByTestId("detail-actions-oversight-heading");
-    const priority = within(menu).getByTestId("detail-actions-priority-heading");
     const fast = within(menu).getByRole("menuitem", { name: "Execution mode: standard" });
     expect(attach).toHaveAccessibleName("Attach file");
     expect(github).toHaveAccessibleName("Toggle GitHub tracking");
     expect(oversight).toHaveTextContent("Oversight: on");
-    expect(priority).toHaveTextContent("Priority");
     expect(fast).toHaveAccessibleName("Execution mode: standard");
-    for (const [first, second] of [[attach, github], [github, oversight], [oversight, priority], [priority, fast]]) {
+    // FN-509 retired the Priority group; the live shipped order is Attach, GitHub toggle, Oversight, Execution mode.
+    for (const [first, second] of [[attach, github], [github, oversight], [oversight, fast]]) {
       expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
   });
@@ -192,15 +191,6 @@ describe("Task Detail footer quick actions", () => {
     ));
   });
 
-  it("persists priority through the existing handler and closes the menu", async () => {
-    const task = makeTask({ priority: "normal" });
-    vi.mocked(dashboardApi.updateTask).mockResolvedValue(makeUpdatedTask(task, { priority: "high" }));
-    renderHost(task);
-
-    fireEvent.click(await findTaskDetailActionByTestId("detail-priority-option-high"));
-    expect(document.querySelector(".detail-actions-menu")).toBeNull();
-    await waitFor(() => expect(dashboardApi.updateTask).toHaveBeenCalledWith(task.id, { priority: "high" }, undefined));
-  });
 
   it("persists Fast mode through the existing handler", async () => {
     const task = makeTask({ executionMode: "standard" });
@@ -242,22 +232,23 @@ describe("Task Detail footer quick actions", () => {
       githubTracking: { enabled: true },
       plannerOversightLevel: "steer",
       sessionAdvisorEnabled: true,
-      priority: "high",
       executionMode: "fast",
     }));
     const menu = await openTaskDetailActionsMenu();
 
     expect(within(menu).getByTestId("detail-inline-github-toggle")).toHaveAttribute("aria-pressed", "true");
     expect(within(menu).getByTestId("detail-session-advisor-toggle")).toHaveAttribute("aria-pressed", "true");
-    expect(within(menu).getByTestId("detail-priority-option-high")).toHaveAttribute("aria-pressed", "true");
     expect(within(menu).getByRole("menuitem", { name: "Execution mode: fast" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps non-interactive group headings from dismissing the menu", async () => {
-    renderHost(makeTask());
+    // The heading is rendered only when oversight controls resolve, so the task carries a level
+    // explicitly; the contract under test is the heading's click behaviour, not the resolver.
+    renderHost(makeTask({ plannerOversightLevel: "observe" }));
     const menu = await openTaskDetailActionsMenu();
 
-    fireEvent.click(within(menu).getByTestId("detail-actions-priority-heading"));
+    // FN-509 removed the Priority heading, so the surviving non-interactive group heading carries this contract.
+    fireEvent.click(within(menu).getByTestId("detail-actions-oversight-heading"));
     expect(document.querySelector(".detail-actions-menu")).toBe(menu);
     expect(screen.getByRole("button", { name: "Actions" })).toHaveAttribute("aria-expanded", "true");
   });
@@ -365,13 +356,11 @@ describe("Task Detail header actions menu single-line coverage", () => {
       githubTracking: { enabled: true },
       plannerOversightLevel: "steer",
       sessionAdvisorEnabled: true,
-      priority: "high",
       executionMode: "fast",
     }));
     const menu = await openTaskDetailActionsMenu();
 
     expect(within(menu).getByRole("menuitem", { name: "Execution mode: fast" })).toBeInTheDocument();
-    expect(within(menu).getByTestId("detail-actions-priority-heading")).toBeInTheDocument();
 
     const entries = Array.from(menu.querySelectorAll<HTMLElement>("button, span[role='note']"));
     expect(entries.length).toBeGreaterThan(0);
@@ -404,7 +393,6 @@ const menuHeightTask = makeTask({
   githubTracking: { enabled: true },
   plannerOversightLevel: "steer",
   sessionAdvisorEnabled: true,
-  priority: "high",
   executionMode: "fast",
 });
 

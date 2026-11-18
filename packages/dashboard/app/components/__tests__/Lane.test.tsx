@@ -207,7 +207,7 @@ describe("Lane", () => {
 /*
 FNXC:TaskDisplaySorting 2026-08-03-22:53:
 Lane supplies resolved workflow flags to core's canonical `sortTasksForDisplayColumn`. A renamed hold
-lane must retain priority-then-FIFO ordering; otherwise an operator's next task is silently wrong.
+lane must retain the canonical arrival-then-task-id ordering; otherwise an operator's next task is silently wrong.
 
 The board below is the built-in vocabulary renamed and nothing else, which is why every case above
 still passes: `todo` satisfies the legacy default.
@@ -232,10 +232,10 @@ describe("Lane on a RENAMED board", () => {
   }
 
   it("orders the hold lane by created-at, not task id", () => {
-    /* Equal priority: hold order is FIFO by createdAt, the generic fallback is task-id ascending. */
+    /* Hold order is FIFO by createdAt, the generic fallback is task-id ascending. */
     const tasks = [
-      mkTask({ id: "FN-1", column: "drafting", priority: "normal", createdAt: "2024-03-01T00:00:00.000Z" }),
-      mkTask({ id: "FN-9", column: "drafting", priority: "normal", createdAt: "2024-01-01T00:00:00.000Z" }),
+      mkTask({ id: "FN-1", column: "drafting", createdAt: "2024-03-01T00:00:00.000Z" }),
+      mkTask({ id: "FN-9", column: "drafting", createdAt: "2024-01-01T00:00:00.000Z" }),
     ];
 
     render(<Lane {...baseProps()} workflow={RENAMED_WORKFLOW} tasks={tasks} />);
@@ -246,8 +246,8 @@ describe("Lane on a RENAMED board", () => {
   it("orders the complete lane newest-first by completion time", () => {
     /* Complete sorts by columnMovedAt DESC; the generic fallback would put FN-1 first on id. */
     const tasks = [
-      mkTask({ id: "FN-1", column: "shipped", priority: "normal", columnMovedAt: "2024-01-01T00:00:00.000Z" }),
-      mkTask({ id: "FN-9", column: "shipped", priority: "normal", columnMovedAt: "2024-03-01T00:00:00.000Z" }),
+      mkTask({ id: "FN-1", column: "shipped", columnMovedAt: "2024-01-01T00:00:00.000Z" }),
+      mkTask({ id: "FN-9", column: "shipped", columnMovedAt: "2024-03-01T00:00:00.000Z" }),
     ];
 
     render(<Lane {...baseProps()} workflow={RENAMED_WORKFLOW} tasks={tasks} />);
@@ -258,8 +258,8 @@ describe("Lane on a RENAMED board", () => {
   it("floats a merging card to the top of the review lane", () => {
     /* The "what is merging right now" ordering; the generic fallback ignores status entirely. */
     const tasks = [
-      mkTask({ id: "FN-1", column: "checking", priority: "normal" }),
-      mkTask({ id: "FN-9", column: "checking", priority: "normal", status: "merging" }),
+      mkTask({ id: "FN-1", column: "checking" }),
+      mkTask({ id: "FN-9", column: "checking", status: "merging" }),
     ];
 
     render(<Lane {...baseProps()} workflow={RENAMED_WORKFLOW} tasks={tasks} />);

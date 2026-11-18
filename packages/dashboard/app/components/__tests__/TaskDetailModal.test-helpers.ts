@@ -272,10 +272,14 @@ export function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
  */
 /*
 FNXC:RUFU-140 2026-08-20-19:45:
-updateTask's inline `updates` parameter type allows `null` on optional override fields
-(e.g. `priority?: TaskPriority | null`) while the Task/TaskDetail model types use `undefined`,
-so test call sites pass the mock's patch through here. Accept the structural patch shape and
-narrow once inside the spread.
+updateTask's inline `updates` parameter type allows `null` on optional override fields while the
+Task/TaskDetail model types use `undefined`, so test call sites pass the mock's patch through here.
+Accept the structural patch shape and narrow once inside the spread.
+
+FNXC:TaskQueueOrder 2026-11-18-08:21:
+This note previously cited `priority?: TaskPriority | null` as its example. FN-509 deleted the level
+type outright, so the seam it describes is unchanged and only the example was retired: any field
+whose patch form admits `null` still arrives here.
 */
 export function makeUpdatedTask(
   current: TaskDetail,

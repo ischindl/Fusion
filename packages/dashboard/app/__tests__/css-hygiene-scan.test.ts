@@ -155,7 +155,6 @@ describe("component CSS hygiene scan regressions", () => {
       ],
       "TaskDetailModal.css": [
         ".detail-provenance-link:focus-visible",
-        ".detail-priority-select:focus-visible",
         ".detail-source-toggle:focus-visible",
         ".changed-files-back-button:focus-visible",
         ".detail-tab:focus-visible",

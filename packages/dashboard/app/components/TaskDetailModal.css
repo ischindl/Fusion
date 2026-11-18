@@ -574,15 +574,9 @@ Task provenance, undo and PR context, timestamps, and workflow identity live tog
 }
 
 /*
-FNXC:TaskDetail 2026-09-05-23:27:
-The edit-form priority select retains the shared tokenized focus ring after its read-mode picker moved into the header Actions overflow. Keep this form control independently keyboard-visible without reviving removed popover selectors.
+FNXC:TaskQueueOrder 2026-11-18-08:20:
+FN-509 deleted the task-priority contract, and with it the edit-form select this focus ring styled: no component renders .detail-priority-select any more (task-priority-removal.test.tsx asserts its absence), so the rule could only ever match nothing. Its css-hygiene-scan allow-list entry goes in the same commit.
 */
-.detail-priority-select:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring-strong);
-  border-radius: var(--radius-sm);
-}
-
 .detail-overseer-explain-panel {
   flex: 0 0 auto;
   max-height: min(30vh, calc(var(--space-2xl) * 6));
@@ -2992,10 +2986,6 @@ Feed's copy and expansion actions share one tokenized overlay group so the bound
   .detail-github-tracking-repo-row {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .detail-priority-select {
-    min-height: var(--detail-priority-control-min-height);
   }
 
   .detail-source-header {

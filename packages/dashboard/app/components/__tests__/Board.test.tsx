@@ -672,28 +672,25 @@ describe("Board", () => {
       expect(columnRenderCounts.done).toBeGreaterThanOrEqual(initialDoneRenders);
     });
 
-    describe("column default ordering priority semantics", () => {
-      it("orders done tasks by most recent completion regardless of priority", () => {
+    describe("column default ordering semantics", () => {
+      it("orders done tasks by most recent completion", () => {
         const tasks: Task[] = [
           createTask({
             id: "FN-003",
-            description: "Older urgent done task",
+            description: "Older done task",
             column: "done",
-            priority: "urgent",
             columnMovedAt: "2024-01-01T09:00:00.000Z",
           }),
           createTask({
             id: "FN-001",
-            description: "Newest low-priority done task",
+            description: "Newest done task",
             column: "done",
-            priority: "low",
             columnMovedAt: "2024-01-01T11:00:00.000Z",
           }),
           createTask({
             id: "FN-002",
-            description: "Middle high-priority done task",
+            description: "Middle done task",
             column: "done",
-            priority: "high",
             columnMovedAt: "2024-01-01T10:00:00.000Z",
           }),
         ];
@@ -749,8 +746,8 @@ describe("Board", () => {
           createTask({ id: "FN-001", description: "New done", column: "done", columnMovedAt: "2024-01-01T11:00:00.000Z" }),
           createTask({ id: "FN-002", description: "Tie low id", column: "done", columnMovedAt: "2024-01-01T10:00:00.000Z" }),
           createTask({ id: "FN-004", description: "Tie high id", column: "done", columnMovedAt: "2024-01-01T10:00:00.000Z" }),
-          createTask({ id: "FN-050", description: "Todo fifty", column: "todo", priority: "urgent", createdAt: "2024-01-01T10:00:00.000Z" }),
-          createTask({ id: "FN-010", description: "Todo ten", column: "todo", priority: "low", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-050", description: "Todo fifty", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-010", description: "Todo ten", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
         ];
 
         renderBoard({ tasks });
@@ -783,28 +780,24 @@ describe("Board", () => {
             id: "FN-003",
             description: "Low but oldest",
             column: "todo",
-            priority: "low",
             createdAt: "2024-01-01T08:00:00.000Z",
           }),
           createTask({
             id: "FN-001",
             description: "Urgent but newer",
             column: "todo",
-            priority: "urgent",
             createdAt: "2024-01-01T10:00:00.000Z",
           }),
           createTask({
             id: "FN-004",
             description: "Normal",
             column: "todo",
-            priority: "normal",
             createdAt: "2024-01-01T09:00:00.000Z",
           }),
           createTask({
             id: "FN-002",
             description: "High",
             column: "todo",
-            priority: "high",
             createdAt: "2024-01-01T07:00:00.000Z",
           }),
         ];
@@ -819,9 +812,9 @@ describe("Board", () => {
 
       it("orders same-column arrivals oldest first, so the longest wait leads", () => {
         const tasks: Task[] = [
-          createTask({ id: "FN-020", description: "Newest", column: "todo", priority: "high", createdAt: "2024-01-01T12:00:00.000Z" }),
-          createTask({ id: "FN-021", description: "Oldest", column: "todo", priority: "high", createdAt: "2024-01-01T09:00:00.000Z" }),
-          createTask({ id: "FN-022", description: "Middle", column: "todo", priority: "high", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-020", description: "Newest", column: "todo", createdAt: "2024-01-01T12:00:00.000Z" }),
+          createTask({ id: "FN-021", description: "Oldest", column: "todo", createdAt: "2024-01-01T09:00:00.000Z" }),
+          createTask({ id: "FN-022", description: "Middle", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
         ];
 
         renderBoard({ tasks });
@@ -833,9 +826,9 @@ describe("Board", () => {
 
       it("uses task ID as deterministic tie-breaker when todo createdAt matches", () => {
         const tasks: Task[] = [
-          createTask({ id: "FN-050", description: "Fifty", column: "todo", priority: "normal", createdAt: "2024-01-01T10:00:00.000Z" }),
-          createTask({ id: "FN-010", description: "Ten", column: "todo", priority: "normal", createdAt: "2024-01-01T10:00:00.000Z" }),
-          createTask({ id: "FN-030", description: "Thirty", column: "todo", priority: "normal", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-050", description: "Fifty", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-010", description: "Ten", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-030", description: "Thirty", column: "todo", createdAt: "2024-01-01T10:00:00.000Z" }),
         ];
 
         renderBoard({ tasks });
@@ -846,9 +839,9 @@ describe("Board", () => {
 
       it("uses arrival order in non-todo columns", () => {
         const tasks: Task[] = [
-          createTask({ id: "FN-050", description: "Fifty", column: "in-progress", priority: "normal", createdAt: "2024-01-01T12:00:00.000Z" }),
-          createTask({ id: "FN-010", description: "Ten", column: "in-progress", priority: "normal", createdAt: "2024-01-01T09:00:00.000Z" }),
-          createTask({ id: "FN-030", description: "Thirty", column: "in-progress", priority: "normal", createdAt: "2024-01-01T10:00:00.000Z" }),
+          createTask({ id: "FN-050", description: "Fifty", column: "in-progress", createdAt: "2024-01-01T12:00:00.000Z" }),
+          createTask({ id: "FN-010", description: "Ten", column: "in-progress", createdAt: "2024-01-01T09:00:00.000Z" }),
+          createTask({ id: "FN-030", description: "Thirty", column: "in-progress", createdAt: "2024-01-01T10:00:00.000Z" }),
         ];
 
         renderBoard({ tasks });
@@ -857,39 +850,16 @@ describe("Board", () => {
         expect(ipTasks.map((t: Task) => t.id)).toEqual(["FN-010", "FN-030", "FN-050"]);
       });
 
-      it("normalizes missing and invalid legacy priority values to normal", () => {
-        const noPriorityTask = createTask({ id: "FN-060", description: "No priority", column: "todo" });
-        delete noPriorityTask.priority;
-
-        const legacyPriorityTask = {
-          ...createTask({ id: "FN-059", description: "Legacy priority", column: "todo", priority: "normal" }),
-          priority: "critical" as unknown as Task["priority"],
-        };
-
+            it("uses localeCompare fallback for non-numeric task IDs", () => {
         const tasks: Task[] = [
-          noPriorityTask,
-          createTask({ id: "FN-061", description: "Explicit normal", column: "todo", priority: "normal" }),
-          legacyPriorityTask,
-          createTask({ id: "FN-062", description: "Urgent", column: "todo", priority: "urgent" }),
+          createTask({ id: "TASK-002", description: "Task two", column: "todo" }),
+          createTask({ id: "TASK-001", description: "Task one", column: "todo" }),
         ];
 
         renderBoard({ tasks });
 
         const todoTasks = JSON.parse(screen.getByTestId("column-todo").getAttribute("data-tasks") || "[]") as Task[];
-        // Explicit lane sorting ignores priority and uses the shared arrival/ID comparator.
-        expect(todoTasks.map((t: Task) => t.id)).toEqual(["FN-059", "FN-060", "FN-061", "FN-062"]);
-      });
-
-      it("uses localeCompare fallback for non-numeric task IDs", () => {
-        const tasks: Task[] = [
-          createTask({ id: "TASK-002", description: "Task two", column: "todo", priority: "normal" }),
-          createTask({ id: "TASK-001", description: "Task one", column: "todo", priority: "normal" }),
-        ];
-
-        renderBoard({ tasks });
-
-        const todoTasks = JSON.parse(screen.getByTestId("column-todo").getAttribute("data-tasks") || "[]") as Task[];
-        // Both have same priority, numeric parse fails (NaN), localeCompare fallback
+        // Numeric parse fails (NaN), so the localeCompare fallback decides the order.
         expect(todoTasks.map((t: Task) => t.id)).toEqual(["TASK-001", "TASK-002"]);
       });
     });
@@ -968,19 +938,16 @@ describe("Board", () => {
             id: "FN-030",
             column: "in-review",
             status: "merging",
-            priority: "high",
           }),
           createTask({
             id: "FN-031",
             column: "in-review",
             status: "merging-pr",
-            priority: "urgent",
           }),
           createTask({
             id: "FN-032",
             column: "in-review",
             status: "review-ready",
-            priority: "urgent",
           }),
         ];
 
@@ -997,19 +964,16 @@ describe("Board", () => {
             id: "FN-040",
             column: "todo",
             status: "merging",
-            priority: "high",
           }),
           createTask({
             id: "FN-041",
             column: "todo",
             status: "ready",
-            priority: "urgent",
           }),
           createTask({
             id: "FN-042",
             column: "todo",
             status: "ready",
-            priority: "high",
           }),
         ];
 
@@ -1024,7 +988,6 @@ describe("Board", () => {
         const statuslessTask = createTask({
           id: "FN-050",
           column: "in-review",
-          priority: "normal",
         });
         delete statuslessTask.status;
 
@@ -1034,7 +997,6 @@ describe("Board", () => {
             id: "FN-051",
             column: "in-review",
             status: "review-ready",
-            priority: "urgent",
           }),
         ];
 

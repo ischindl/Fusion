@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from "vitest";
 import { useState, type Dispatch, type JSX, type SetStateAction } from "react";
 import { render, screen, fireEvent, act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Task, TaskDetail, TaskPriority } from "@fusion/core";
+import type { Task, TaskDetail } from "@fusion/core";
 import {
   makeTask,
   noop,
@@ -545,10 +545,6 @@ describe("TaskDetailModal", () => {
   });
 
   describe("inline editing", () => {
-    const chooseInlinePriority = (priority: TaskPriority) => {
-      openTaskDetailActionsMenu();
-      fireEvent.click(screen.getByTestId(`detail-priority-option-${priority}`));
-    };
     beforeEach(() => {
       vi.clearAllMocks();
     });
@@ -1065,40 +1061,6 @@ describe("TaskDetailModal", () => {
       });
     });
 
-    it("includes priority in update payload only when changed", async () => {
-      const { updateTask } = await import("../../api");
-      const mockUpdate = vi.mocked(updateTask);
-      mockUpdate.mockResolvedValue({ id: "FN-001" } as Task);
-
-      const { container } = render(
-        <TaskDetailModal
-          initialTab="definition"
-          task={makeTask({ id: "FN-001", column: "ideas", title: "Test", description: "Desc", priority: "normal" })}
-          onClose={noop}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      enterTaskDetailEditMode();
-
-      fireEvent.click(screen.getByText("Save"));
-
-      await waitFor(() => {
-        expect(mockUpdate).not.toHaveBeenCalled();
-      });
-
-      enterTaskDetailEditMode();
-      fireEvent.click(screen.getByTestId("task-form-more-options-toggle"));
-      fireEvent.change(document.querySelector("#task-priority") as HTMLSelectElement, { target: { value: "urgent" } });
-      fireEvent.click(screen.getByText("Save"));
-
-      await waitFor(() => {
-        expect(mockUpdate).toHaveBeenCalledWith("FN-001", { priority: "urgent" }, undefined);
-      });
-    });
 
     // FNXC:PlannerOversight 2026-07-04-00:00: the edit path clear-to-default contract — selecting a level sends the value, returning to Inherit sends null, no change emits nothing.
     it("emits plannerOversightLevel when changed from Inherit to a level", async () => {
@@ -1346,34 +1308,16 @@ describe("TaskDetailModal", () => {
       });
     });
 
-    it("renders normalized priority in detail metadata", async () => {
-      render(
-        <TaskDetailModal
-          initialTab="definition"
-          task={makeTask({ id: "FN-001", column: "ideas", description: "Priority metadata", priority: undefined })}
-          onClose={noop}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
 
-      openTaskDetailActionsMenu();
-      expect(screen.getByTestId("detail-priority-option-normal")).toHaveAttribute("aria-pressed", "true");
-    });
-
-    it("renders priority select and execution mode toggle together and keeps both interactive", async () => {
+    it("renders the execution mode toggle in the Actions menu and keeps it interactive", async () => {
       const { updateTask } = await import("../../api");
       const mockUpdate = vi.mocked(updateTask);
-      mockUpdate
-        .mockResolvedValueOnce(makeTask({ id: "FN-001", column: "ideas", priority: "urgent", executionMode: "standard" }) as Task)
-        .mockResolvedValueOnce(makeTask({ id: "FN-001", column: "ideas", priority: "urgent", executionMode: "fast" }) as Task);
+      mockUpdate.mockResolvedValueOnce(makeTask({ id: "FN-001", column: "ideas", executionMode: "fast" }) as Task);
 
       render(
         <TaskDetailModal
           initialTab="definition"
-          task={makeTask({ id: "FN-001", column: "ideas", priority: "high", executionMode: "standard" })}
+          task={makeTask({ id: "FN-001", column: "ideas", executionMode: "standard" })}
           onClose={noop}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
@@ -1383,115 +1327,18 @@ describe("TaskDetailModal", () => {
       );
 
       const menu = openTaskDetailActionsMenu();
-      expect(menu).toContainElement(screen.getByTestId("detail-priority-option-high"));
       expect(menu).toContainElement(screen.getByTestId("detail-execution-mode-toggle"));
 
-      chooseInlinePriority("urgent");
-      await waitFor(() => expect(mockUpdate).toHaveBeenNthCalledWith(1, "FN-001", { priority: "urgent" }, undefined));
-      openTaskDetailActionsMenu();
       fireEvent.click(screen.getByTestId("detail-execution-mode-toggle"));
 
       await waitFor(() => {
-        expect(mockUpdate).toHaveBeenNthCalledWith(2, "FN-001", { executionMode: "fast" }, undefined);
+        expect(mockUpdate).toHaveBeenCalledWith("FN-001", { executionMode: "fast" }, undefined);
       });
     });
 
-    it("updates priority inline and propagates successful save without moving triage tasks", async () => {
-      const { updateTask } = await import("../../api");
-      const mockUpdate = vi.mocked(updateTask);
-      const onTaskUpdated = vi.fn();
-      const addToast = vi.fn();
-      const updatedTask = makeTask({
-        id: "FN-001",
-        column: "ideas",
-        status: "awaiting-approval",
-        priority: "urgent",
-      });
-      mockUpdate.mockResolvedValueOnce(updatedTask as Task);
 
-      render(
-        <TaskDetailModal
-          initialTab="definition"
-          task={makeTask({
-            id: "FN-001",
-            column: "ideas",
-            status: "awaiting-approval",
-            description: "Priority metadata",
-            priority: "normal",
-          })}
-          onClose={noop}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          onTaskUpdated={onTaskUpdated}
-          addToast={addToast}
-        />,
-      );
 
-      chooseInlinePriority("urgent");
 
-      await waitFor(() => {
-        expect(mockUpdate).toHaveBeenCalledWith("FN-001", { priority: "urgent" }, undefined);
-      });
-      expect(onTaskUpdated).toHaveBeenCalledWith(expect.objectContaining({
-        id: "FN-001",
-        column: "ideas",
-        status: "awaiting-approval",
-        priority: "urgent",
-      }));
-      expect(addToast).toHaveBeenCalledWith("Priority updated to urgent", "success");
-    });
-
-    it("does not call updateTask when inline priority is unchanged", async () => {
-      const { updateTask } = await import("../../api");
-      const mockUpdate = vi.mocked(updateTask);
-
-      render(
-        <TaskDetailModal
-          initialTab="definition"
-          task={makeTask({ id: "FN-001", column: "ideas", description: "Priority metadata", priority: "high" })}
-          onClose={noop}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      chooseInlinePriority("high");
-
-      await waitFor(() => {
-        expect(mockUpdate).not.toHaveBeenCalled();
-      });
-    });
-
-    it("reverts inline priority when save fails", async () => {
-      const { updateTask } = await import("../../api");
-      const mockUpdate = vi.mocked(updateTask);
-      const addToast = vi.fn();
-      mockUpdate.mockRejectedValueOnce(new Error("Request failed"));
-
-      render(
-        <TaskDetailModal
-          initialTab="definition"
-          task={makeTask({ id: "FN-001", column: "ideas", description: "Priority metadata", priority: "low" })}
-          onClose={noop}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={addToast}
-        />,
-      );
-
-      chooseInlinePriority("urgent");
-
-      await waitFor(() => {
-        expect(mockUpdate).toHaveBeenCalledWith("FN-001", { priority: "urgent" }, undefined);
-      });
-      await waitFor(() => expect(addToast).toHaveBeenCalledWith("Failed to update FN-001: Request failed", "error"));
-      openTaskDetailActionsMenu();
-      expect(screen.getByTestId("detail-priority-option-low")).toHaveAttribute("aria-pressed", "true");
-    });
 
     it.each([
       ["desktop", undefined],
@@ -3645,12 +3492,12 @@ describe("TaskDetailModal footer quick-action parity (FN-8194)", () => {
     const attach = screen.getByTestId("detail-inline-attach");
     const github = screen.getByTestId("detail-inline-github-toggle");
     const oversight = await screen.findByTestId("detail-actions-oversight-heading");
-    const priority = screen.getByTestId("detail-actions-priority-heading");
     const fast = screen.getByTestId("detail-execution-mode-toggle");
     const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
     const fileInputClick = vi.spyOn(fileInput, "click");
 
-    for (const [before, after] of [[attach, github], [github, oversight], [oversight, priority], [priority, fast]]) {
+    // FN-509 retired the Priority group, so the live shipped order is Attach, GitHub toggle, Oversight, Execution mode.
+    for (const [before, after] of [[attach, github], [github, oversight], [oversight, fast]]) {
       expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     expect(menu).toContainElement(attach);

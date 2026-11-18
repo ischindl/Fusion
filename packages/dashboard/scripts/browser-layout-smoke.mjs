@@ -21,6 +21,38 @@ const requireBrowser = process.argv.includes("--require-browser") || process.env
 const screenshotPath = process.env.FUSION_BROWSER_SMOKE_SCREENSHOT;
 
 /*
+FNXC:TaskQueueOrder 2026-11-18-08:21:
+One table describes every Task Detail footer Actions fixture variant, and three consumers read it: the
+emitted markup, the browser gate, and `browser-layout-smoke-fixture.test.ts`. FN-509 removed five rows
+from the menu, so the gates that used to pin a literal item count now derive it, and a future group is
+expressed by editing this table instead of hunting for a hard-coded total.
+- every variant renders the Attach item and the Execution mode toggle: 2 items, 0 notes
+- an Oversight group adds 11 `.detail-actions-menu-item` entries, 2 of which are `role="note"` headings
+- GitHub tracking contributes a single item
+*/
+export const TASK_DETAIL_ACTIONS_MENU_VARIANTS = [
+  ["full", true, true],
+  ["without-github", false, true],
+  ["without-oversight", true, false],
+  ["without-optionals", false, false],
+];
+
+const TASK_DETAIL_ACTIONS_MENU_BASE_ITEMS = 2;
+const TASK_DETAIL_ACTIONS_MENU_OVERSIGHT_ITEMS = 11;
+const TASK_DETAIL_ACTIONS_MENU_OVERSIGHT_NOTES = 2;
+
+export const TASK_DETAIL_ACTIONS_MENU_EXPECTATIONS = TASK_DETAIL_ACTIONS_MENU_VARIANTS.map(
+  ([variant, includeGithub, includeOversight]) => ({
+    variant,
+    itemCount: TASK_DETAIL_ACTIONS_MENU_BASE_ITEMS
+      + (includeGithub ? 1 : 0)
+      + (includeOversight ? TASK_DETAIL_ACTIONS_MENU_OVERSIGHT_ITEMS : 0),
+    noteCount: includeOversight ? TASK_DETAIL_ACTIONS_MENU_OVERSIGHT_NOTES : 0,
+  }),
+);
+
+
+/*
 FNXC:BoardSafeGeometry 2026-09-12-17:34:
 Every Board data state and Alpha mode uses the same measurable contract: its border box ends at the shell-owned footer or pill boundary, each column has equal top and bottom spacing within one pixel, and the document never owns vertical overflow. Overflowing populated columns keep vertical scrolling inside the column and expose their last card rather than shortening the Board.
 
@@ -132,7 +164,6 @@ export function buildQuickAddSaveFixtures(labels = shippedQuickAddSaveLabels) {
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-attach" type="button" aria-label="Attach"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-github-toggle" type="button" aria-label="GitHub"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-session-advisor-toggle" type="button" aria-label="Session advisor"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7s2-3 5-3 5 3 5 3-2 3-5 3-5-3-5-3Z"/></svg></button>
-            <button class="btn btn-icon btn-sm" data-testid="quick-entry-priority-button" type="button" aria-label="Priority"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
             <button class="btn btn-icon btn-sm" data-testid="quick-entry-fast-toggle" type="button" aria-label="Fast"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7h8"/></svg></button>
             <button class="btn btn-task-create btn-sm" data-testid="quick-entry-save" data-smoke="quick-add-save-button" data-locale="${escapeHtml(locale)}" type="button" ${state === "disabled" ? "disabled" : ""}><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align: middle; margin-right: 4px;"><path d="M2 6h8"/></svg>${escapeHtml(label)}</button>
           </div>
@@ -270,14 +301,11 @@ export function createSmokeHtml(options = {}) {
 
   /*
   FNXC:TaskDetailFooterActions 2026-09-06-00:31:
-  FN-300's browser fixture mirrors the relocated flat footer menu instead of the removed icon row. Keep the full Oversight and Priority groups long enough to exercise the production viewport cap and vertical scrolling, while optional-state variants prove the menu remains horizontally contained when GitHub or Oversight actions are absent.
+  FN-300's browser fixture mirrors the relocated flat footer menu instead of the removed icon row. Keep the full Oversight group long enough to exercise the production viewport cap and vertical scrolling, while optional-state variants prove the menu remains horizontally contained when GitHub or Oversight actions are absent.
+
+FN-509 deleted the Priority heading and its four level buttons from this markup, so the menu's item count is no longer a constant and every gate reading it derives it from TASK_DETAIL_ACTIONS_MENU_VARIANTS below rather than hard-coding a total a future group would silently invalidate.
   */
-  const taskDetailActionsMenuFixtures = [
-    ["full", true, true],
-    ["without-github", false, true],
-    ["without-oversight", true, false],
-    ["without-optionals", false, false],
-  ].map(([variant, includeGithub, includeOversight]) => `
+  const taskDetailActionsMenuFixtures = TASK_DETAIL_ACTIONS_MENU_VARIANTS.map(([variant, includeGithub, includeOversight]) => `
     <section class="detail-actions-dropdown" data-smoke="task-detail-actions-menu-${variant}" aria-label="Task Detail footer Actions ${variant} fixture">
       <div class="detail-actions-menu" role="menu">
         <button class="detail-actions-menu-item" data-testid="detail-inline-attach" type="button" role="menuitem">Attach file</button>
@@ -295,11 +323,6 @@ export function createSmokeHtml(options = {}) {
           <button class="detail-actions-menu-item" data-testid="detail-overseer-stop" type="button" role="menuitem">Stop oversight</button>
           <button class="detail-actions-menu-item" data-testid="detail-overseer-explain" type="button" role="menuitem" aria-pressed="false">Explain current action</button>
         ` : ""}
-        <span class="detail-actions-menu-item detail-actions-menu-note" data-testid="detail-actions-priority-heading" role="note">Priority</span>
-        <button class="detail-actions-menu-item" data-testid="detail-priority-option-low" type="button" role="menuitem" aria-pressed="false">Low</button>
-        <button class="detail-actions-menu-item" data-testid="detail-priority-option-normal" type="button" role="menuitem" aria-pressed="true">Normal</button>
-        <button class="detail-actions-menu-item" data-testid="detail-priority-option-high" type="button" role="menuitem" aria-pressed="false">High</button>
-        <button class="detail-actions-menu-item" data-testid="detail-priority-option-urgent" type="button" role="menuitem" aria-pressed="false">Urgent</button>
         <button class="detail-actions-menu-item" data-testid="detail-execution-mode-toggle" type="button" role="menuitem" aria-pressed="true">Execution mode: fast</button>
       </div>
     </section>
@@ -932,6 +955,15 @@ export function createSmokeHtml(options = {}) {
 </html>`;
 }
 
+/*
+FNXC:DrawerRenaming 2026-11-18-07:42:
+The drawer family lost its `Alpha` prefix in the shipped components (`ProjectsDrawer`, `PlanningDrawer`, `MobileUsageDrawer`,
+`MainContentDrawer`), and this emitted fixture source was the only remaining consumer of the old names, so the whole
+production-fixture build aborted on `"AlphaProjectsDrawer" is not exported by app/components/MobileDrawer.tsx`.
+`browser-layout-smoke-fixture.test.ts` already asserted the shipped names, which is what makes the fixture the stale half
+rather than the test. Keep the emitted identifiers identical to the components' exports: this file is compiled by Rollup
+with no aliases for app internals, so an identifier drift here is a build failure, not a runtime warning.
+*/
 export function createAlphaDrawerProductionFixtureSource() {
   const componentPath = (relativePath) => path.join(appRoot, relativePath).replaceAll("\\", "/");
   const imports = {
@@ -957,11 +989,11 @@ export function createAlphaDrawerProductionFixtureSource() {
     import { createRoot } from "react-dom/client";
     import { flushSync } from "react-dom";
     import { I18nextProvider } from "react-i18next";
-    import { MobileDrawer, AlphaProjectsDrawer, AlphaPlanningDrawer } from ${JSON.stringify(imports.alphaDrawer)};
+    import { MobileDrawer, ProjectsDrawer, PlanningDrawer } from ${JSON.stringify(imports.alphaDrawer)};
     import { ProjectOverview } from ${JSON.stringify(imports.projectOverview)};
     import { PlanningKeepAlive } from ${JSON.stringify(imports.planningKeepAlive)};
-    import { AlphaUsageDrawer } from ${JSON.stringify(imports.appModals)};
-    import { AlphaMainContentDrawer } from ${JSON.stringify(imports.mainContent)};
+    import { MobileUsageDrawer } from ${JSON.stringify(imports.appModals)};
+    import { MainContentDrawer } from ${JSON.stringify(imports.mainContent)};
     import { MainViewKeepAlive } from ${JSON.stringify(imports.mainViewKeepAlive)};
     import { MobileNavBar } from ${JSON.stringify(imports.mobileNavBar)};
     import { TaskDetailModal } from ${JSON.stringify(imports.taskDetail)};
@@ -1040,11 +1072,11 @@ export function createAlphaDrawerProductionFixtureSource() {
 
     function ProductionProvider({ id }) {
       if (id === "short") return React.createElement(MobileDrawer, { ...drawerProps("Short"), testId: "native-drawer-short" }, React.createElement("button", { type: "button", "data-smoke": "native-drawer-short-final" }, "Short final control"));
-      if (id === "projects") return React.createElement(AlphaProjectsDrawer, drawerProps("Projects"), React.createElement(ProjectOverview, { projects: [project], onSelectProject: noop, onAddProject: noop, onPauseProject: noop, onResumeProject: noop, onRemoveProject: noop }));
-      if (id === "planning") return React.createElement(AlphaPlanningDrawer, drawerProps("Planning"), React.createElement(PlanningKeepAlive, { active: true, projectId: project.id, tasks: [], bgPlanningSessions: [], modalManager, handleChangeTaskView: noop, handlePlanningTaskCreated: noop, handlePlanningTasksCreated: noop, openBoardTaskDetail: noop }));
-      if (id === "usage") return React.createElement(AlphaUsageDrawer, { ...drawerProps("Usage"), projectId: project.id });
+      if (id === "projects") return React.createElement(ProjectsDrawer, drawerProps("Projects"), React.createElement(ProjectOverview, { projects: [project], onSelectProject: noop, onAddProject: noop, onPauseProject: noop, onResumeProject: noop, onRemoveProject: noop }));
+      if (id === "planning") return React.createElement(PlanningDrawer, drawerProps("Planning"), React.createElement(PlanningKeepAlive, { active: true, projectId: project.id, tasks: [], bgPlanningSessions: [], modalManager, handleChangeTaskView: noop, handlePlanningTaskCreated: noop, handlePlanningTasksCreated: noop, openBoardTaskDetail: noop }));
+      if (id === "usage") return React.createElement(MobileUsageDrawer, { ...drawerProps("Usage"), projectId: project.id });
       if (id === "task-detail" || id === "long") return React.createElement(TaskDetailModal, { task, projectId: project.id, alphaMobileDrawer: true, onClose: noop, onOpenDetail: noop, onDeleteTask: asyncTask, onMergeTask: async () => ({ success: true }), addToast: noop });
-      if (id === "plugin") return React.createElement(AlphaMainContentDrawer, { ...drawerProps("Todo"), taskView: "plugin:fusion-plugin-todos:todos" }, React.createElement(Suspense, { fallback: null }, React.createElement(PluginDashboardViewHost, { taskView: "plugin:fusion-plugin-todos:todos", context: { projectId: project.id, tasks: [], workflowSteps: [], openTaskDetail: noop } })));
+      if (id === "plugin") return React.createElement(MainContentDrawer, { ...drawerProps("Todo"), taskView: "plugin:fusion-plugin-todos:todos" }, React.createElement(Suspense, { fallback: null }, React.createElement(PluginDashboardViewHost, { taskView: "plugin:fusion-plugin-todos:todos", context: { projectId: project.id, tasks: [], workflowSteps: [], openTaskDetail: noop } })));
       return React.createElement(MainViewKeepAlive, { activeId: "chat", mountedIds: ["chat"], projectKey: project.id, mainContentProps: chatMainContentProps, alphaMobileDrawer: { activeId: "chat", title: "Chat", onClose: noop } });
     }
 
@@ -1181,6 +1213,29 @@ export function createAlphaDrawerProductionFixtureSource() {
     flushSync(() => createRoot(document.querySelector('[data-smoke="alpha-pill-production-root"]')).render(providers(React.createElement(ProductionMobileNavFixture))));
   `;
 }
+/*
+FNXC:CoreSubpathAliasDerivation 2026-11-18-07:42:
+The alpha-drawer fixture builds with `configFile: false`, so its alias list is the ONLY module-resolution contract for
+the production code it compiles, and its `{ find: "@fusion/core", … }` entry is a prefix match: any `@fusion/core/<subpath>`
+not named earlier resolves to `packages/core/src/types.ts/<subpath>` and dies with ENOTDIR. Hand-listing subpaths is what
+broke this — `app/utils/stallAgent.ts` (heartbeat-recovery-state) and `app/components/chat/chatLiveness.ts` (chat-liveness)
+were both added to core's `exports` map without a matching entry here, so `test:browser-smoke` exited 1 on every host and
+nothing noticed because no CI workflow invokes the lane. Derive the subpath list from the same `packages/core/package.json`
+`exports` map the production vite config follows, so the fixture cannot fall behind core again. Entries with no on-disk
+`./src/` source are skipped rather than failing the build.
+*/
+function coreSubpathAliases() {
+  const coreRoot = path.join(workspaceRoot, "packages/core");
+  const exportsMap = JSON.parse(readFileSync(path.join(coreRoot, "package.json"), "utf8"))?.exports ?? {};
+  return Object.entries(exportsMap).flatMap(([specifier, targets]) => {
+    if (!specifier.startsWith("./") || specifier === "./package.json") return [];
+    const source = typeof targets === "string" ? targets : targets?.source ?? targets?.types;
+    if (typeof source !== "string" || !source.startsWith("./src/")) return [];
+    const replacement = path.join(coreRoot, source);
+    return existsSync(replacement) ? [{ find: `@fusion/core/${specifier.slice(2)}`, replacement }] : [];
+  });
+}
+
 async function buildAlphaDrawerProductionFixture() {
   const { build: buildVite } = await import("vite");
   const virtualId = "virtual:fusion-native-drawer-production-fixture";
@@ -1192,13 +1247,19 @@ async function buildAlphaDrawerProductionFixture() {
     define: { __BUILD_VERSION__: JSON.stringify("browser-smoke") },
     resolve: {
       alias: [
-        { find: "@fusion/core/detect-content-language", replacement: path.join(workspaceRoot, "packages/core/src/i18n/detect-content-language.ts") },
-        { find: "@fusion/core/task-delete-attribution", replacement: path.join(workspaceRoot, "packages/core/src/task-delete-attribution.ts") },
-        { find: "@fusion/core/column-roles", replacement: path.join(workspaceRoot, "packages/core/src/column-roles.ts") },
+        // Must precede the `@fusion/core` prefix match, which would otherwise swallow every subpath (see the derivation note).
+        ...coreSubpathAliases(),
         { find: "@fusion/core", replacement: path.join(workspaceRoot, "packages/core/src/types.ts") },
         { find: "@fusion/dashboard/app/components/TaskCard", replacement: path.join(appRoot, "components/TaskCard.tsx") },
         { find: "@fusion/dashboard/app/components/ViewHeader", replacement: path.join(appRoot, "components/ViewHeader.tsx") },
         { find: "@fusion/dashboard/app/plugins/types", replacement: path.join(appRoot, "plugins/types.ts") },
+        /*
+        FNXC:PluginInterop 2026-11-18-07:42:
+        FN-379 gave the bundled todos plugin `PluginDashboardViewHeader` and this list was never extended, so Rollup
+        aborted the fixture build. The drawer renders `PluginDashboardViewHost` with the todos view, so that import sits
+        on the fixture's live path, not an optional one; the lane exited 1 on every host because no CI workflow runs it.
+        */
+        { find: "@fusion/dashboard/app/plugins/PluginDashboardViewHeader", replacement: path.join(appRoot, "plugins/PluginDashboardViewHeader.tsx") },
         { find: "@fusion/dashboard/app/utils/projectStorage", replacement: path.join(appRoot, "utils/projectStorage.ts") },
       ],
     },
@@ -2651,8 +2712,7 @@ async function runSmokeChecks(page, pageUrl, browserWsUrl) {
           const rect = item.getBoundingClientRect();
           return rect.left >= menuRect.left - 1 && rect.right <= menuRect.right + 1;
         }),
-        hasOversightHeading: Boolean(menu.querySelector('[data-testid="detail-actions-oversight-heading"]')),
-        hasPriorityHeading: Boolean(menu.querySelector('[data-testid="detail-actions-priority-heading"]')),
+        hasOversightHeading: Boolean(menu.querySelector('[data-testid="detail-actions-oversight-heading"])),
       };
     });
   })()`);
@@ -2672,14 +2732,17 @@ async function runSmokeChecks(page, pageUrl, browserWsUrl) {
     const fullMenu = taskDetailActionsMenus.find((fixture) => fixture.fixture === "task-detail-actions-menu-full");
     assertSmokeResult(
       `Task Detail footer Actions menus stay contained and scrollable at ${name}`,
-      taskDetailActionsMenus.length === 4
-        && taskDetailActionsMenus.every((fixture) => fixture.horizontalOverflow <= 1
-          && fixture.overflowX === "hidden"
-          && fixture.overflowY === "auto"
-          && fixture.itemCount >= 7
-          && fixture.noteCount >= 1
-          && fixture.itemsContained
-          && fixture.hasPriorityHeading)
+      taskDetailActionsMenus.length === TASK_DETAIL_ACTIONS_MENU_EXPECTATIONS.length
+        && taskDetailActionsMenus.every((fixture) => {
+          const expected = TASK_DETAIL_ACTIONS_MENU_EXPECTATIONS.find((row) => fixture.fixture === `task-detail-actions-menu-${row.variant}`);
+          return expected !== undefined
+            && fixture.horizontalOverflow <= 1
+            && fixture.overflowX === "hidden"
+            && fixture.overflowY === "auto"
+            && fixture.itemCount === expected.itemCount
+            && fixture.noteCount === expected.noteCount
+            && fixture.itemsContained;
+        })
         && fullMenu?.hasOversightHeading === true
         && (!expectFullMenuScroll || (fullMenu?.verticalOverflow ?? 0) > 1),
       JSON.stringify(taskDetailActionsMenus),

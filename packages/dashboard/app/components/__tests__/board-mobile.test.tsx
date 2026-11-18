@@ -662,12 +662,6 @@ describe("InlineCreateCard mobile", () => {
     expectRuleToContain(mobileSection, ".inline-create-controls .btn", "min-height: 36px;");
   });
 
-  it("contains .inline-create-priority-select min-height: 36px in the mobile media block", () => {
-    const css = loadAllAppCss();
-    const mobileSection = getMainMobileSection(css);
-
-    expectRuleToContain(mobileSection, ".inline-create-priority-select", "min-height: 36px;");
-  });
 
   it("renders dependency dropdown when Deps button is clicked", () => {
     render(
