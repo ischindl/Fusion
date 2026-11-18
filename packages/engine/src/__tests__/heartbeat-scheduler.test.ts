@@ -360,6 +360,49 @@ describe("HeartbeatTriggerScheduler", () => {
 
       expect(heartbeatLog.warn).not.toHaveBeenCalledWith(expect.stringContaining("Timer sync force re-armed stale present entry"));
     });
+
+    /*
+     * FNXC:ReportsHealth 2026-11-18-17:15 (RUFU-716 remediation):
+     * The withheld-delivery row is written with `updateAgent`, and the agent store emits
+     * `agent:updated` for every `updateAgent` — straight back into this seam, whose FN-7718 gate
+     * reads DELIVERY age. For the lanes that row exists for, delivery age is always past the repair
+     * threshold (that is the premise of the feature), so an unwarned version of this test would have
+     * let the scheduler force-clear and re-arm its own physically-firing timer once per interval:
+     * exactly the registration churn and phantom warnings the zombie-audit relief removed. The guard
+     * is deliberately narrow — the scheduler's own in-flight write only — so the FN-7718 contract
+     * above still holds for a foreign touch on the same row.
+     */
+    it("RUFU-716: the scheduler's own liveness write does not force re-arm the timer it documents", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+      const agent = baseAgent("agent-self-write", {
+        runtimeConfig: { enabled: true, heartbeatIntervalMs: 3_600_000, skipHeartbeatWhenIdle: true },
+        // 24h old: past the default 2x repair threshold (7.2M ms) the sync gate measures against.
+        lastHeartbeatAt: "2025-12-31T00:00:00.000Z",
+      });
+      const eventStore = createLifecycleStore([agent]);
+      scheduler = new HeartbeatTriggerScheduler(eventStore as unknown as AgentStore, callback);
+      scheduler.start();
+      eventStore.emit("agent:created", agent);
+      expect(scheduler.getRegisteredAgents()).toContain(agent.id);
+      vi.mocked(heartbeatLog.warn).mockClear();
+
+      // Drive the fire-and-skip path the armed interval would: no task + skipHeartbeatWhenIdle means
+      // the tick writes the liveness row and returns without dispatching.
+      await (scheduler as unknown as { onTimerTick: (id: string, ms: number) => Promise<void> })
+        .onTimerTick(agent.id, 3_600_000);
+
+      expect(callback).not.toHaveBeenCalled();
+      expect(eventStore.updateAgent).toHaveBeenCalled();
+      expect(heartbeatLog.warn).not.toHaveBeenCalledWith(expect.stringContaining("Timer sync force re-armed stale present entry"));
+
+      // The relief is scoped to this writer: a foreign update to the same row still re-arms.
+      const renamed = { ...eventStore.agents.get(agent.id)!, name: "renamed-foreign" };
+      eventStore.agents.set(agent.id, renamed);
+      eventStore.emit("agent:updated", renamed);
+      expect(heartbeatLog.warn).toHaveBeenCalledWith(expect.stringContaining("Timer sync force re-armed stale present entry"));
+    });
   });
 
   describe("scheduler timer audit", () => {

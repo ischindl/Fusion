@@ -142,6 +142,31 @@ describe("classifyFleetVerdict — bucket 3: noHeartbeat", () => {
     expect(resolveFleetVerdictBucket(makeAgent({ state: "idle", lastHeartbeatAt: OVERDUE }), CONTEXT)).toBe("noHeartbeat");
   });
 
+  /*
+  FNXC:FleetVerdict 2026-11-18-14:44 (RUFU-716):
+  The label-membership contract has to stay true in BOTH directions, and the second direction is what
+  RUFU-716 relies on: the fleet strip reuses the pill's verdict rather than recomputing staleness, so a
+  lane the pill relieves (its timer demonstrably fired inside the row's own threshold while the engine
+  withheld an empty delivery) must leave this bucket with no change to this module. Had the relief
+  introduced its own label, this count would have silently kept reporting a healthy lane as a missing
+  heartbeat — which is exactly how RUFU-177 and RUFU-286 each drifted once.
+  */
+  it("does NOT count an overdue delivery whose timer provably fired (relief reuses the Healthy label)", () => {
+    const agent = makeAgent({
+      state: "idle",
+      lastHeartbeatAt: OVERDUE,
+      metadata: {
+        heartbeatTimerLiveness: {
+          firedAt: new Date(NOW - 5 * MINUTE).toISOString(),
+          reason: "wake-suppressed",
+          intervalMs: 300_000,
+        },
+      },
+    });
+
+    expect(resolveFleetVerdictBucket(agent, CONTEXT)).toBeUndefined();
+  });
+
   it("does NOT steal a paused agent that merely has no beat — it is stalled, not heartbeatless", () => {
     const agent = makeAgent({ state: "paused", pauseReason: "budget-exhausted", lastHeartbeatAt: undefined });
     expect(resolveFleetVerdictBucket(agent, CONTEXT)).toBe("stalled");

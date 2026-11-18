@@ -2,6 +2,15 @@ import type { JSX } from "react";
 import { Bot, Heart, Activity, Pause } from "lucide-react";
 import { describeHeartbeatThrottle } from "@fusion/core/heartbeat-recovery-state";
 /*
+FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+The pill must agree with the engine's own zombie audit about what a frozen `lastHeartbeatAt` means, so it
+reads that fact through the SAME browser-safe leaf the scheduler writes it with — not a second parse of
+`agent.metadata` here. Imported as a value from the SUBPATH for the reason recorded on the import below:
+a root-barrel value that lives only in the Node index resolves to `undefined` in the shipped bundle with
+no build error (RUFU-220), and the module imports nothing, so it is legal in the browser leaf.
+*/
+import { describeHeartbeatDeliverySkip } from "@fusion/core/heartbeat-timer-liveness";
+/*
 FNXC:HeartbeatIdleBackoff 2026-11-01-01:20 (RUFU-268):
 The health pill needs the SAME ladder the scheduler is deferring this agent with, or an agent that is
 idling on purpose gets called Unresponsive at the very moment the engine decided to leave it alone. It is
@@ -35,6 +44,19 @@ const HEARTBEAT_GRACE_MULTIPLIER = 4;
  * from an engine pause/resume cycle.
  */
 const MIN_HEARTBEAT_STALENESS_MS = 5 * 60_000;
+
+/*
+FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+Why a delivery was withheld, in the pill's own words. Keyed by the closed reason enum the shared reader
+returns, and deliberately separate from the engine's reports-health copy: the two surfaces have different
+room, and both are prose rather than a machine-readable field — the reason code itself reaches the pill
+through the reader, so a divergence in wording cannot make them disagree about the FACT.
+*/
+const DELIVERY_SKIP_REASON_COPY: Record<string, string> = {
+  "wake-suppressed": "nothing newer to report",
+  "idle-skip": "idle with no assigned task",
+  "parallel-execution": "a run is already in flight",
+};
 
 /*
 FNXC:FleetVerdict 2026-09-02-05:18 (RUFU-176):
@@ -407,6 +429,38 @@ export function getAgentHealthStatus(
   const elapsed = elapsedSinceMs(lastHeartbeat, dataAsOfMs);
 
   if (elapsed > stalenessThresholdMs) {
+    /*
+    FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+    An overdue delivery is only evidence of a dead timer when nothing else explains the gap, and the
+    engine owns one explanation it has never published here: the interval fired and the wake discipline,
+    the idle setting, or the parallel-execution gate declined to deliver. This is the same lane the
+    reports-health table used to call `**stale**` every manager heartbeat — pill included, the whole
+    product said one healthy-but-idle durable lane was unresponsive.
+
+    Ranked deliberately LOW: the repair row above, an invalid timestamp, `Heartbeat Disabled`, and the
+    approval / throttle branches all outrank it, because each of those describes a lane whose silence
+    somebody must act on. Bounded by THIS lane's own `stalenessThresholdMs` (already idle-ladder aware),
+    so relief can never outlive the window that would otherwise have raised the alarm — and no threshold
+    in this file moved.
+
+    Returning the pre-existing `"Healthy"` label is what makes the fleet strip honest without a second
+    opinion inside it: `fleetVerdict.ts` buckets by label membership, so a relieved lane leaves the
+    `noHeartbeat` bucket automatically. The `reason` still names the withheld delivery and the age of
+    the last fire, so the tooltip explains the gap instead of hiding it, and `stateDerived: false`
+    matches every other heartbeat-verdict branch here — the label came from heartbeat freshness.
+    */
+    const deliverySkip = describeHeartbeatDeliverySkip(agent, { nowMs: dataAsOfMs ?? Date.now(), withinMs: stalenessThresholdMs });
+    if (deliverySkip) {
+      const cause = DELIVERY_SKIP_REASON_COPY[deliverySkip.reason] ?? "engine withheld this delivery";
+      return {
+        label: "Healthy",
+        icon: <Heart size={14} />,
+        color: "var(--state-active-text)",
+        stateDerived: false,
+        reason: `No delivery for ${formatDuration(elapsed)} — ${cause}; heartbeat timer fired ${formatDuration(deliverySkip.fireAgeMs)} ago`,
+      };
+    }
+
     const reason = `No heartbeat for ${formatDuration(elapsed)} (threshold: ${formatDuration(stalenessThresholdMs)})`;
     return {
       label: AGENT_HEALTH_LABEL_UNRESPONSIVE,

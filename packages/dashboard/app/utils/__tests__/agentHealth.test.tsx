@@ -4,7 +4,9 @@ import {
   getAgentHealthStatus,
   getAgentHealthColorVar,
   AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+  AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED,
   AGENT_HEALTH_LABEL_RATE_LIMITED,
+  AGENT_HEALTH_LABEL_UNRESPONSIVE,
 } from "../agentHealth";
 import { PAUSE_REASON_LABELS } from "../stallReason";
 import type { Agent } from "../../api";
@@ -792,6 +794,212 @@ describe("AgentHealthStatus reason field", () => {
     });
     const status = getAgentHealthStatus(agent);
     expect(status.reason).toBe("No heartbeat for 1h 30m (threshold: 1h)");
+  });
+
+  /*
+  FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+  The pill half of the false alarm. A durable lane whose interval keeps firing while the engine withholds
+  an empty delivery used to read `Unresponsive` here forever, because `lastHeartbeatAt` records the
+  DELIVERY and by design never advances on a suppressed tick. The row's own threshold (interval × grace,
+  idle ladder aware) is the only bound the relief honours, so a genuinely lost trigger keeps the badge.
+  */
+  describe("withheld heartbeat delivery", () => {
+    const INTERVAL_MS = 5 * 60_000; // threshold = 5m × 4 = 20m
+    const livenessRow = (firedAtMs: number, reason = "wake-suppressed") => ({
+      heartbeatTimerLiveness: {
+        firedAt: new Date(firedAtMs).toISOString(),
+        reason,
+        intervalMs: INTERVAL_MS,
+      },
+    });
+    const overdueDelivery = new Date(FIXED_NOW - 45 * 60_000).toISOString();
+
+    it("keeps a lane whose timer fired inside its own threshold Healthy, with the gap explained", () => {
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        metadata: livenessRow(FIXED_NOW - 5 * 60_000),
+      });
+
+      const status = getAgentHealthStatus(agent);
+
+      expect(status.label).toBe("Healthy");
+      expect(status.stateDerived).toBe(false);
+      expect(status.reason).toContain("No delivery for 45m");
+      expect(status.reason).toContain("nothing newer to report");
+      expect(status.reason).toContain("heartbeat timer fired 5m ago");
+    });
+
+    it("still says Unresponsive for the identical row with no fire evidence", () => {
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+      });
+
+      const status = getAgentHealthStatus(agent);
+
+      expect(status.label).toBe("Unresponsive");
+      expect(status.reason).toContain("No heartbeat for 45m");
+    });
+
+    it("still says Unresponsive for a reason outside the closed set", () => {
+      /*
+      AC2's second shape: a marker nobody can interpret is not evidence of a live timer. The shared
+      reader refuses the reason, so the pill never sees a relief object at all.
+      */
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        metadata: livenessRow(FIXED_NOW - 60_000, "idle-backoff-forever"),
+      });
+
+      expect(getAgentHealthStatus(agent).label).toBe("Unresponsive");
+    });
+
+    it("relieves the production shape: a 1h interval whose last delivery is 8h old", () => {
+      /*
+      The exact lane the card was filed for (agent-3ac88b82: interval 3 600 000 ms, dashboard threshold
+      interval × 4 = 4h, delivery 8 h 13 m old). The color assertion is part of the AC, not a bonus: the
+      pill paints itself from `getAgentHealthColorVar`, so a relief that changed only the label would
+      still render the lane in the error color.
+      */
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: new Date(FIXED_NOW - (8 * 60 + 13) * 60_000).toISOString(),
+        runtimeConfig: { heartbeatIntervalMs: 60 * 60_000 },
+        metadata: {
+          heartbeatTimerLiveness: {
+            firedAt: new Date(FIXED_NOW - 49 * 60_000).toISOString(),
+            reason: "wake-suppressed",
+            intervalMs: 60 * 60_000,
+          },
+        },
+      });
+
+      const status = getAgentHealthStatus(agent);
+
+      expect(status.label).not.toBe(AGENT_HEALTH_LABEL_UNRESPONSIVE);
+      expect(status.label).toBe("Healthy");
+      // `getAgentHealthColorVar` returns the bare custom-property name, not the `var(...)` wrapper.
+      expect(getAgentHealthColorVar(agent)).not.toBe("--state-error-text");
+      expect(getAgentHealthColorVar(agent)).toBe("--state-active-text");
+    });
+
+    it("keeps the error color for the same lane once the fire falls out of the window", () => {
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: new Date(FIXED_NOW - (8 * 60 + 13) * 60_000).toISOString(),
+        runtimeConfig: { heartbeatIntervalMs: 60 * 60_000 },
+        metadata: {
+          heartbeatTimerLiveness: {
+            firedAt: new Date(FIXED_NOW - 5 * 60 * 60_000).toISOString(),
+            reason: "wake-suppressed",
+            intervalMs: 60 * 60_000,
+          },
+        },
+      });
+
+      expect(getAgentHealthStatus(agent).label).toBe(AGENT_HEALTH_LABEL_UNRESPONSIVE);
+      expect(getAgentHealthColorVar(agent)).toBe("--state-error-text");
+    });
+
+    it("relieves nothing once the fire itself is older than the row's threshold", () => {
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        // Last physical tick was 30 minutes ago: four intervals have gone unexplained since.
+        metadata: livenessRow(FIXED_NOW - 30 * 60_000),
+      });
+
+      expect(getAgentHealthStatus(agent).label).toBe("Unresponsive");
+    });
+
+    it.each(["idle-skip", "parallel-execution"] as const)(
+      "names the %s cause in the tooltip",
+      (reason) => {
+        const agent = makeAgent({
+          state: "idle",
+          lastHeartbeatAt: overdueDelivery,
+          runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+          metadata: livenessRow(FIXED_NOW - 60_000, reason),
+        });
+
+        const status = getAgentHealthStatus(agent);
+        expect(status.label).toBe("Healthy");
+        expect(status.reason).toContain(reason === "idle-skip" ? "idle with no assigned task" : "a run is already in flight");
+      },
+    );
+
+    it.each([
+      ["the timer-repair row", {
+        state: "active" as const,
+        lastHeartbeatAt: new Date(FIXED_NOW - 20 * 60_000).toISOString(),
+        runtimeConfig: { heartbeatIntervalMs: 60 * 60_000 },
+        metadata: {
+          ...livenessRow(FIXED_NOW - 60_000),
+          heartbeatTimerRepair: {
+            repairedAt: new Date(FIXED_NOW - 2 * 60_000).toISOString(),
+            staleAtRepair: true,
+            staleRepairReason: "No heartbeat before repair",
+          },
+        },
+      }],
+      ["an unparseable heartbeat", {
+        state: "active" as const,
+        lastHeartbeatAt: "not-a-timestamp",
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        metadata: livenessRow(FIXED_NOW - 60_000),
+      }],
+      ["heartbeat disabled", {
+        state: "active" as const,
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { enabled: false as const },
+        metadata: livenessRow(FIXED_NOW - 60_000),
+      }],
+    ])("the %s verdict outranks the relief", (_label, overrides) => {
+      const status = getAgentHealthStatus(makeAgent(overrides as Partial<AgentHealthInput>));
+
+      expect(status.label).not.toBe("Healthy");
+    });
+
+    it("ages the fire against the data snapshot, not wall clock", () => {
+      /*
+      Same reference contract as `elapsed` (the mobile-tab-discard fix): a snapshot hours old must not
+      invent an overdue fire any more than it must not invent an overdue delivery.
+      */
+      const snapshotMs = FIXED_NOW - 2 * 60 * 60_000;
+      const agent = makeAgent({
+        state: "idle",
+        lastHeartbeatAt: new Date(snapshotMs - 45 * 60_000).toISOString(),
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        // Fired 100 minutes before the snapshot instant: far more than the 20m threshold.
+        metadata: livenessRow(snapshotMs - 100 * 60_000),
+      });
+
+      expect(getAgentHealthStatus(agent, 1, snapshotMs).label).toBe("Unresponsive");
+    });
+
+    it("emits no new label: relief reuses the Healthy verdict only", () => {
+      // The pill's full emit-able label vocabulary, pinned so a future relief that invents a badge is
+      // caught here rather than silently splitting the fleet-verdict label-membership buckets.
+      const KNOWN_LABELS = new Set([
+        "Healthy", "Running", "Idle", "Starting...", "Error",
+        AGENT_HEALTH_LABEL_UNRESPONSIVE, AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED, AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+        AGENT_HEALTH_LABEL_RATE_LIMITED, "a persisted error body",
+      ]);
+      const relief = getAgentHealthStatus(makeAgent({
+        state: "idle",
+        lastHeartbeatAt: overdueDelivery,
+        runtimeConfig: { heartbeatIntervalMs: INTERVAL_MS },
+        metadata: livenessRow(FIXED_NOW - 60_000),
+      }));
+      expect(KNOWN_LABELS.has(relief.label)).toBe(true);
+      expect(relief.label).toBe("Healthy");
+    });
   });
 
   it.each([

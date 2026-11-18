@@ -166,6 +166,16 @@ export default defineConfig({
       */
       "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
       /*
+      FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+      The health pill needs the "timer fired, delivery withheld" reader as a VALUE, and the root
+      `@fusion/core` alias points at the types-only leaf — a root-barrel value import would typecheck
+      and pass Vitest yet resolve to `undefined` in the shipped browser bundle (RUFU-220/RUFU-286).
+      `agents/heartbeat-timer-liveness.ts` imports nothing at all, so it is a safe browser leaf
+      (dated entry in scripts/lib/dashboard-browser-safe-core-modules.json). Ordered before the
+      `@fusion/core` entry because Vite matches aliases in order.
+      */
+      "@fusion/core/heartbeat-timer-liveness": resolve(__dirname, "../core/src/agents/heartbeat-timer-liveness.ts"),
+      /*
       FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
       The sidebar liveness tag needs the shared generation classifier as a VALUE, and the root `@fusion/core` alias below points at the types-only leaf, so a root-barrel value import would compile and even pass Vitest (whose alias points at the real index) yet resolve to `undefined` in the production browser bundle with no build error.
       `chat/chat-liveness.ts` imports only an erased type from `chat-types.ts`, so it is a safe browser leaf; alias its subpath rather than widening the `@fusion/core` alias.
@@ -181,6 +191,13 @@ export default defineConfig({
       root alias. Ordered before the `@fusion/core` entry because Vite matches aliases in order.
       */
       "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
+      /*
+      FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+      Second alias entry for the same subpath (this object already carries `heartbeat-recovery-state`
+      twice): the delivery-skip reader must resolve as a value wherever it is imported from. Kept
+      immediately before the root `@fusion/core` alias.
+      */
+      "@fusion/core/heartbeat-timer-liveness": resolve(__dirname, "../core/src/agents/heartbeat-timer-liveness.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/types.ts"),
       "@fusion/dashboard/app/components/TaskCard": resolve(__dirname, "app/components/TaskCard.tsx"),
       // FNXC:PluginBuild 2026-09-13-16:50: Bundled plugin source can import shared header primitives and the cooperative full-page header through package exports; Vite needs matching source aliases so one-header composition cannot fail only in CI merge builds.

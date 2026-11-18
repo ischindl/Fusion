@@ -258,6 +258,31 @@ Direct-report stale decisions in `HeartbeatMonitor.buildReportsHealthSection()` 
 - `heartbeatAgeMs` is the report's current heartbeat age at classification time
 - Healthy reports do not emit this diagnostic; only stale decisions do
 
+### Withheld-delivery relief (`[reports-health] delivery skipped`)
+
+<!--
+FNXC:ReportsHealth 2026-11-18-15:23 (RUFU-716):
+Written for the operator who reads a `**stale**` cell and finds a live timer. Before this the pair of
+lines that caused the confusion printed in the same breath — `timer-heartbeat-suppressed` from the
+scheduler and `[reports-health] stale report` from the briefing — with nothing connecting them, so the
+only way to answer "is this lane dead or just quiet?" was to read the engine log by hand.
+-->
+
+A report whose heartbeat is overdue but whose heartbeat trigger demonstrably fired inside that same row's
+`staleThresholdMs` is classified `delivery-skipped` instead of `**stale**`, and logs:
+
+- Log shape: `[reports-health] delivery skipped <agentId> reason=<reason> intervalSource=<source> staleThresholdMs=<n> heartbeatAgeMs=<n> timerFireAgeMs=<n>`
+- `reason` values, from the closed vocabulary owned by `packages/core/src/agents/heartbeat-timer-liveness.ts`:
+  - `wake-suppressed` — the interval rang and the wake discipline found nothing newer than the last run's cursor (the same tick that logs `timer-heartbeat-suppressed agentId=… reason=no-fresher-signal`), or the agent's own idle ladder chose the wait
+  - `idle-skip` — `runtimeConfig.skipHeartbeatWhenIdle` with no assigned task
+  - `parallel-execution` — `allowParallelExecution` is off and a bound task or column session is already running
+- `timerFireAgeMs` is how long ago that physical tick happened, measured against the same clock the row's heartbeat age uses
+- The record is `agent.metadata.heartbeatTimerLiveness`, written by `HeartbeatTriggerScheduler.onTimerTick` on those three paths only. A pause, an engine/global pause, an existing active run, an ineligible state, and a delivered dispatch write nothing, so relief never excuses a lane nobody is scheduling or a lane wedged inside a live run.
+- `firedAt` is the instant the callback physically ran — the same instant the in-process liveness map is stamped — not the instant the write composed, so a slow store read cannot make the record drift slower than the fires it reports. A suppressed lane refreshes it whenever a tick lands more than **half an effective interval** after the recorded fire: that is the cap (never more than one write per interval) and the floor (a lane firing on cadence always refreshes it), and the floor is what the relief below depends on.
+- Relief is bounded by the row's own `staleThresholdMs` (interval or ladder step × 1.5, 10-minute floor). It can therefore never be shorter than the lane's effective interval, and no staleness threshold moved: a lane whose last recorded fire is itself older than that window is `**stale**` again and still logs the `stale report` line above.
+- Same fact, three surfaces, one reader: the reports-health cell, the dashboard health pill, and the fleet strip all resolve it through `describeHeartbeatDeliverySkip`. The pill returns `Healthy` with a reason naming the withheld cause and the fire age, so it leaves the fleet `noHeartbeat` bucket by label membership rather than by a second opinion inside the strip.
+- The cell reads `delivery skipped — <cause>, timer fired <age> ago`. It contains neither the word `stale` nor any instruction, and the bucket joins no action set, so a relieved lane contributes no line to the manager's "Actions for Unresponsive Reports". A genuinely unexplained silence still logs `**stale**` and still earns "create a follow-up task to investigate".
+
 ## Resume instrumentation (FN-5389, Phase 1)
 
 Dashboard Phase 1 resume instrumentation adds observation-only client/server traces for refetch/reconnect attribution. It does not change visibility/pageshow/SSE behavior; FN-5392 consumes this data for fixes.

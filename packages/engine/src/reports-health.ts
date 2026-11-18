@@ -1,11 +1,40 @@
+/*
+FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+Type-only import of the ONE closed vocabulary of withheld-delivery reasons, from the same browser-safe
+leaf the scheduler writes through and the dashboard reads through. A second list of these reasons here is
+the drift this task exists to remove, and because it is `import type` it is erased at build time — the
+classifier stays a pure function over declared inputs and `@fusion/core` still never depends on engine.
+*/
+import type { HeartbeatTimerSkipReason } from "@fusion/core/heartbeat-timer-liveness";
+
 export type ReportHealthBucket =
   | "healthy"
   | "stale-assignment"
   | "stale"
+  /**
+   * RUFU-716: the lane's heartbeat trigger provably fired inside the caller's own staleness window and
+   * the engine deliberately withheld the delivery, so the frozen delivery timestamp is fully explained.
+   * Non-actionable: it joins no `hasStale` / `hasStuck` / `hasOperatorActionable` set and therefore
+   * adds no "create a follow-up task to investigate" line to a manager's heartbeat prompt.
+   */
+  | "delivery-skipped"
   | "stuck"
   | "paused"
   | "operator-actionable"
   | "rate-limited";
+
+/**
+ * RUFU-716: the derived form of "this lane's timer fired while delivery was withheld", already
+ * resolved by the single shared reader (`describeHeartbeatDeliverySkip` from
+ * `@fusion/core/heartbeat-timer-liveness`) against the caller's own staleness window. Raw
+ * `agent.metadata` is deliberately NOT accepted here: one reader owns what the stored row means, the
+ * same boundary RUFU-286 drew for the throttle deadline.
+ */
+export interface ReportHealthDeliverySkip {
+  reason: HeartbeatTimerSkipReason;
+  firedAt: string;
+  fireAgeMs: number;
+}
 
 export interface ReportHealthInput {
   state: string | undefined;
@@ -22,6 +51,12 @@ export interface ReportHealthInput {
    * means for every surface. Absent/null means no cooldown.
    */
   throttleCooldownUntilAt?: string | null;
+  /**
+   * RUFU-716: derived by the caller from the shared reader, bounded by THIS row's own
+   * `staleThresholdMs`. Absent/null means no relief is due — an absent, unparseable, future-dated, or
+   * too-old fire — and the row falls through to the ordinary verdicts.
+   */
+  deliverySkip?: ReportHealthDeliverySkip | null;
 }
 
 export interface ReportHealthClassification {
@@ -34,6 +69,48 @@ const OPERATOR_ACTIONABLE_PAUSE_REASONS = new Set([
   "error-retry-exhausted",
   "heartbeat-model-unavailable",
 ]);
+
+/*
+FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+Why the engine withheld a delivery, phrased as a fact rather than a symptom. Every value here must stay
+free of the word "stale" and of any instruction verb: this cell is read by a manager agent whose prompt
+acts on what the Health column says, and the whole defect being fixed is a cell that read as a fault and
+ordered an investigation of a lane that was behaving exactly as configured.
+
+The map's keys double as the relief-eligible set, which is why the type is `Record<HeartbeatTimerSkipReason, string>`:
+if the closed vocabulary in `@fusion/core` ever grows a reason with no copy here, the declaration stops
+compiling rather than silently shipping a reason with no wording. `deliverySkipCopy` is the single place
+that decides, so an incoming reason OUTSIDE the set relieves nothing — refusing relief on evidence it
+cannot interpret is the direction the safety property requires, and it is what stops a malformed or
+future-unknown marker from laundering a genuinely dead trigger into an explained delivery.
+*/
+const DELIVERY_SKIP_REASON_COPY: Record<HeartbeatTimerSkipReason, string> = {
+  "wake-suppressed": "nothing newer to report",
+  "idle-skip": "idle with no assigned task",
+  "parallel-execution": "a run is already in flight",
+};
+
+function deliverySkipCopy(reason: HeartbeatTimerSkipReason): string | null {
+  return Object.prototype.hasOwnProperty.call(DELIVERY_SKIP_REASON_COPY, reason)
+    ? DELIVERY_SKIP_REASON_COPY[reason]
+    : null;
+}
+
+/** Compact elapsed-fire age for the health cell; never an instruction and never a verdict word. */
+function formatFireAge(ms: number): string {
+  if (!Number.isFinite(ms)) {
+    return "unknown";
+  }
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) {
+    return "under 1m";
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 1) {
+    return `${minutes}m`;
+  }
+  return `${hours}h${String(minutes % 60).padStart(2, "0")}m`;
+}
 
 /**
  * FNXC:ReportsHealth 2026-07-24-12:00:
@@ -80,6 +157,34 @@ export function classifyReportHealth(input: ReportHealthInput): ReportHealthClas
   }
   if (input.staleParkedAssignment) {
     return { bucket: "stale-assignment", cellText: "**stale** assignment" };
+  }
+  /*
+  FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+  A frozen delivery timestamp is only evidence of a lost trigger when nothing else explains it, and
+  this is the explanation the engine itself owns: the interval fired and the wake discipline, the idle
+  setting, or the parallel-execution gate declined to deliver. Before this branch the classifier read
+  ONLY `heartbeatAgeMs`, which by design never advances on a suppressed delivery, so a healthy idle
+  lane was reported `**stale**` forever and the prompt below it ordered "create a follow-up task to
+  investigate" on every manager heartbeat.
+
+  Placement is the contract:
+  - AFTER the pause / throttle / error / stale-assignment checks, because those describe a lane whose
+    silence the operator genuinely must act on; relief never outranks them.
+  - BEFORE the `stuck` and `stale` branches, because that is the pair of verdicts this fact defeats.
+  - Gated on the same `active` / `idle` states the `stale` branch uses. A `running` lane is the `stuck`
+    story and a real wedge may live there; a lane held by a live run writes no liveness row anyway.
+  The caller bounded `deliverySkip` by this row's own `staleThresholdMs`, so the relief window is that
+  row's effective interval plus its idle silence budget — never a shorter interval, and no threshold
+  anywhere moved. An absent or expired fire reaches neither this branch nor any change in behaviour.
+  */
+  if (input.deliverySkip && (input.state === "active" || input.state === "idle")) {
+    const copy = deliverySkipCopy(input.deliverySkip.reason);
+    if (copy) {
+      return {
+        bucket: "delivery-skipped",
+        cellText: `delivery skipped — ${copy}, timer fired ${formatFireAge(input.deliverySkip.fireAgeMs)} ago`,
+      };
+    }
   }
   if (input.state === "running" && input.heartbeatAgeMs > input.heartbeatTimeoutMs * 2) {
     return { bucket: "stuck", cellText: "**stuck**" };

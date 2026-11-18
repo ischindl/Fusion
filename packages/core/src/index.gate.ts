@@ -3284,6 +3284,27 @@ export type {
   HeartbeatThrottleDisplay,
 } from "./agents/heartbeat-recovery-state.js";
 
+/*
+FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+Mirror of the `index.ts` block. The engine gate reaches this leaf transitively (the reports-health
+classifier and the scheduler's fire-and-skip writer both consume it), so the gate barrel must export
+the same names or a gate-side import fails to resolve.
+*/
+export {
+  HEARTBEAT_TIMER_LIVENESS_METADATA_KEY,
+  HEARTBEAT_TIMER_LIVENESS_RELIEF_REASONS,
+  readHeartbeatTimerLiveness,
+  heartbeatTimerFireAgeMs,
+  describeHeartbeatDeliverySkip,
+} from "./agents/heartbeat-timer-liveness.js";
+export type {
+  HeartbeatTimerLivenessMetadata,
+  HeartbeatTimerLivenessAgentRecord,
+  HeartbeatTimerLivenessState,
+  HeartbeatTimerSkipReason,
+  HeartbeatDeliverySkipDisplay,
+} from "./agents/heartbeat-timer-liveness.js";
+
 export { findWorkflowNodeInstance } from "./workflows/workflow-node-instance.js";
 
 /*

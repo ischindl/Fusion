@@ -4162,6 +4162,29 @@ export type {
   HeartbeatThrottleDisplay,
 } from "./agents/heartbeat-recovery-state.js";
 
+/*
+FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+Shared browser-safe reader for the "heartbeat timer fired, delivery was deliberately withheld" row.
+The heartbeat scheduler writes it; the reports-health classifier, the dashboard health pill, and the
+fleet verdict read it through this module, so no surface forks its own parse of
+`metadata.heartbeatTimerLiveness` (same single-projection rule RUFU-286 applied to
+`metadata.heartbeatErrorRecovery`).
+*/
+export {
+  HEARTBEAT_TIMER_LIVENESS_METADATA_KEY,
+  HEARTBEAT_TIMER_LIVENESS_RELIEF_REASONS,
+  readHeartbeatTimerLiveness,
+  heartbeatTimerFireAgeMs,
+  describeHeartbeatDeliverySkip,
+} from "./agents/heartbeat-timer-liveness.js";
+export type {
+  HeartbeatTimerLivenessMetadata,
+  HeartbeatTimerLivenessAgentRecord,
+  HeartbeatTimerLivenessState,
+  HeartbeatTimerSkipReason,
+  HeartbeatDeliverySkipDisplay,
+} from "./agents/heartbeat-timer-liveness.js";
+
 export { findWorkflowNodeInstance } from "./workflows/workflow-node-instance.js";
 
 /*

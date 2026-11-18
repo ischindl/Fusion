@@ -637,6 +637,14 @@ export default defineConfig({
       the root key would rewrite the subpath and fail to resolve.
       */
       "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
+      /*
+      FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+      Mirror of the vite.config.ts entry: the health pill imports the withheld-delivery reader as a VALUE,
+      and an unaliased subpath here would have the tests exercise a different module than production ships
+      (RUFU-220). Ordered before the broader `@fusion/core` alias, which Vite would otherwise apply by
+      prefix and fail to resolve.
+      */
+      "@fusion/core/heartbeat-timer-liveness": resolve(__dirname, "../core/src/agents/heartbeat-timer-liveness.ts"),
       // FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220): Mirror vite.config.ts so the sidebar classifier resolves identically under Vitest and the browser bundle; the root `@fusion/core` alias here points at the full index, so leaving the subpath unaliased would test a different module than production ships. Ordered before the broader alias because Vite matches in order.
       "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Route tests use the Node-only factory subpath; browser components remain on the pure descriptor barrel.

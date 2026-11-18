@@ -907,6 +907,21 @@ import {
   type HeartbeatRunOwnerVerdict,
 } from "./agents/heartbeat-run-ownership.js";
 
+/*
+FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+The scheduler is the ONLY writer of the "timer fired, delivery withheld" row, and it writes the shape
+the ONE shared browser-safe reader consumes — so the health pill, the fleet strip, and the reports-health
+classifier all agree with the scheduler's own zombie audit about what a frozen `lastHeartbeatAt` means.
+Imported from the subpath barrel (not a local copy) for the same reason RUFU-286 imports the throttle
+reader from there: a second projection of this fact is the defect being removed.
+*/
+import {
+  HEARTBEAT_TIMER_LIVENESS_METADATA_KEY,
+  heartbeatTimerFireAgeMs,
+  describeHeartbeatDeliverySkip,
+  type HeartbeatTimerSkipReason,
+} from "@fusion/core";
+
 
 /** Parameter schema for the fn_heartbeat_done tool */
 const heartbeatDoneParams = Type.Object({
@@ -6515,6 +6530,15 @@ export class HeartbeatMonitor {
       is forwarded: an exhausted throttle park still needs a human restart.
       */
       const throttleDisplay = describeHeartbeatThrottle(report);
+      /*
+      FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+      The withheld-delivery fact is resolved through the single shared reader, bounded by THIS row's own
+      computed `staleThresholdMs` — the same per-row value the `stale` verdict uses — so the relief can
+      never be shorter than the lane's effective interval plus its idle silence budget and no staleness
+      threshold is moved anywhere. No `metadata` is parsed here: the classifier receives the derived
+      value only, exactly as RUFU-286 arranged for the throttle deadline above.
+      */
+      const deliverySkip = describeHeartbeatDeliverySkip(report, { nowMs: now, withinMs: staleThresholdMs });
       const classification = classifyReportHealth({
         state: report.state,
         pauseReason: report.pauseReason,
@@ -6523,9 +6547,18 @@ export class HeartbeatMonitor {
         staleThresholdMs,
         staleParkedAssignment,
         throttleCooldownUntilAt: throttleDisplay?.kind === "throttle-cooldown" ? throttleDisplay.retryingAt : null,
+        deliverySkip,
       });
       if (classification.bucket === "stale") {
         heartbeatLog.log(`[reports-health] stale report ${report.id} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs}`);
+      } else if (classification.bucket === "delivery-skipped") {
+        /*
+        FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+        The relief must stay observable, or an operator reading `[reports-health] stale report` in the
+        log has no way to learn the classifier changed its mind and why. Distinct literal from the
+        `stale` line, which stays byte-identical for a genuinely unexplained silence.
+        */
+        heartbeatLog.log(`[reports-health] delivery skipped ${report.id} reason=${deliverySkip?.reason} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs} timerFireAgeMs=${deliverySkip?.fireAgeMs}`);
       }
 
       const task = renderedTask;
@@ -6538,6 +6571,15 @@ export class HeartbeatMonitor {
     }));
 
     const hasStuck = rows.some(({ classification }) => classification.bucket === "stuck");
+    /*
+    FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+    `hasStale` stays exactly the two buckets it was. The new `delivery-skipped` bucket is deliberately
+    NOT added here and gets no action line of its own: a lane whose interval keeps firing while the
+    engine withholds an empty delivery needs no intervention, and the AC is that such a lane contributes
+    no line to this section at all. The row still appears in the table, with a health cell that states
+    the withheld delivery and the age of the last fire, so nothing is hidden — only the instruction to
+    go investigate a healthy lane is gone.
+    */
     const hasStale = rows.some(({ classification }) => classification.bucket === "stale" || classification.bucket === "stale-assignment");
     const hasOperatorActionable = rows.some(({ classification }) => classification.bucket === "operator-actionable");
 
@@ -7613,6 +7655,26 @@ export class HeartbeatTriggerScheduler {
    * timer whose delivery is being skipped, and only re-arm the former.
    */
   private lastTimerFireAtMs: Map<string, number> = new Map();
+  /*
+   * FNXC:ReportsHealth 2026-11-18-17:15 (RUFU-716 remediation):
+   * Agents whose `metadata` the scheduler itself is writing, for the duration of that one write.
+   *
+   * Why this exists: the withheld-delivery row is written through `store.updateAgent`, and the core
+   * agent store emits `agent:updated` for every `updateAgent` — which lands right back in
+   * `syncTimerForAgent`, whose FN-7718 force-re-arm gate reads DELIVERY age (`lastHeartbeatAt`).
+   * For the lanes this row exists for, delivery age is always past the repair threshold (that is the
+   * whole premise), so the scheduler's own observability write would force-clear and re-arm a timer
+   * that is physically firing, on its own cadence, forever — the exact registration churn and
+   * phantom-warning pattern the 2026-07-17 zombie-audit relief removed one seam later. An
+   * observability write must never change dispatch (that is this writer's own contract), so a
+   * self-caused `agent:updated` is not treated as evidence about the timer.
+   *
+   * The set holds only the agent during its own awaited write, and only this caller is skipped:
+   * a foreign `agent:updated` (an operator edit, a start/resume transition) still force-re-arms a
+   * stale present entry exactly as FN-7718 requires, and a genuinely dead interval is still repaired
+   * by the 60s audit, whose own gate keys off `lastTimerFireAtMs` above.
+   */
+  private schedulerOwnedMetadataWrite: Set<string> = new Set();
   /**
    * FNXC:AgentHeartbeat 2026-07-16-12:00:
    * FN-8184 caches the settings-derived multiplier for syncTimerForAgent,
@@ -8572,8 +8634,16 @@ export class HeartbeatTriggerScheduler {
       const staleThresholdMs = this.getRepairStaleThresholdMs(agent, HeartbeatTriggerScheduler.DEFAULT_REPAIR_STALE_MULTIPLIER);
       const elapsedMs = getHeartbeatAgeMs(agent);
       const staleAtSync = Number.isFinite(elapsedMs) && elapsedMs > staleThresholdMs;
-      if (!staleAtSync) {
-        // Already ticking and fresh — non-config updates should not reset the interval.
+      /*
+       * FNXC:ReportsHealth 2026-11-18-17:15 (RUFU-716 remediation):
+       * This gate measures DELIVERY age, which stays past the threshold for every lane whose
+       * deliveries the engine is deliberately withholding — so a metadata write the scheduler
+       * performed itself would re-arm the very timer it was writing about, every interval. Skip only
+       * this scheduler's own in-flight write; every foreign `agent:updated` still re-arms.
+       */
+      if (!staleAtSync || this.schedulerOwnedMetadataWrite.has(agent.id)) {
+        // Already ticking and fresh, or this touch is the scheduler's own metadata write — neither is
+        // a reason to reset a healthy cadence.
         return;
       }
       heartbeatLog.warn(
@@ -8780,6 +8850,97 @@ export class HeartbeatTriggerScheduler {
     const metadata = { ...(agent.metadata ?? {}) } as Record<string, unknown>;
     metadata.heartbeatTimerRepair = nextRepair;
     await updater.call(this.store, agent.id, { metadata });
+  }
+
+  /*
+  FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+  Record the fire-and-skip fact where the health surfaces can reach it.
+
+  The scheduler has always known a frozen `lastHeartbeatAt` is not evidence of a dead timer —
+  `auditTimerRegistrations` refuses to re-arm a lane whose interval keeps firing, and says so in the
+  log — but that proof lived only in this process's `lastTimerFireAtMs` map. The reports-health
+  classifier and the dashboard pill read the delivery timestamp instead, so a durable lane whose ticks
+  are intentionally suppressed (nothing new to say, idle-skip, parallel-execution gate) has been
+  reported `**stale**` forever and every manager heartbeat prompt ordered it investigated, while the
+  same daemon printed the counter-evidence one line earlier.
+
+  Contract of this writer, each half load-bearing:
+  - It runs ONLY on the three paths that withhold delivery while the trigger demonstrably fired. A
+    pause, an engine/global pause, an existing active run, and an ineligible-state unregister write
+    nothing: a lane nobody is scheduling has no liveness to prove, and a lane held by a live run can
+    genuinely be wedged — that is the `stuck` story, not this one.
+  - Bounded on BOTH sides: at most one write per effective interval, and a refresh that is guaranteed
+    to happen whenever a suppressed lane fires on cadence. Only the floor keeps AC1 true, so the
+    refresh bound is HALF the interval, not the whole interval. Fires are one period (P) apart, and a
+    gate that demands a full P of recorded age can be missed by the arithmetic alone: consecutive
+    fires sit P + L apart (L = callback lateness) while the row's age at the next fire is P + L - d
+    (d = the store round-trip the stamp was taken after). Whenever d >= L the write is skipped, the
+    row ages to ~2P, and every relief window between 1.5P (reports-health) and 2P goes dark — the
+    false `**stale**` and its "create a follow-up task to investigate" line return periodically for
+    the exact lane this card measured. A half-interval bound puts every on-cadence fire safely above
+    the gate, so the row's age stays below P and no consumer window can lapse, while still collapsing
+    any repeat tick inside half an interval to zero extra writes. The dedupe reads the row it is about
+    to replace rather than a process-local map, so an engine restart cannot buy an extra write either.
+  - It spreads the existing `metadata` (the `markRepairMetadata` shape) so sibling rows — notably
+    `heartbeatTimerRepair` and `heartbeatErrorRecovery` — survive; dropping them would silently
+    re-arm the false alarms this task is removing on the other surfaces.
+  - Failure is invisible to dispatch. A store without `updateAgent`, a throwing write, or an
+    unwritable row logs at debug and lets the tick return exactly as it did before: an observability
+    write must never break, delay, or change heartbeat dispatch. That half is not just about
+    exceptions: `updateAgent` emits `agent:updated`, and the FN-7718 sync gate reads delivery age, so
+    a suppressed lane would otherwise re-arm its own live timer once per interval. The write is
+    therefore bracketed by `schedulerOwnedMetadataWrite`, which `syncTimerForAgent` honours.
+  - The whole metadata blob is rewritten, so a concurrent writer that lands between this tick's
+    `getAgent` and this write loses its update. That is the store's shape, not a choice made here:
+    `updateAgent` replaces `updates.metadata` wholesale and exposes no key-level patch (tasks have
+    `sourceMetadataPatch`, agents do not), and the pre-existing `markRepairMetadata` writer has the
+    identical shape — core itself documents that "independent updateAgent marker writes can recreate
+    desync" (FN-8569). The sibling-preservation test pins that the KEYS this write knows about
+    survive; it is NOT a concurrency guarantee, and no reader may treat it as one.
+  - The row is deliberately never cleared when a delivery later lands. The age bound is the safety
+    property; a leftover marker can only relieve inside one window, and a clear would be a second
+    writer racing the surfaces that read it.
+  */
+  private async markDeliverySkipped(
+    agent: Agent,
+    reason: HeartbeatTimerSkipReason,
+    intervalMs: number,
+    /** The physical fire instant captured at the top of `onTimerTick`, never a fresh `Date.now()`. */
+    firedAtMs: number,
+  ): Promise<void> {
+    const updater = (this.store as { updateAgent?: (agentId: string, updates: { metadata: Record<string, unknown> }) => Promise<unknown> }).updateAgent;
+    if (typeof updater !== "function") {
+      return;
+    }
+
+    /*
+     * Half the effective interval: strictly below the fire cadence, so a suppressed lane that keeps
+     * firing keeps refreshing the row, and far below the smallest consumer window (reports-health
+     * measures the fire against interval x 1.5). See the writer contract above for the d/L arithmetic
+     * that makes a full-interval bound unbounded in practice.
+     */
+    const refreshBoundMs = Math.max(1000, Math.floor(intervalMs / 2));
+    if (heartbeatTimerFireAgeMs(agent, firedAtMs) <= refreshBoundMs) {
+      return;
+    }
+
+    const metadata = { ...(agent.metadata ?? {}) } as Record<string, unknown>;
+    metadata[HEARTBEAT_TIMER_LIVENESS_METADATA_KEY] = {
+      firedAt: new Date(firedAtMs).toISOString(),
+      reason,
+      intervalMs,
+    };
+    this.schedulerOwnedMetadataWrite.add(agent.id);
+    try {
+      await updater.call(this.store, agent.id, { metadata });
+    } catch (err) {
+      // Observability only: a failed liveness write must not change what this tick does.
+      heartbeatLog.debug(`Timer liveness record skipped for ${agent.id}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      // The store emits `agent:updated` synchronously inside `updateAgent`, so the listener that
+      // would mistake this write for a foreign touch has already run by the time we clear the mark.
+      this.schedulerOwnedMetadataWrite.delete(agent.id);
+    }
   }
 
   async auditTimerRegistrations(reason: "start" | "interval" = "interval"): Promise<void> {
@@ -9016,8 +9177,17 @@ export class HeartbeatTriggerScheduler {
      * timer whose delivery is intentionally skipped is never re-armed as a dead
      * "zombie". Stamped even on the paths that `return` early — a fired-but-
      * skipped tick is still proof of liveness.
+     *
+     * FNXC:ReportsHealth 2026-11-18-17:15 (RUFU-716 remediation):
+     * The instant is bound to a name and handed down to `markDeliverySkipped` instead of being
+     * re-read where the durable row is composed. The row's contract is "the same instant the timer
+     * physically fired", and a `Date.now()` taken after this point carries every store round-trip
+     * below it (getAgent, getSettings) inside the interval the row claims rang. Consecutive fires
+     * are one period plus callback lateness apart, so a stamp biased by latency makes the row age
+     * SLOWER than the clock the relief is measured against, and the refresh gate misses.
      */
-    this.lastTimerFireAtMs.set(agentId, Date.now());
+    const firedAtMs = Date.now();
+    this.lastTimerFireAtMs.set(agentId, firedAtMs);
 
     try {
       const agent = await this.store.getAgent(agentId);
@@ -9050,6 +9220,12 @@ export class HeartbeatTriggerScheduler {
         skipHeartbeatWhenIdle?: boolean;
       };
       if (timerRc.skipHeartbeatWhenIdle === true && (!agent.taskId || agent.taskId.length === 0)) {
+        /*
+        FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716): the interval fired and the ENGINE chose not to
+        deliver, so record that before returning. Without it this lane's frozen `lastHeartbeatAt` reads
+        to every health surface exactly like a lost trigger, forever.
+        */
+        await this.markDeliverySkipped(agent, "idle-skip", intervalMs, firedAtMs);
         heartbeatLog.debug(`Timer tick skipped for ${agentId} (skipHeartbeatWhenIdle, no task assigned)`);
         return;
       }
@@ -9066,6 +9242,8 @@ export class HeartbeatTriggerScheduler {
           || this.isAgentEffectivelyExecuting?.(agentId)
         )
       ) {
+        // FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716): same fire-and-skip proof as the idle-skip gate.
+        await this.markDeliverySkipped(agent, "parallel-execution", intervalMs, firedAtMs);
         heartbeatLog.debug(`Timer tick skipped for ${agentId} (parallel execution disabled, bound task ${agent.taskId ?? "—"} or column-bound session executing)`);
         return;
       }
@@ -9128,6 +9306,16 @@ export class HeartbeatTriggerScheduler {
           } else {
             heartbeatLog.log(`timer-heartbeat-suppressed agentId=${agentId} reason=${reason}`);
           }
+          /*
+          FNXC:ReportsHealth 2026-11-18-14:27 (RUFU-716):
+          This is the production shape that made the false alarm permanent: STAS-300 proved the board
+          says nothing new (or the agent's own idle ladder chose the wait), the gate returned `suppress`,
+          and `lastHeartbeatAt` therefore never advanced again — so after one stale window the reports
+          table read `**stale**` for a lane whose interval was demonstrably still ringing. Both
+          suppressing verdicts mean the same operator-facing fact ("the engine withheld this delivery on
+          purpose"), so both record the same reason code; the log above already distinguishes them.
+          */
+          await this.markDeliverySkipped(agent, "wake-suppressed", intervalMs, firedAtMs);
           return;
         }
 

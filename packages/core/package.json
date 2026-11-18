@@ -44,6 +44,11 @@
       "source": "./src/agents/heartbeat-recovery-state.ts",
       "import": "./dist/agents/heartbeat-recovery-state.js"
     },
+    "./heartbeat-timer-liveness": {
+      "types": "./src/agents/heartbeat-timer-liveness.ts",
+      "source": "./src/agents/heartbeat-timer-liveness.ts",
+      "import": "./dist/agents/heartbeat-timer-liveness.js"
+    },
     "./agent-cwd-policy": {
       "types": "./src/agent-cwd-policy.ts",
       "source": "./src/agent-cwd-policy.ts",

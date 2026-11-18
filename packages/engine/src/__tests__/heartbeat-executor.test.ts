@@ -749,6 +749,154 @@ describe("executeHeartbeat", () => {
       expect(heartbeatLog.log).toHaveBeenCalledWith(expect.stringContaining("heartbeatAgeMs="));
     });
 
+    /*
+    FNXC:ReportsHealth 2026-11-18-14:44 (RUFU-716):
+    Symptom verification, reproduced from the production lane agent-3ac88b82: a 60-minute interval, no
+    idle ladder, so an effective stale window of 90 minutes; the last delivery landed 8h13m ago because
+    every interval since then was suppressed (`no-fresher-signal`), while the interval itself kept
+    firing. Pre-fix this table said `**stale**` and the section ordered "create a follow-up task to
+    investigate" on every manager heartbeat — a permanent false alarm about a lane that was healthy.
+    */
+    const SUPPRESSED_LANE_INTERVAL_MS = 60 * 60_000;
+    const SUPPRESSED_DELIVERY_AGE_MS = 29_530_259; // 8h13m, the recorded production heartbeatAgeMs.
+
+    function suppressedDeliveryAgent(opts: { withFireEvidence: boolean; id?: string; name?: string }): Record<string, unknown> {
+      const now = Date.now();
+      return {
+        id: opts.id ?? "agent-suppressed",
+        name: opts.name ?? "Suppressed Lane",
+        state: "idle",
+        taskId: null,
+        lastHeartbeatAt: new Date(now - SUPPRESSED_DELIVERY_AGE_MS).toISOString(),
+        updatedAt: new Date(now - SUPPRESSED_DELIVERY_AGE_MS).toISOString(),
+        ...(opts.withFireEvidence ? {
+          metadata: {
+            heartbeatTimerLiveness: {
+              firedAt: new Date(now - 60_000).toISOString(),
+              reason: "wake-suppressed",
+              intervalMs: SUPPRESSED_LANE_INTERVAL_MS,
+            },
+          },
+        } : {}),
+      };
+    }
+
+    function wireSuppressedLaneStore(store: AgentStore): void {
+      vi.mocked(store.getCachedAgent).mockImplementation((id: string) => ({
+        id,
+        runtimeConfig: { heartbeatIntervalMs: SUPPRESSED_LANE_INTERVAL_MS },
+      }) as unknown as Agent);
+      vi.mocked(store.getAgent).mockResolvedValue({
+        runtimeConfig: { heartbeatIntervalMs: SUPPRESSED_LANE_INTERVAL_MS },
+      } as unknown as Agent);
+    }
+
+    it("RUFU-716 AC1: a suppressed-delivery report is not stale and contributes no investigation line", async () => {
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        suppressedDeliveryAgent({ withFireEvidence: true }) as unknown as Agent,
+      ]);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Suppressed Lane \| idle \| — \| .* \| delivery skipped — nothing newer to report, timer fired .* ago \|/);
+      expect(section).not.toContain("**stale**");
+      // The AC is stated on the whole section, not one cell: no instruction to investigate a live lane.
+      expect(section).not.toContain("create a follow-up task to investigate");
+      expect(section).toContain("Actions for Unresponsive Reports");
+    });
+
+    it("RUFU-716 AC2: the identical row with no fire evidence is still stale and keeps the investigation line", async () => {
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        suppressedDeliveryAgent({ withFireEvidence: false }) as unknown as Agent,
+      ]);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Suppressed Lane \| idle \| — \| .* \| \*\*stale\*\* \|/);
+      expect(section).toContain("create a follow-up task to investigate");
+    });
+
+    it("RUFU-716: a mixed table relieves only the row carrying fire evidence", async () => {
+      const now = Date.now();
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        suppressedDeliveryAgent({ withFireEvidence: true, id: "agent-relieved", name: "Relieved Lane" }) as unknown as Agent,
+        suppressedDeliveryAgent({ withFireEvidence: false, id: "agent-silent", name: "Silent Lane" }) as unknown as Agent,
+        {
+          id: "agent-alive",
+          name: "Alive Lane",
+          state: "active",
+          taskId: null,
+          lastHeartbeatAt: new Date(now - 30_000).toISOString(),
+          updatedAt: new Date(now - 30_000).toISOString(),
+        } as unknown as Agent,
+      ]);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Relieved Lane \| idle \| — \| .* \| delivery skipped — .* \|/);
+      expect(section).toMatch(/\| Silent Lane \| idle \| — \| .* \| \*\*stale\*\* \|/);
+      expect(section).toMatch(/\| Alive Lane \| active \| — \| .* \| healthy \|/);
+      // A genuinely unexplained silence still earns the instruction.
+      expect(section).toContain("create a follow-up task to investigate");
+    });
+
+    it("RUFU-716: logs the relief distinctly while keeping the stale log literal untouched", async () => {
+      const now = Date.now();
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        suppressedDeliveryAgent({ withFireEvidence: true, id: "agent-relieved", name: "Relieved Lane" }) as unknown as Agent,
+        suppressedDeliveryAgent({ withFireEvidence: false, id: "agent-silent", name: "Silent Lane" }) as unknown as Agent,
+      ]);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(heartbeatLog.log).toHaveBeenCalledWith(
+        expect.stringContaining("[reports-health] delivery skipped agent-relieved reason=wake-suppressed"),
+      );
+      expect(heartbeatLog.log).toHaveBeenCalledWith(expect.stringContaining("timerFireAgeMs="));
+      // The needle a genuinely dead trigger still produces, byte-identical.
+      expect(heartbeatLog.log).toHaveBeenCalledWith(
+        expect.stringContaining("[reports-health] stale report agent-silent"),
+      );
+      expect(heartbeatLog.log).not.toHaveBeenCalledWith(expect.stringContaining("[reports-health] stale report agent-relieved"));
+    });
+
+    it("RUFU-716: a fire older than the row's own window relieves nothing", async () => {
+      const now = Date.now();
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        {
+          ...suppressedDeliveryAgent({ withFireEvidence: true, id: "agent-stale-fire", name: "Long Dead Trigger" }),
+          metadata: {
+            heartbeatTimerLiveness: {
+              // Recorded three hours ago: the lane has been silent longer than its own window since.
+              firedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+              reason: "wake-suppressed",
+              intervalMs: SUPPRESSED_LANE_INTERVAL_MS,
+            },
+          },
+        } as unknown as Agent,
+      ]);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp", pollIntervalMs: 5 * 60_000 });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Long Dead Trigger \| idle \| — \| .* \| \*\*stale\*\* \|/);
+      expect(section).not.toContain("delivery skipped");
+    });
+
     it("buildReportsHealthSection preserves AgentStore method binding for direct-report lookups", async () => {
       const now = new Date().toISOString();
       const report = { id: "agent-004", name: "bound-report", state: "active", taskId: "FN-102", reportsTo: "agent-001", lastHeartbeatAt: now, updatedAt: now } as Agent;
