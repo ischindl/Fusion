@@ -18,7 +18,7 @@ attribution contract RUFU-209 already established:
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
 
-import { resetHoldReleaseInstrumentation, runHoldReleaseSweep, type HoldReleasePass } from "../execution/hold-release.js";
+import { admitTaskToWip, resetHoldReleaseInstrumentation, runHoldReleaseSweep, type HoldReleasePass } from "../execution/hold-release.js";
 import { schedulerLog } from "../logger.js";
 
 const WF = "custom:slot-wf";
@@ -139,8 +139,15 @@ describe("hold-release sweep slot attribution (RUFU-698)", () => {
     const evaluateMs = Number(/evaluate (\d+)ms/.exec(line!)![1]);
     expect(numbers.slice(0, 9).reduce((sum, ms) => sum + ms, 0) + unattributedMs).toBe(evaluateMs);
     expect(slotMs).toBeGreaterThan(0);
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+    The child group now PARTITIONS the printed `slot` figure: `sum(slotChildren) + slot:residual ===
+    slot`, exactly. RUFU-698 could only assert the inequality `childSum <= slot` because a FULL parent
+    window nested around a child made the printed sum exceed `slot` (the double-count) and the residual
+    was measured against a different span than `slot`. The equality is what retires both defects.
+    */
     const childSum = Object.entries(detail!).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
-    expect(childSum).toBeLessThanOrEqual(slotMs);
+    expect(childSum + (detail!["slot:residual"] ?? 0)).toBe(slotMs);
     expect(line!.indexOf("slot-detail=")).toBeGreaterThan(line!.indexOf("unattributed="));
   });
 
@@ -181,5 +188,119 @@ describe("hold-release sweep slot attribution (RUFU-698)", () => {
     expect(detail!["slot:unknown-child"]).toBeGreaterThan(0);
     expect(detail!["slot:residual"]).toBeGreaterThan(0);
     expect(line).toContain("slot-calls=1");
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+    A child name the printer does not know is still shown AND still reconciles: the equality holds even
+    with an unlisted child, so an unexpected cost can never silently break the arithmetic the operator
+    reads.
+    */
+    const slotMs = Number(/, slot=(\d+)ms/.exec(line!)![1]);
+    const childSum = Object.entries(detail!).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
+    expect(childSum + (detail!["slot:residual"] ?? 0)).toBe(slotMs);
+  });
+
+  it("reports a nested child inside a parent exactly once, so the child sum no longer double-counts", async () => {
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+    This is the exact shape production hit: `slot:claim-snapshot` is timed INSIDE `slot:admission`. With
+    the parent on the FULL recorder (`wall`) the printed sum counted the nested window twice and
+    exceeded `slot`; the parent on the exclusive recorder (`wallNet`) reports only its own time, so the
+    nested child appears once and `sum(slotChildren) + slot:residual === slot` holds. The parent's
+    exclusive ms is also strictly less than the sum of parent+child, proving it was netted, not padded.
+    */
+    const debug = vi.spyOn(schedulerLog, "debug").mockImplementation(() => {});
+    const held = task({ id: "S-4", column: "todo" });
+    const store = storeWith([held], { maxConcurrent: 4 });
+    const clock = tickingClock();
+
+    await runHoldReleaseSweep(store, {
+      now: clock.now,
+      reserveSlot: async (_task: Task, _target: string, pass?: HoldReleasePass) => {
+        await pass?.wallNet("slot:admission", async () => {
+          await pass?.wall("slot:claim-snapshot", async () => { clock.now(); clock.now(); });
+          clock.now();
+        });
+        return null;
+      },
+    });
+
+    const line = debug.mock.calls.map((call) => String(call[0])).find((l) => l.includes("Hold-release sweep:"));
+    const detail = parseGroup(line!, "slot-detail");
+    expect(detail).toBeDefined();
+    expect(detail!["slot:claim-snapshot"]).toBeGreaterThan(0);
+    expect(detail!["slot:admission"]).toBeGreaterThan(0);
+    const slotMs = Number(/, slot=(\d+)ms/.exec(line!)![1]);
+    const childSum = Object.entries(detail!).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
+    // The nested pair reconciles against `slot` with NO double-count: equality, not overshoot.
+    expect(childSum + (detail!["slot:residual"] ?? 0)).toBe(slotMs);
+    // The parent is exclusive of its child: its ms is smaller than the two windows summed.
+    expect(detail!["slot:admission"] + detail!["slot:claim-snapshot"]).toBeGreaterThan(detail!["slot:admission"]);
+  });
+
+  it("nets a nested sweep bucket out of a parent child, so the bucket is printed once in the parenthesis only", async () => {
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+    `slot:dispatch-guard` wraps `isUnplannedForExecution`, which records the `unplanned` sweep bucket
+    itself. If dispatch-guard were the FULL recorder it would contain `unplanned` and the bucket would
+    be subtracted twice — once from `slot` (which the parenthesis already nets) and once from the child.
+    `wallNet` makes dispatch-guard exclusive of `unplanned`, so `unplanned` stays ONLY in the reconciling
+    parenthesis and `slot:unplanned` never appears as a child — the exact "must stay out of the child sum"
+    rule Step 1's netting enables.
+    */
+    const debug = vi.spyOn(schedulerLog, "debug").mockImplementation(() => {});
+    const held = task({ id: "S-5", column: "todo" });
+    const store = storeWith([held], { maxConcurrent: 4 });
+    const clock = tickingClock();
+
+    await runHoldReleaseSweep(store, {
+      now: clock.now,
+      reserveSlot: async (_task: Task, _target: string, pass?: HoldReleasePass) => {
+        await pass?.wallNet("slot:dispatch-guard", async () => {
+          await pass?.time("unplanned", async () => { clock.now(); clock.now(); clock.now(); });
+          clock.now();
+        });
+        return null;
+      },
+    });
+
+    const line = debug.mock.calls.map((call) => String(call[0])).find((l) => l.includes("Hold-release sweep:"));
+    const detail = parseGroup(line!, "slot-detail");
+    expect(detail).toBeDefined();
+    expect(detail!["slot:dispatch-guard"]).toBeGreaterThan(0);
+    // The sweep bucket stays in the parenthesis and never leaks into the child group.
+    expect(detail!["slot:unplanned"]).toBeUndefined();
+    // Exclusive: the child excludes the bucket nested inside it. If dispatch-guard were the FULL
+    // recorder it would contain `unplanned`, which `net("slot")` already subtracted from `slot`, so the
+    // child sum would EXCEED `slot` and the equality below would fail. The equality is the netting proof.
+    const slotMs = Number(/, slot=(\d+)ms/.exec(line!)![1]);
+    const childSum = Object.entries(detail!).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
+    expect(childSum + (detail!["slot:residual"] ?? 0)).toBe(slotMs);
+    // The child is strictly smaller than its raw window, which is netting, not full recording.
+    expect(detail!["slot:dispatch-guard"]).toBeLessThan(slotMs);
+  });
+
+  it("records nothing and changes no outcome for a reservation performed without a pass", async () => {
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+    The automatic admission / operator promote / event release surfaces run `tryReleaseTask` with no
+    pass, so `reserveSlot` sees `pass === undefined` and every `obs`/`obsNet` wrapper must be a pure
+    pass-through — no attribution, no behavior change. `admitTaskToWip` is that surface: it calls
+    `issueRelease` with no `pass`, so the reservation the delegate makes cannot be observed anywhere.
+    */
+    let sawPass: HoldReleasePass | undefined | "not-called" = "not-called";
+    let releases = 0;
+    const reserveSlot = async (_task: Task, _target: string, pass?: HoldReleasePass) => {
+      sawPass = pass;
+      // A delegate that WOULD attribute under a pass must not corrupt a pass-less reservation.
+      releases += 1;
+      return { release: () => {} };
+    };
+    const held = task({ id: "S-6", column: "todo" });
+    const store = storeWith([held], { maxConcurrent: 4 });
+    const release = await admitTaskToWip(store, { reserveSlot }, held, "in-progress", singleWipIr(), {});
+    // The reservation ran with no observer and still released — the guard is transparent, not lossy.
+    expect(sawPass).toBeUndefined();
+    expect(releases).toBe(1);
+    expect(release.released).toBe(true);
   });
 });

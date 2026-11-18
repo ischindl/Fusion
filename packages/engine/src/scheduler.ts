@@ -3522,6 +3522,23 @@ export class Scheduler {
           there is no pass and no observer — the call runs unwrapped, with no behavior change.
           */
           const obs = <T>(name: string, fn: () => T | Promise<T>): Promise<T> => (pass ? pass.wall(name, fn) : Promise.resolve(fn()));
+          /*
+          FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+          The EXCLUSIVE recorder for a parent segment that itself wraps a nested `slot:*` child or a nested
+          sweep bucket. `obs` (full) is for a true leaf — no nested attribution — whose whole window IS its
+          own cost. `obsNet` is for the three segments that contain attribution of their own and so must
+          report only their exclusive time, or the printed child sum double-counts and the residual
+          reappears:
+          - `slot:dispatch-guard` wraps `validateDispatchableExecution`, whose `isUnplannedForExecution`
+            records the `unplanned` sweep bucket `net("slot")` already subtracted from `slot`;
+          - `slot:admission` wraps `claimSharedPoolOccupants`, whose `slot:claim-snapshot` child is timed
+            inside the admission window;
+          - `slot:refusal-diagnostic` wraps `computeCapacityGateFacts`, the `capacity` sweep bucket.
+          A parent recorded FULL would contain time `slot` already netted out, so its child would exceed the
+          parent's own contribution and `sum(slotChildren) + slot:residual` would overshoot `slot`.
+          Outside a sweep there is no pass and no observer — the call runs unwrapped, no behavior change.
+          */
+          const obsNet = <T>(name: string, fn: () => Promise<T>): Promise<T> => (pass ? pass.wallNet(name, fn) : Promise.resolve(fn()));
           let reservedScope = false;
           let priorActiveScope: string[] | undefined;
           let priorActiveScopeColumn: Task["column"] | undefined;
@@ -3557,15 +3574,30 @@ export class Scheduler {
           The workflow-column dispatch path is the only dispatcher when the flag is on, so the planning/bootstrap guards from the legacy todo filter must also apply here — and they must be TRAIT-based, not keyed on the literal "todo" column id. A custom workflow's intake/planning column can be renamed (`ideas`, `Inbox`, the default workflow's renamed "Planning"), so gating this guard on `task.column === "todo"` alone let an unplanned card in a renamed intake column bypass the stub check and release straight into execution (FN-7648). `isUnplannedForExecution` resolves the intake trait on the task's OWN resolved workflow IR so every renamed variant is covered.
           */
           try {
-            const ir = await obs("slot:dispatch-guard", () => resolveWorkflowIrForTask(this.store, task.id, wipIrCache, selectionCache));
-            // RUFU-209: this guard re-checks the SAME snapshot task the sweep just checked for readiness,
-            // so forward the sweep's pass and its PROMPT.md memo. A reservation invoked outside a sweep
-            // (pass undefined) keeps its own live read.
-            if (await isUnplannedForExecution(this.store, task, ir, pass)) {
+            /*
+            FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+            The whole IR-resolve + unplanned-check guard is now ONE named child, `slot:dispatch-guard`, on
+            the EXCLUSIVE recorder. `isUnplannedForExecution` reads PROMPT.md through the pass memo, so on
+            the cold-memo path it records the `prompt` sweep bucket INSIDE this window — the exact nested
+            sweep bucket `net("slot")` already subtracted from the printed `slot`. A FULL recorder here
+            would contain that `prompt` time and the child sum would overshoot `slot`; `obsNet` reports the
+            guard's own time only. The refusal marker runs after the child (a rare write, left to the
+            residual), matching the pre-RUFU-719 ordering.
+            */
+            let guardUnplanned = false;
+            let guardIr: Awaited<ReturnType<typeof resolveWorkflowIrForTask>> | undefined;
+            await obsNet("slot:dispatch-guard", async () => {
+              guardIr = await resolveWorkflowIrForTask(this.store, task.id, wipIrCache, selectionCache);
+              // RUFU-209: this guard re-checks the SAME snapshot task the sweep just checked for readiness,
+              // so forward the sweep's pass and its PROMPT.md memo. A reservation invoked outside a sweep
+              // (pass undefined) keeps its own live read.
+              guardUnplanned = await isUnplannedForExecution(this.store, task, guardIr, pass);
+            });
+            if (guardUnplanned) {
               // RUFU-209: the guard above just resolved this task's PROMPT.md (via the pass memo or a
               // live read); the refusal marker re-reads the SAME fact, so forward the pass and the
               // recorder's read becomes a memo hit instead of a second PROMPT.md round trip.
-              await checkAndRecordUnplannedExecutionBlock(this.store, task, ir, pass);
+              await checkAndRecordUnplannedExecutionBlock(this.store, task, guardIr!, pass);
               return null;
             }
           } catch {
@@ -3582,7 +3614,7 @@ export class Scheduler {
             */
             let activeOverlapBlockedBy: string | null = null;
             try {
-              const taskScope = await getFilteredFileScope(task);
+              const taskScope = await obs("slot:scope", () => getFilteredFileScope(task));
               if (taskScope.length > 0 && !isCoordinationOnlyTask(task, taskScope)) {
                 activeOverlapBlockedBy = findOverlappingFileScopeLease(task, taskScope)?.id ?? null;
               }
@@ -3601,10 +3633,19 @@ export class Scheduler {
 
           if (this.options.missionStore && task.sliceId) {
             try {
-              const slice = await this.options.missionStore.getSlice(task.sliceId);
-              const milestone = slice ? await this.options.missionStore.getMilestone(slice.milestoneId) : undefined;
-              const mission = milestone ? await this.options.missionStore.getMission(milestone.missionId) : undefined;
-              if (mission?.status === "blocked") {
+              /*
+              FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+              The three mission/slice/milestone reads that decide whether a card's mission is blocked run
+              for every slice-linked candidate and were un-attributed. Named `slot:mission-gate`; the queued
+              write on the blocked branch is a rare refusal and stays in the residual.
+              */
+              const missionBlocked = await obs("slot:mission-gate", async () => {
+                const slice = await this.options.missionStore!.getSlice(task.sliceId!);
+                const milestone = slice ? await this.options.missionStore!.getMilestone(slice.milestoneId) : undefined;
+                const mission = milestone ? await this.options.missionStore!.getMission(milestone.missionId) : undefined;
+                return mission?.status === "blocked";
+              });
+              if (missionBlocked) {
                 await this.store.updateTask(task.id, { status: "queued" });
                 await this.logDispatchQueuedReason(task.id, "queued — mission is blocked");
                 return null;
@@ -3621,7 +3662,7 @@ export class Scheduler {
           FNXC:WorkflowScheduling 2026-06-23-11:12:
           The workflow sweep is the only dispatcher, so the scheduler-only pre-dispatch gates must run before a capacity hold moves to an execution column. Keep dependency, filesystem, node-routing, permanent-agent, and oscillation checks on this path instead of relying on the retired todo loop.
           */
-          const validation = await obs("slot:dispatch-guard", () => this.validateTaskFilesystem(task));
+          const validation = await obsNet("slot:dispatch-guard", () => this.validateTaskFilesystem(task));
           if (!validation.valid) {
             schedulerLog.warn(`Task ${task.id} filesystem validation failed: ${validation.reason}`);
             /*
@@ -3670,12 +3711,18 @@ export class Scheduler {
 
           if (typeof this.store.getTasksDir === "function") {
             const promptPath = getPromptPath(this.store.getTasksDir(), task.id);
-            const staleness = await evaluateSpecStaleness({
+            /*
+            FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+            The staleness leg (PROMPT.md mtime read + dedicated-planner-column IR resolve) runs on every
+            eligible card and was wholly un-attributed before RUFU-719. Named `slot:staleness`; it takes no
+            pass and records no sweep bucket, so a full recorder equals its exclusive cost.
+            */
+            const staleness = await obs("slot:staleness", async () => evaluateSpecStaleness({
               settings,
               promptPath,
               task,
               plannerColumns: await resolveDedicatedPlannerColumnsForTask(this.store, task.id, wipIrCache),
-            });
+            }));
             if (staleness.isStale) {
               schedulerLog.warn(`Task ${task.id} specification is stale — ${staleness.reason}`);
               /*
@@ -3720,7 +3767,13 @@ export class Scheduler {
             }
           }
 
-          const freshTask = await this.store.getTask(task.id);
+          /*
+          FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+          The re-read of the live row (the ~1 ms measured per reservation) and the assignee-availability
+          probe were both un-attributed; naming them makes the two per-card store reads the reservation
+          always pays visible on the line rather than pooled into the residual.
+          */
+          const freshTask = await obs("slot:fresh-read", () => this.store.getTask(task.id));
           if (!freshTask || freshTask.column !== task.column || freshTask.paused || freshTask.userPaused) {
             if (freshTask?.userPaused === true && freshTask.status !== "queued") {
               await this.store.updateTask(task.id, { status: "queued" });
@@ -3731,7 +3784,8 @@ export class Scheduler {
           let observedOverlapBlockedBy = freshTask.overlapBlockedBy ?? null;
 
           const reservedAssigneeId = freshTask.assignedAgentId ?? null;
-          if (!await this.isTaskAssigneeAvailable(freshTask)) {
+          const assigneeAvailable = await obs("slot:assignee", () => this.isTaskAssigneeAvailable(freshTask));
+          if (!assigneeAvailable) {
             const ownerId = freshTask.assignedAgentId!;
             const agents = this.options.agentStore;
             if (agents && !freshTask.checkedOutBy && !executingTaskLock.has(task.id)
@@ -3745,11 +3799,18 @@ export class Scheduler {
           }
 
           if (freshTask.checkedOutBy && this.options.leaseManager) {
-            const recovered = await this.options.leaseManager.recoverAbandonedLease(
+            /*
+            FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+            RUFU-698 printed `slot:lease-write` in the detail group but NOTHING ever recorded it, so the
+            name always showed as absent even when a stale checkout lease made the recovery the single most
+            expensive read in the leg. It is now the recorder for the abandoned-lease recovery itself. The
+            blocked-dispatch refusal writes after it are rare and stay in the residual.
+            */
+            const recovered = await obs("slot:lease-write", () => this.options.leaseManager!.recoverAbandonedLease(
               freshTask.id,
               "scheduler detected stale todo lease",
               { preserveProgress: true },
-            );
+            ));
             if (!recovered) {
               await this.options.leaseManager.reconcileLeaseRow(freshTask.id);
               await this.store.updateTask(freshTask.id, { status: "queued" });
@@ -3758,7 +3819,27 @@ export class Scheduler {
             }
           }
 
-          const latestSettings = await this.store.getSettings();
+          /*
+          FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 3):
+          THE CUT. The mid-pass `getSettings` was the reservation leg's dominant per-card read — one store
+          round-trip for every eligible card, each returning the SAME project-wide settings. All three
+          consumers of its result (the `globalPause`/`enginePaused` flags, the dispatch-oscillation
+          thresholds, and `planApprovalMode`) are project-level and identical across the pass, and the sweep
+          already read them ONCE at its top into `pass.settings`. Reuse that snapshot and re-read only once
+          `PAUSE_CHECK_RECHECK_MS` of sweep-clock has elapsed, so a mid-pass pause flip is still caught within
+          the interval (≤ that many real ms live) while N reads collapse to ~1 per pass. `settings` (the
+          schedule-top read) already feeds `resolveEffectiveNode` right below, so the leg was mixing a
+          per-card re-read with a pass-level snapshot of the same object; this makes the snapshot the single
+          source. Aligns with RUFU-209's pass-memo rule — a mid-pass change to a stable project input defers
+          a release to the next pass at worst, never forces one. The remaining reads stay named
+          `slot:pause-check`, so the cut is visible (a few ms per long pass) rather than silent.
+          */
+          const PAUSE_CHECK_RECHECK_MS = 250;
+          let latestSettings = pass?.settings;
+          if (!latestSettings || (pass && pass.now() - (pass.settingsCheckedAtMs ?? Number.NEGATIVE_INFINITY) >= PAUSE_CHECK_RECHECK_MS)) {
+            latestSettings = await obs("slot:pause-check", () => this.store.getSettings());
+            if (pass) { pass.settings = latestSettings; pass.settingsCheckedAtMs = pass.now(); }
+          }
           if (latestSettings.globalPause) {
             schedulerLog.log(`Task ${task.id} dispatch aborted — globalPause became active mid-pass`);
             return null;
@@ -3772,7 +3853,13 @@ export class Scheduler {
           logTaskRouting(task.id, effectiveNode);
 
           if (effectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
-            const nodeValidation = await this.options.validateNodeDispatch(effectiveNode.nodeId);
+            /*
+            FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+            `resolveEffectiveNode`/`getNodeHealth` are synchronous; the only per-card await in the routing
+            leg is `validateNodeDispatch`, which was un-attributed. Named `slot:node-routing`; the audits
+            and log writes on the block/park branches are rare and stay in the residual.
+            */
+            const nodeValidation = await obs("slot:node-routing", () => this.options.validateNodeDispatch!(effectiveNode.nodeId!));
             if (!nodeValidation.allowed) {
               if (!this.wasNodeDispatchValidationBlocked.has(task.id)) {
                 this.wasNodeDispatchValidationBlocked.add(task.id);
@@ -3993,11 +4080,16 @@ export class Scheduler {
           symbol-lock candidate bypasses coarse overlap only; every capacity,
           checkout, dependency, and semaphore gate below still applies.
           */
-          const missionAdmission = await decideMissionSymbolAdmission(
+          /*
+          FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+          `decideMissionSymbolAdmission` re-derives the canonical lineage (mission/feature/slice reads +
+          plan-approval check) for every candidate and was un-attributed. Named `slot:mission-admission`.
+          */
+          const missionAdmission = await obs("slot:mission-admission", () => decideMissionSymbolAdmission(
             freshTask,
             this.options.missionStore,
             { planApprovalRequired: latestSettings.planApprovalMode === "require-all" },
-          );
+          ));
           if (missionAdmission.kind === "lineage-blocked") {
             if (observedOverlapBlockedBy) {
               const cleared = await clearObservedOverlapIfStillStale(freshTask, observedOverlapBlockedBy);
@@ -4072,7 +4164,15 @@ export class Scheduler {
           was removed; the serialization and the reservation lifetime are unchanged.
           */
           let projectSlotReserved = false;
-          const admittedTaskId = await obs("slot:admission", () => projectAdmissionCoordinator.admitNext({
+          /*
+          FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+          `slot:admission` is a PARENT: its `admitNext` invokes the `claimed`/`claimedTaskIds` callbacks
+          synchronously inside the admission window, and those callbacks are the separately-timed
+          `slot:claim-snapshot` child. Recorded FULL it would contain the claim snapshot a second time, so
+          `sum(slotChildren)` would exceed `slot`. `obsNet` reports only the coordinator's own drain time,
+          which is what makes the two reconcilable and lets Step 3 tell the claim read apart from the drain.
+          */
+          const admittedTaskId = await obsNet("slot:admission", () => projectAdmissionCoordinator.admitNext({
             projectId: this.store.getRootDir(),
             maxConcurrent: activeTaskLimit,
             claimed: async () => (await obs("slot:claim-snapshot", claimsIncludingThisPass)).agent.count,
@@ -4121,7 +4221,7 @@ export class Scheduler {
             in this pass — it is no longer the pre-sweep snapshot the comment warns about, and it is
             not re-derived per candidate, which was the cost this refusal path paid on every card.
             */
-            const freshClaims = await claimsIncludingThisPass();
+            const freshClaims = await obs("slot:refusal-diagnostic", () => claimsIncludingThisPass());
             const exhausted = admittedTaskId === undefined;
             const freshDiagnostic = computeConcurrencyGateDiagnostic({
               agentSlots: freshClaims.agent.count,
@@ -4154,11 +4254,11 @@ export class Scheduler {
             the reservation release path below returns this lock if moveTask
             rejects, while a successful move transfers ownership to the task.
             */
-              const lockResult = await this.store.acquireSymbolLocks(
+              const lockResult = await obs("slot:symbol-lock", () => this.store.acquireSymbolLocks(
                 missionAdmission.symbols,
                 { ownerTaskId: task.id, missionId: freshTask.missionId, featureId: missionAdmission.feature.id, agentId: "scheduler" },
                 SYMBOL_LOCK_LEASE_MS,
-              );
+              ));
               if (!lockResult.acquired) {
                 if (dropPreHeldExecutorSlot(task.id)) sem?.release();
                 releaseReservedScope();

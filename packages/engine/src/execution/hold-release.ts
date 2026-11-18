@@ -153,6 +153,17 @@ export interface HoldReleasePass {
   workItemMemo: Map<string, WorkflowWorkItemRow[] | null>;
   /** Memoised settings snapshot for THIS pass (prefetched once at the top of the sweep). */
   settings?: HoldReleaseSettingsSnapshot;
+  /*
+  FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 3):
+  When `settings` was last read against the real store, on the pass clock. The reservation leg re-reads
+  project-level settings (`globalPause`/`enginePaused`, oscillation thresholds, plan-approval mode) once
+  per eligible card; that was the leg's dominant per-card store round-trip and every card got the SAME
+  project-wide values. It now reuses the pass snapshot and refreshes only on a bounded interval, so a
+  mid-pass pause flip is still caught within the interval while N reads collapse to ~1 per pass. Gated on
+  `now()` — the sweep's own clock, which is real `Date.now()` in production and the charged fake clock in
+  the fit harness, so the bound means wall time live and is deterministic under test.
+  */
+  settingsCheckedAtMs?: number;
   /** The sweep's read tally. Present only for sweep-created passes so memo-backed helpers can
    *  count the round trips they ACTUALLY perform (cache hits cost nothing and must not be
    *  counted); direct scheduler callers create passes without a tally. RUFU-209. */
@@ -167,23 +178,42 @@ export interface HoldReleasePass {
   FNXC:HoldReleaseSlotAttribution 2026-10-16-17:19 (RUFU-698 Step 1):
   The `slot` bucket was the sweep's only un-attributed giant (field: `slot=13770ms` inside a 30038ms
   sweep with `released=0`), but the work behind it lives inside the scheduler's `reserveSlot` closure,
-  which the sweep cannot see into. `slotChildren` holds FULL wall ms per `slot:*` child so the
+  which the sweep cannot see into. `slotChildren` holds one EXCLUSIVE wall ms per `slot:*` child so the
   reservation leg becomes measurable at call granularity. Children deliberately do NOT go through
   `phases`/`recorded`: a child that contained an inner sweep net (e.g. `unplanned`, which
   `isUnplannedForExecution` records itself) would be subtracted twice — once from `slot` and once from
   the child — which would shrink `slot` and inflate `unattributed` while leaving the reconciling list
   wrong. Keeping them in a separate map is what preserves both contracts at once: the printed
-  `(release-config=…, unattributed=…)` list keeps its exact meaning, and `sum(slotChildren) ≤
-  netWallMs("slot")` holds by construction because every child is a sequential wall window inside the
-  slot window.
+  `(release-config=…, unattributed=…)` list keeps its exact meaning.
+
+  FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+  RUFU-698 asserted `sum(slotChildren) ≤ netWallMs("slot")` — a FULL-window inequality. Production
+  honored the child-splitting half of that card and not the completion rule: in 11/11 sampled sweeps
+  `slot:residual` was the largest entry, because the child set was incomplete AND because a parent
+  window (`slot:admission`) recorded its FULL wall while also containing a child (`slot:claim-snapshot`),
+  so the printed child sum DOUBLE-COUNTED the nested window and exceeded the `slot` figure. The fix is
+  to make each recorded child EXCLUSIVE of everything attributed inside it — nested `slot:*` children
+  (via `wallNet`) AND nested sweep buckets (via `time`/`net`). `wall` stays the FULL recorder for true
+  leaves; `wallNet` is the parent recorder. With children exclusive, `sum(slotChildren) + slot:residual
+  === phases.get("slot")` (the `slot` value the operator reads) holds by construction — the printed
+  group now partitions the number the residual is computed against, and the residual is bounded rather
+  than dominant. Children still never enter `phases`/`recorded`, so `unattributed` keeps its meaning.
   */
   slotChildren: Map<string, number>;
-  /** FULL wall ms per `net()` bucket name. Never printed in the reconciling list; used to bound `slotChildren`. */
+  /** FULL wall ms per `net()` bucket name. Never printed; kept as the raw bounding reference for a net window. */
   netWallMs: Map<string, number>;
   /** Capacity reservations THIS pass performed — the divisor that turns a `slot` total into a per-call cost. */
   slotCalls: number;
-  /** Record `fn`'s FULL wall time under a `slot:*` child name without touching the reconciling buckets. */
+  /** Record `fn`'s FULL wall time under a `slot:*` child name without touching the reconciling buckets. Use for a true leaf (nothing named nested inside). */
   wall<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
+  /**
+   * Record `fn`'s EXCLUSIVE wall time under a `slot:*` parent name: the window MINUS everything already
+   * attributed inside it — nested `slot:*` children (via `wall`/`wallNet`) and nested sweep buckets (via
+   * `time`/`net`). Use for any parent that wraps other named work, so the child set never double-counts
+   * and `sum(slotChildren) + slot:residual` reconciles to the printed `slot` figure. Never touches
+   * `phases`/`recorded`, so `unattributed` keeps its meaning.
+   */
+  wallNet<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
 }
 
 /** Build a fresh per-pass observation record. Never reuse across passes. */
@@ -192,6 +222,15 @@ function createHoldReleasePass(now: () => number, counters?: SweepCounters): Hol
   const slotChildren = new Map<string, number>();
   const netWallMs = new Map<string, number>();
   let recorded = 0;
+  /*
+  FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+  Running total of everything recorded into `slotChildren` this pass, the sibling of `recorded` for the
+  reconciling buckets. A `wallNet` parent subtracts BOTH this tally's delta (nested slot children) AND
+  `recorded`'s delta (nested sweep buckets) to land on its exclusive time, mirroring how `net` subtracts
+  `recorded`. Nested windows are sequential/stack-disciplined (plain await code), so a running counter
+  telescopes correctly at every depth — `sum(slotChildren)` then never counts a nested window twice.
+  */
+  let slotRecorded = 0;
   const add = (name: string, ms: number): void => {
     phases.set(name, (phases.get(name) ?? 0) + ms);
     recorded += ms;
@@ -209,7 +248,21 @@ function createHoldReleasePass(now: () => number, counters?: SweepCounters): Hol
     async wall<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
       const start = now();
       const value = await fn();
-      slotChildren.set(name, (slotChildren.get(name) ?? 0) + Math.max(0, now() - start));
+      const ms = Math.max(0, now() - start);
+      slotChildren.set(name, (slotChildren.get(name) ?? 0) + ms);
+      slotRecorded += ms;
+      return value;
+    },
+    async wallNet<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+      const start = now();
+      const slotBefore = slotRecorded;
+      const recordedBefore = recorded;
+      const value = await fn();
+      const wallMs = Math.max(0, now() - start);
+      // Exclusive = the window minus everything attributed inside it: nested slot children AND nested sweep buckets.
+      const exclusive = Math.max(0, wallMs - (slotRecorded - slotBefore) - (recorded - recordedBefore));
+      slotChildren.set(name, (slotChildren.get(name) ?? 0) + exclusive);
+      slotRecorded += exclusive;
       return value;
     },
     async time<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
@@ -1395,8 +1448,34 @@ export async function runHoldReleaseSweep(
     that replaces an inference with a measurement — before it, a `slot=12074ms` line with `released=0`
     and `held=5` only allowed a ~2s-per-call guess, because the handful of candidates that reached the
     reservation line was unknown.
+
+    FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 2):
+    The scheduler's `reserveSlot` closure now names every segment of the capacity-reservation leg, so this
+    list carries all of them in reservation-execution order: the dispatch guard, the mission-blocked gate,
+    the staleness check, the fresh row re-read, the assignee probe, the abandoned-lease recovery, the mid-
+    pass pause re-read, node-routing, the mission symbol-admission decision, the overlap scope read, the
+    admission drain, the nested claim snapshot it contains, the symbol-lock acquire, and the capacity
+    refusal diagnostic. `slot:admission` precedes `slot:claim-snapshot` because the claim is timed INSIDE
+    the admission window; `slot:residual` (appended by `slotFields`) catches any refusal write or future
+    child nobody named. A child is only listed when the pass actually recorded it, and the `extra`
+    catch-all below still prints any name missing here.
     */
-    const SLOT_PHASE_ORDER = ["slot:dispatch-guard", "slot:scope", "slot:claim-snapshot", "slot:admission", "slot:lease-write"] as const;
+    const SLOT_PHASE_ORDER = [
+      "slot:dispatch-guard",
+      "slot:mission-gate",
+      "slot:staleness",
+      "slot:fresh-read",
+      "slot:assignee",
+      "slot:lease-write",
+      "slot:pause-check",
+      "slot:node-routing",
+      "slot:mission-admission",
+      "slot:scope",
+      "slot:admission",
+      "slot:claim-snapshot",
+      "slot:symbol-lock",
+      "slot:refusal-diagnostic",
+    ] as const;
     const slotFields = (): string => {
       const named = SLOT_PHASE_ORDER.filter((name) => pass.slotChildren.has(name));
       // An unlisted child is still printed (sorted) — an unexpected cost must not be silently dropped.
@@ -1409,8 +1488,17 @@ export async function runHoldReleaseSweep(
       the reservation leg the same way `unattributed` reconciles the phase list. A cost nobody named is
       therefore visible as a number instead of disappearing, which is what makes the next step (cut the
       dominant child) decidable from one log line.
+
+      FNXC:HoldReleaseSlotResidual 2026-11-17-23:44 (RUFU-719 Step 1):
+      RUFU-698 computed this against `netWallMs("slot")` — the slot window's RAW wall — while the `slot`
+      figure printed in the parenthesis is `phases.get("slot")` = that same window NET of the sweep
+      buckets (`unplanned`, `prompt`, …) recorded inside it. Two spans, so the two numbers could never
+      reconcile and any PROMPT.md read in the leg sat in the residual forever. Redefined against
+      `phases.get("slot")`: the child group now partitions the number the operator actually reads, so
+      `sum(slotChildren) + slot:residual === slot` holds exactly (clamped at 0 only because the print is
+      defensive). `netWallMs` keeps its raw-bounding role and stays unprinted.
       */
-      const residualMs = Math.max(0, (pass.netWallMs.get("slot") ?? 0) - [...pass.slotChildren.values()].reduce((sum, ms) => sum + ms, 0));
+      const residualMs = Math.max(0, (pass.phases.get("slot") ?? 0) - [...pass.slotChildren.values()].reduce((sum, ms) => sum + ms, 0));
       const parts = children.map((name) => `${name}=${Math.max(0, pass.slotChildren.get(name) ?? 0)}ms`);
       if (residualMs > 0) parts.push(`slot:residual=${residualMs}ms`);
       return `, slot-calls=${pass.slotCalls}, slot-detail=(${parts.join(", ")})`;
@@ -1437,6 +1525,13 @@ export async function runHoldReleaseSweep(
     counters.settings += 1;
     const settings = await store.getSettings();
     pass.settings = settings;
+    /*
+    FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 3):
+    Stamp the freshness of the pass settings snapshot here, the single site that reads it, so the
+    reservation leg's bounded-interval reuse (`settingsCheckedAtMs`) measures age from THIS read rather
+    than from an unset epoch that would force a re-read on every first card.
+    */
+    pass.settingsCheckedAtMs = deps.now();
     if (expired()) return logPreambleTruncation(0);
     counters.tasks += 1;
     /*

@@ -454,3 +454,166 @@ describe("RUFU-698 Step 2: hold-release sweep budget fit through the real reserv
     expect(sum).toBeGreaterThanOrEqual(0);
   });
 });
+
+/*
+FNXC:HoldReleaseSlotResidual 2026-11-18-00:55 (RUFU-719 Steps 2 & 4):
+RUFU-698 named five children and measured `sum(slotChildren) ≤ slot` (an inequality). Production then
+reported `slot:residual` as the dominant child (11/11 sweeps), which meant the child set was NOT the
+reservation leg — ~15 awaits inside `reserveSlot` were never named and fell into the residual, and a
+parent (dispatch-guard/admission) recorded its FULL window while also containing a child, so the sum
+could even overshoot `slot`. RUFU-719 wrapped every segment of the leg and made each parent EXCLUSIVE,
+so the child group now partitions the printed `slot` figure exactly.
+
+These run the REAL closure (a stubbed `reserveSlot` would measure the stub, which RUFU-698 already
+rejected). They assert the two contracts Step 2/4 hinge on: the reconciliation EQUALITY, and that the
+per-card reads the leg always performs are each NAMED — not the rare conditional branches, whose absence
+is itself proven to mean their branch did not run.
+*/
+describe("RUFU-719 Step 2: the real reservation leg reconciles as a partition, not an inequality", () => {
+  beforeEach(() => {
+    resetHoldReleaseInstrumentation();
+    vi.restoreAllMocks();
+    vi.spyOn(Scheduler.prototype as unknown as { validateTaskFilesystem: unknown }, "validateTaskFilesystem")
+      .mockResolvedValue({ valid: true } as never);
+  });
+
+  /** Every child's ms except the residual; the residual is what must close the gap to exactly `slot`. */
+  const childSumOf = (detail: Record<string, number>): number =>
+    Object.entries(detail).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
+
+  it("reconciles sum(slotChildren) + slot:residual to the printed slot exactly", async () => {
+    const run = createFitRun({ tasks: board({ candidates: 30 }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    expect(result.slotCalls).toBe(30);
+
+    const slotMs = Number(/, slot=(\d+)ms/.exec(result.line)?.[1] ?? -1);
+    expect(slotMs).toBeGreaterThan(0);
+    expect(Object.keys(result.slotDetail).length).toBeGreaterThan(0);
+    /*
+    The equality RUFU-698 could only assert as `childSum ≤ slot`. A parent recorded FULL around a nested
+    child would push `childSum` PAST `slot` (the double-count that made the residual meaningless); a
+    child containing an un-netted sweep bucket would too. Neither survives here, so the two close exactly.
+    */
+    expect(childSumOf(result.slotDetail) + (result.slotDetail["slot:residual"] ?? 0)).toBe(slotMs);
+  });
+
+  it("names every per-card read segment the leg always performs, rather than pooling it into the residual", async () => {
+    const run = createFitRun({ tasks: board({ candidates: 30 }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    /*
+    These children are on the unconditional path of `reserveSlot` for an unlinked, unassigned, in-
+    capacity candidate, so each must be PRESENT on the line. `slot:residual` being present alongside them
+    is fine (a small un-named slice); what would regress is any of these vanishing back into the residual.
+    `slot:pause-check` is deliberately NOT listed: Step 3 cut it (see the next describe) because it is the
+    one per-card read whose result is pass-invariant.
+    */
+    for (const name of [
+      "slot:dispatch-guard",
+      "slot:fresh-read",
+      "slot:assignee",
+      "slot:mission-admission",
+      "slot:admission",
+      "slot:claim-snapshot",
+    ]) {
+      expect(result.slotDetail, `expected ${name} named on the real-closure line`).toHaveProperty(name);
+    }
+    // The reads that charge the clock per card still cost real ms — the cut left them untouched.
+    expect(result.slotDetail["slot:fresh-read"]).toBeGreaterThan(0);
+    expect(result.slotDetail["slot:claim-snapshot"]).toBeGreaterThan(0);
+  });
+
+  it("reports the dominant child by name, so Step 3's cut is decidable from the line", async () => {
+    const run = createFitRun({ tasks: board({ candidates: 30 }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    const named = Object.entries(result.slotDetail).filter(([name]) => name !== "slot:residual");
+    expect(named.length).toBeGreaterThan(0);
+    const [dominantName, dominantMs] = named.reduce((best, cur) => (cur[1] > best[1] ? cur : best));
+    // The dominant slice is a NAMED segment (not the residual) and is a real measurement, never a tie-at-zero.
+    expect(dominantName.startsWith("slot:")).toBe(true);
+    expect(dominantMs).toBeGreaterThan(0);
+    // And it is the child the residual no longer dwarfs: the named set is at least half the leg.
+    expect(childSumOf(result.slotDetail)).toBeGreaterThanOrEqual(result.slotDetail["slot:residual"] ?? 0);
+    /*
+    The reported symptom was `slot:residual` DOMINATING the printed slot detail (largest single slice, 11/11
+    sweeps). Naming every segment must therefore drive the residual down to attribution epsilon — at or under
+    ONE controlled-clock tick (`FIT_CHARGE_MS`), i.e. no measurable work left unnamed. With every segment
+    named and the pass-invariant pause-check cut, the child set closes the leg exactly and the residual is 0
+    on this harness. This is the direct anti-symptom check: a residual that still outranks every individual
+    child (or even just exceeds one tick) is unobserved work and re-introduces the reported failure.
+    */
+    expect(result.slotDetail["slot:residual"] ?? 0).toBeLessThanOrEqual(FIT_CHARGE_MS);
+    expect(result.slotDetail["slot:residual"] ?? 0).toBeLessThan(dominantMs);
+  });
+
+  it("leaves a conditional child absent only because its branch did not run (lease-write proof)", async () => {
+    /*
+    The card requires `slot:lease-write` to be nonzero OR a test proving the recovery branch does not run.
+    This board has no `checkedOutBy`, so `recoverAbandonedLease` — the sole recorder of `slot:lease-write`
+    — is never invoked, and the name stays off the line. That is the honest "branch did not run" outcome,
+    distinct from RUFU-698's shape where the name existed but nothing EVER recorded it under any input.
+    */
+    const run = createFitRun({ tasks: board({ candidates: 10 }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    expect(result.slotCalls).toBe(10);
+    expect(result.slotDetail["slot:lease-write"]).toBeUndefined();
+    // No store call named for the lease recovery ran, which is why the child is absent.
+    expect(result.byMethod["recoverAbandonedLease"] ?? 0).toBe(0);
+  });
+});
+
+/*
+FNXC:HoldReleaseSlotResidual 2026-11-18-00:26 (RUFU-719 Step 3):
+The cut. Of the per-card reads the harness ranks as tied-dominant (fresh-read, pause-check, scope each
+one store round-trip per eligible card), only `pause-check` returns PASS-INVARIANT data — project-level
+`globalPause`/`enginePaused`, oscillation thresholds, plan-approval mode — already read once per sweep
+into `pass.settings`. The reservation leg now reuses that snapshot and re-reads on a bounded interval,
+so the same object is no longer re-fetched once per card.
+*/
+describe("RUFU-719 Step 3: the pause-check cut removes the leg's dominant per-card settings read", () => {
+  beforeEach(() => {
+    resetHoldReleaseInstrumentation();
+    vi.restoreAllMocks();
+    vi.spyOn(Scheduler.prototype as unknown as { validateTaskFilesystem: unknown }, "validateTaskFilesystem")
+      .mockResolvedValue({ valid: true } as never);
+  });
+
+  const childSumOf = (detail: Record<string, number>): number =>
+    Object.entries(detail).reduce((sum, [name, ms]) => (name === "slot:residual" ? sum : sum + ms), 0);
+
+  it("collapses the settings re-reads from once-per-card to a bounded few per pass", async () => {
+    const CANDIDATES = 40;
+    const run = createFitRun({ tasks: board({ candidates: CANDIDATES }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    expect(result.slotCalls).toBe(CANDIDATES);
+
+    /*
+    Before the cut every card re-fetched settings, so `getSettings` grew with the board (schedule-top +
+    sweep-top + ~one per candidate). After it the leg draws on the pass snapshot and re-reads only past
+    the interval, so the pass performs a bounded handful regardless of board size. Assert well below the
+    candidate count — the honest shape is "constant per pass", not a magic constant.
+    */
+    const settingsReads = result.byMethod["getSettings"] ?? 0;
+    expect(settingsReads).toBeLessThan(CANDIDATES);
+    expect(settingsReads).toBeLessThanOrEqual(4);
+    // The pause-check child, if it appears at all on a pass this short, is a couple of reads, not N.
+    expect(result.slotDetail["slot:pause-check"] ?? 0).toBeLessThan(CANDIDATES);
+  });
+
+  it("leaves the genuinely per-card reads (fresh-read, scope) un-cut, and the leg still reconciles", async () => {
+    const CANDIDATES = 40;
+    const run = createFitRun({ tasks: board({ candidates: CANDIDATES }), perReadMs: FIT_CHARGE_MS });
+    const result = await run.pass();
+    /*
+    The cut targeted the ONE pass-invariant read. `slot:fresh-read` re-checks the live row's mutable
+    column/pause state and `slot:scope` reads each card's OWN file scope — both per-card by nature, so
+    neither is memoizable and both must still be paid once per card. If the cut had over-reached and
+    collapsed a per-card read, this is the assertion that catches it.
+    */
+    expect(result.slotDetail["slot:fresh-read"]).toBeGreaterThan(0);
+    expect(result.slotDetail["slot:scope"] ?? 0).toBeGreaterThan(0);
+    // And the partition invariant survives the cut exactly.
+    const slotMs = Number(/, slot=(\d+)ms/.exec(result.line)?.[1] ?? -1);
+    expect(slotMs).toBeGreaterThan(0);
+    expect(childSumOf(result.slotDetail) + (result.slotDetail["slot:residual"] ?? 0)).toBe(slotMs);
+  });
+});

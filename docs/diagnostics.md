@@ -392,14 +392,32 @@ FNXC:HoldReleaseAttribution 2026-09-10-01:10 (RUFU-209):
 Field evidence: on 151-215-task boards sweeps ran 2132-10327 ms and the `evaluate` accumulator was a single anonymous residual (sampled 2012-8928 ms) — an operator could not tell which sub-phase to cut, and on a multi-project host the line named no project at all. Every summary line now starts `Hold-release sweep: project=<key>` and the `evaluate` figure is decomposed into disjoint named buckets — `(release-config, dependency, readiness, issue-release, prompt, unplanned, workitem, handoff, slot, unattributed)` — where each net bucket excludes the time its nested buckets already claimed and `unattributed` is the honest residual, so the buckets always reconcile to `evaluate`. The `reads(...)` tally gained `prompts`, `workItems`, and `evalSettings`: counts of round trips the pass ACTUALLY issued (memo hits are not counted). The same work eliminated most of the time those buckets measure: one per-scheduler-pass observation record memoises stable input facts (PROMPT.md content, work-item list, settings snapshot, dependency verdicts) per task id for the pass only, so a card consumed by several gates is read once per pass instead of once per consumer, and nothing is cached across passes.
 -->
 
-## Hold-release slot attribution fields (RUFU-698)
+## Hold-release slot attribution fields (RUFU-698, completed by RUFU-719)
 
 The `slot` bucket was the sweep's only un-attributed giant (`slot=13770ms` inside a `30038ms` sweep with `released=0, held=3`), and the number that matters — cost per capacity reservation — could not be read from it because the reservation count was invisible. Two fields, printed **after** the reconciling parenthesis so the RUFU-209 bucket list keeps its exact meaning:
 
 - `slot-calls=N` — reservations performed by this pass. `slot ÷ slot-calls` is now arithmetic on one line instead of an inference from `released`/`held` counters.
-- `slot-detail=(slot:dispatch-guard=…, slot:scope=…, slot:claim-snapshot=…, slot:admission=…, slot:lease-write=…, slot:residual=…)` — the breakdown of the reservation leg, printed only when at least one child recorded time. Children are recorded as **full wall windows** and deliberately never enter the reconciling bucket list: a child that contained an inner sweep bucket (for example `unplanned`, which the planning guard records itself) would otherwise be subtracted twice, shrinking `slot` and inflating `unattributed`. `slot:residual` is the slot window minus every named child, so a cost nobody named is still visible as a number. `sum(slot-detail) <= slot` therefore holds whenever the slot window contains no inner sweep buckets, and `slot:residual` absorbs the difference when it does.
+- `slot-detail=(slot:dispatch-guard=…, slot:mission-gate=…, slot:staleness=…, slot:fresh-read=…, slot:assignee=…, slot:lease-write=…, slot:pause-check=…, slot:node-routing=…, slot:mission-admission=…, slot:scope=…, slot:admission=…, slot:claim-snapshot=…, slot:symbol-lock=…, slot:refusal-diagnostic=…, slot:residual=…)` — the breakdown of the reservation leg into every sequential segment it performs, printed only when at least one child recorded time. A child appears **iff its branch ran**, so an absent name means that branch was not taken this pass, not that it went uninstrumented (e.g. `slot:lease-write` only when a stale `checkedOutBy` lease triggers recovery, `slot:node-routing` only for a node-routed task). Parent windows are recorded **net** of everything nested inside them (child `slot:*` buckets and inner sweep buckets alike), true leaves as full windows, so no cost is double-counted. Children never enter the reconciling parenthesis, keeping the RUFU-209 bucket list's meaning. `slot:residual` is the slot window minus every named child; because every segment now carries a name, it is a bounded epsilon and **`sum(slot-detail) + slot:residual === slot` reconciles exactly** — the RUFU-719 fix retired RUFU-698's weaker `sum(slot-detail) <= slot`, which held only while a nested pair double-counted and the residual was measured against a different span than the printed `slot`. `slot:pause-check` is normally absent or a couple of ms: the leg reuses the pass's memoised settings snapshot and re-reads project-level settings only on a bounded interval, so it is no longer a once-per-card store round-trip — its smallness is the fix, not a gap.
 
-Reading it: a large `slot:claim-snapshot` means the reservation leg is re-deriving board-wide capacity state per candidate; a large `slot:admission` means the serialized admission drain itself dominates; a large `slot:residual` means unobserved work inside the reservation and is the cue to add a named child, not to raise the sweep budget.
+Reading it: name the biggest child and cut it. A large `slot:fresh-read` means the live-row re-check dominates (a per-card read of mutable column/pause state, not memoizable); a large `slot:claim-snapshot` means the leg is re-deriving board-wide capacity state per candidate; a large `slot:admission` means the serialized admission drain dominates; a large `slot:residual` means a sequential segment is still unnamed and is the cue to add a named child, not to raise the sweep budget. `slot:residual` should no longer be the largest entry on the line; if it is, a segment lost its name.
+
+<!--
+FNXC:CapacitySlotResidual 2026-11-18-00:26 (RUFU-719):
+RUFU-698 split the reservation leg into four named children plus `slot:residual` and wrote the rule
+"a large residual means unobserved work remains — add a named child, don't raise the budget." Production
+honoured the first half only: in 11/11 sampled sweeps the residual was the dominant entry, because ~15
+awaits inside the leg had no name and the residual was computed against a different span than the printed
+`slot`. This card names every sequential segment (dispatch-guard, mission-gate, staleness, fresh-read,
+assignee, lease-write, node-routing, mission-admission, scope, admission, claim-snapshot, symbol-lock,
+refusal-diagnostic, and the previously printed-but-never-recorded lease-write), records parent windows NET
+of nested children and sweep buckets (`wallNet`) so the nested pair stops double-counting, and redefines
+the residual against the printed `slot` so `sum + residual === slot` reconciles exactly. It then cuts the
+measured dominant child: the mid-pass `getSettings` (`slot:pause-check`) re-fetched identical project-wide
+settings once per card, so the leg now reuses the pass settings snapshot under a bounded 250ms interval
+(`settingsCheckedAtMs`, gated on the sweep clock — wall time live, the charged fake clock under test). The
+residual is 0 on the real-closure fit harness; `hold-release-sweep-budget-fit.test.ts` asserts the exact
+reconciliation, the anti-symptom epsilon bound, and the cut.
+-->
 
 ## Hold-release truncation rotation field (RUFU-698)
 
