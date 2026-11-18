@@ -910,8 +910,19 @@ export class CronRunner {
       };
     }
 
-    // Resolve model: step override → project execution lane → global execution lane → selected-workflow lane → project default override → global default
+    // Resolve model: step override -> selected-workflow execution lane -> project execution lane -> global execution lane -> project default override -> global default
     // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires scheduled AI-prompt automation steps to use execution-lane settings before default settings because these steps have no task/runtime model context.
+    /*
+    FNXC:ModelResolution 2026-11-18-18:01:
+    The order this comment listed was wrong: it put the project lane first and the selected-workflow lane
+    third. Both helpers called on the next lines put the selected-workflow lane FIRST -
+    `resolveExecutionSettingsModel` passes the workflow lane as `pickFirstModelPair`'s first pair, and
+    `resolveExecutorThinkingLevel` defers to `resolvePhaseThinkingLevel`, whose `firstThinkingLevel` argument
+    list is step/task, workflow lane, project lane, global lane, default override, default. FN-7039's
+    requirement (execution lanes before defaults) is unchanged; only the lane order named here is corrected.
+    This wording is the likely reason `cron-runner.test.ts` asserted the project lane winning an inherited
+    thinking level while the resolver returned the workflow lane's value.
+    */
     const settings = await this.store.getSettings();
     const defaultModel = resolveExecutionSettingsModel(settings);
     const modelProvider = step.modelProvider?.trim() || defaultModel.provider;

@@ -1324,7 +1324,20 @@ describe("CronRunner", () => {
       expect(mockExecutor).toHaveBeenNthCalledWith(2, "Use default", "anthropic", "claude-sonnet-4-5", undefined, undefined);
     });
 
-    it("inherits scheduled AI prompt thinking from the execution lane hierarchy", async () => {
+    /*
+    FNXC:ModelResolution 2026-11-18-18:01:
+    RUFU-732 settled this expectation against the shipped precedence. A scheduled AI-prompt step supplies no
+    thinking level, so `resolveExecutorThinkingLevel` defers to `resolvePhaseThinkingLevel`, whose order is
+    step/task value, then the SELECTED-WORKFLOW lane, then the project lane, then the global lane, then the
+    project default override, then the global default. Core's `resolvePhaseThinkingLevel` is the authority and
+    `agent-session-helpers.test.ts` pins it ("resolves primary thinking as task -> selected workflow ->
+    project -> global"). The four lane values here stay deliberately distinct so the case still proves which
+    lane won: the workflow's `low` must beat the project's `medium`, the global's `high`, and the default's
+    `xhigh`. The assertion was wrong, the resolver was not. Renamed from the case titled
+    "inherits scheduled AI prompt thinking from the execution lane hierarchy", which named a hierarchy the
+    resolver never had; the title now states which lane wins.
+    */
+    it("inherits scheduled AI prompt thinking from the selected-workflow lane over project, global, and default lanes", async () => {
       const store = createMockStore({
         executionThinkingLevel: "medium",
         executionGlobalThinkingLevel: "high",
@@ -1346,7 +1359,7 @@ describe("CronRunner", () => {
         "anthropic",
         "claude-sonnet-4-5",
         undefined,
-        "medium",
+        "low",
       );
     });
 

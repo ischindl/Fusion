@@ -1,7 +1,51 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { describeModel, formatModelMarkerDetails, compactSessionContext, COMPACTION_FALLBACK_INSTRUCTIONS, createFnAgent, createPiAgentSessionRaw, getProjectRootFromWorktree, isModelAuthTierIncompatibilityError, isRetryableModelSelectionError, promptWithFallback, type AgentOptions } from "../pi.js";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { classifyCompactionFailure, COMPACTION_FALLBACK_INSTRUCTIONS, compactSessionContext, createFnAgent, createPiAgentSessionRaw, describeModel, formatModelMarkerDetails, getProjectRootFromWorktree, isModelAuthTierIncompatibilityError, isRetryableModelSelectionError, isRetryAfterCompactionFailureLegal, promptWithFallback, type AgentOptions, type CompactionOutcome } from "../pi.js";
 import { createAgentSession, ModelRegistry, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { piLog } from "../logger.js";
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-11-18-17:44:
+RUFU-334 landed `assertAgentCwdAllowed` (commit 95e7d35fe7) with rule 1b: a session working directory
+whose `realpath` fails is a `TypeError`, so an agent session can never be rooted at a path that does not
+exist. Every session case in this suite previously passed a fabricated path as `cwd`, which is exactly the
+shape that rule refuses, and the suite went red with 48 `the path cannot be resolved` failures while
+asserting nothing about the policy. The fix is at the shared fixture, not per case: one real, throwaway
+session root every case reuses, so the fixtures state their intent ("a real directory that is not a
+checkout") instead of relying on the leniency the guard removed.
+
+Two properties the fabricated path got for free and a real path must be given explicitly:
+1. It is not a git checkout, so `getProjectRootFromWorktree` stays null and the boundary-inference cases
+   keep measuring the null arm instead of the repository this test run happens to live in. That is why the
+   root is a temp directory and not a directory inside the repo.
+2. Its project-root resolution is deterministic. `resolvePiExtensionProjectRoot` walks ancestors for a
+   `.fusion` marker with no bound, so a bare temp directory inherits whatever marker the host's temp root
+   happens to carry. A leaked `/tmp/.fusion/tasks` scaffold was measured on this host (mtime
+   2026-11-13), and it resolves every temp path to `/tmp` - the same pollution reddens
+   `packages/core/src/__tests__/pi-extensions-project-root-cache.test.ts`. Giving the root its own
+   `.fusion` marker makes the walk-up terminate at the fixture on EVERY host, so the expected project root
+   is the fixture itself rather than an accident of the machine.
+
+`realpathSync` is applied so the value cases assert on is the same canonical form the policy compares
+against, which keeps the suite honest on hosts whose temp root is a symlink.
+*/
+const SESSION_ROOT = realpathSync(mkdtempSync(join(tmpdir(), "fusion-pi-session-test-")));
+mkdirSync(join(SESSION_ROOT, ".fusion"));
+
+/*
+FNXC:ProjectRootResolution 2026-11-18-17:44:
+One case runs the session from a SUBDIRECTORY of that root, to pin that `createFnAgent` hands the skill
+resolver the resolved project root rather than the raw `cwd` it was given.
+*/
+const SESSION_ROOT_SUBDIR = join(SESSION_ROOT, "subdirectory");
+mkdirSync(SESSION_ROOT_SUBDIR, { recursive: true });
+
+afterAll(() => {
+  rmSync(SESSION_ROOT, { recursive: true, force: true });
+});
 
 const { resourceLoaderOptions, modelRuntimeRefreshMock } = vi.hoisted(() => ({
   resourceLoaderOptions: { current: undefined as Record<string, unknown> | undefined },
@@ -693,7 +737,7 @@ describe("createFnAgent skills parameter", () => {
     });
 
     await createPiAgentSessionRaw({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test dynamic Grok catalog",
       defaultProvider: "grok-cli",
       defaultModelId: "grok-refreshed",
@@ -720,10 +764,10 @@ describe("createFnAgent skills parameter", () => {
       ],
     }));
     await createFnAgent({
-      cwd: "/test/project", systemPrompt: "Test",
+      cwd: SESSION_ROOT, systemPrompt: "Test",
       systemPromptLayers: { stable: "Stable", dynamic: "Executor context" },
       skillSelection: {
-        projectRootDir: "/test/project", sessionPurpose: "executor",
+        projectRootDir: SESSION_ROOT, sessionPurpose: "executor",
         forcedSkillNames: ["alpha", "delta", "missing"],
       },
     });
@@ -737,7 +781,7 @@ describe("createFnAgent skills parameter", () => {
 
   it("skills parameter auto-derives SkillSelectionContext", async () => {
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       skills: ["review", "fusion"],
     };
@@ -747,14 +791,14 @@ describe("createFnAgent skills parameter", () => {
     // Verify resolveSessionSkills was called with auto-derived context
     expect(mockResolveSessionSkills).toHaveBeenCalledTimes(1);
     const callArgs = mockResolveSessionSkills.mock.calls[0]![0];
-    expect(callArgs.projectRootDir).toBe("/test/project");
+    expect(callArgs.projectRootDir).toBe(SESSION_ROOT);
     expect(callArgs.requestedSkillNames).toEqual(["review", "fusion"]);
     expect(callArgs.sessionPurpose).toBe("executor");
   });
 
   it("skillSelection takes precedence over skills", async () => {
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       skills: ["review"],
       skillSelection: {
@@ -781,7 +825,7 @@ describe("createFnAgent skills parameter", () => {
 
   it("empty skills array is treated as unset", async () => {
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       skills: [],
     };
@@ -796,7 +840,7 @@ describe("createFnAgent skills parameter", () => {
   it("skills auto-derivation logs the convenience parameter", async () => {
     const piDebugSpy = vi.spyOn(piLog, "debug").mockImplementation(() => {});
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       skills: ["review", "fusion"],
     };
@@ -813,23 +857,25 @@ describe("createFnAgent skills parameter", () => {
     piDebugSpy.mockRestore();
   });
 
-  it("resolves project root via resolvePiExtensionProjectRoot for non-worktree paths", async () => {
-    // When cwd is a regular directory (not a .worktrees/ path),
-    // resolvePiExtensionProjectRoot is used to walk up to .fusion.
-    // Since no .fusion exists in test filesystem, it returns cwd as-is.
+  it("derives projectRootDir from the resolved .fusion project root instead of the raw cwd", async () => {
+    // The session runs from a subdirectory of a marked project. `resolvePiExtensionProjectRoot` walks up
+    // to the `.fusion` marker, so the skill resolver must receive the project root, never the `cwd` it
+    // was handed. Asserting both halves is what makes this pollution-proof: an earlier version asserted
+    // that the path came back unchanged, which silently depended on no `.fusion` existing ANYWHERE above
+    // the fixture - a premise a leaked `/tmp/.fusion` scaffold on this host breaks (see the fixture
+    // comment at the top of this file).
     const options: AgentOptions = {
-      cwd: "/project/subdirectory",
+      cwd: SESSION_ROOT_SUBDIR,
       systemPrompt: "Test",
       skills: ["fusion"],
     };
 
     await createFnAgent(options);
 
-    // resolvePiExtensionProjectRoot walks up from /project/subdirectory.
-    // No .fusion is found in the test filesystem, so it returns /project/subdirectory.
     expect(mockResolveSessionSkills).toHaveBeenCalledTimes(1);
     const callArgs = mockResolveSessionSkills.mock.calls[0]![0];
-    expect(callArgs.projectRootDir).toBe("/project/subdirectory");
+    expect(callArgs.projectRootDir).toBe(SESSION_ROOT);
+    expect(callArgs.projectRootDir).not.toBe(SESSION_ROOT_SUBDIR);
     expect(callArgs.requestedSkillNames).toEqual(["fusion"]);
   });
 
@@ -846,7 +892,7 @@ describe("createFnAgent skills parameter", () => {
     });
 
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       skills: ["nonexistent-skill"],
     };
@@ -1084,7 +1130,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback swap",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1116,7 +1162,7 @@ describe("session failure diagnostics", () => {
     createAgentSessionMock.mockResolvedValueOnce({ session: sessionWithThinking } as any);
 
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test xhigh thinking pass-through",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1155,7 +1201,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback thinking",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1201,7 +1247,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback default thinking",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1246,7 +1292,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback thinking conflict",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1282,7 +1328,7 @@ describe("session failure diagnostics", () => {
     createAgentSessionMock.mockResolvedValueOnce({ session } as any);
 
     const created = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test MCP forwarding",
       defaultProvider: "anthropic",
       defaultModelId: "primary-model",
@@ -1310,7 +1356,7 @@ describe("session failure diagnostics", () => {
     createAgentSessionMock.mockReset();
 
     const created = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test MCP skip",
       defaultProvider: "mock",
       defaultModelId: "scripted",
@@ -1358,7 +1404,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: firstSession } as any)
       .mockResolvedValueOnce({ session: retrySession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test effort degradation",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1427,7 +1473,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: degradedSession } as any)
       .mockResolvedValueOnce({ session: thirdSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test effort degradation no fallback",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1482,7 +1528,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: firstSession } as any)
       .mockResolvedValueOnce({ session: fallbackSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test bottom-rung effort rejection routes to fallback",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1523,7 +1569,7 @@ describe("session failure diagnostics", () => {
     createAgentSessionMock.mockReset();
     createAgentSessionMock.mockResolvedValueOnce({ session: firstSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test bottom-rung terminal without fallback",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1588,7 +1634,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: degradedSession } as any)
       .mockResolvedValueOnce({ session: thirdSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test latch reset between prompts",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1649,7 +1695,7 @@ describe("session failure diagnostics", () => {
       // Prompt-time effort walk-down: stays on the fallback model.
       .mockResolvedValueOnce({ session: walkDownFallbackSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback effort walk-down",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1712,7 +1758,7 @@ describe("session failure diagnostics", () => {
       // Prompt-time effort walk-down: stays on the fallback model.
       .mockResolvedValueOnce({ session: walkDownFallbackSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback own-level walk-down",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1770,7 +1816,7 @@ describe("session failure diagnostics", () => {
       // Prompt-time effort walk-down: stays on the fallback model.
       .mockResolvedValueOnce({ session: walkDownFallbackSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback-only effort walk-down",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1838,7 +1884,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test degraded-retry fallback",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1916,7 +1962,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: thirdSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test walk-down ladder success",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -1981,7 +2027,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: xhighSession } as any)
       .mockResolvedValueOnce({ session: highSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test sparse fallback effort rungs",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2047,7 +2093,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: xhighSession } as any)
       .mockResolvedValueOnce({ session: laterSession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback applied-effort persistence",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2095,7 +2141,7 @@ describe("session failure diagnostics", () => {
       .mockRejectedValueOnce(new Error("429 Too Many Requests"))
       .mockResolvedValueOnce({ session: primaryRetrySession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback degrade 429 final primary retry",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2147,7 +2193,7 @@ describe("session failure diagnostics", () => {
       .mockRejectedValueOnce(new Error("500 Internal Server Error"))
       .mockResolvedValueOnce({ session: primaryRetrySession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test fallback degrade 500 final primary retry",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2216,7 +2262,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any)
       .mockResolvedValueOnce({ session: primaryRetrySession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test final primary retry keeps degraded effort",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2282,7 +2328,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test degraded failure currency",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2330,7 +2376,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: firstSession } as any)
       .mockResolvedValueOnce({ session: retrySession } as any);
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test codex rejection",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2395,7 +2441,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test degraded level locality",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2435,7 +2481,7 @@ describe("session failure diagnostics", () => {
       createAgentSessionMock.mockReset();
       createAgentSessionMock.mockResolvedValueOnce({ session } as any);
       const { session: created } = await createFnAgent({
-        cwd: "/test/project",
+        cwd: SESSION_ROOT,
         systemPrompt: "Test non-effort rejection",
         defaultProvider: "test",
         defaultModelId: "primary-model",
@@ -2475,7 +2521,7 @@ describe("session failure diagnostics", () => {
       .mockResolvedValueOnce({ session: retrySession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test thinking compatibility",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2514,7 +2560,7 @@ describe("piLog structured diagnostics", () => {
 
   it("logs session creation with model info", async () => {
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "test-model",
@@ -2548,7 +2594,7 @@ describe("piLog structured diagnostics", () => {
       } as any);
 
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2591,7 +2637,7 @@ describe("piLog structured diagnostics", () => {
       } as any);
 
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2639,7 +2685,7 @@ describe("piLog structured diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2697,7 +2743,7 @@ describe("piLog structured diagnostics", () => {
       .mockResolvedValueOnce({ session: primaryRetrySession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test planner fallback exhaustion",
       defaultProvider: "openai",
       defaultModelId: "gpt-4o",
@@ -2745,7 +2791,7 @@ describe("piLog structured diagnostics", () => {
     createAgentSessionMock.mockResolvedValueOnce({ session: primarySession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test same fallback",
       defaultProvider: "openai",
       defaultModelId: "gpt-4o",
@@ -2791,7 +2837,7 @@ describe("piLog structured diagnostics", () => {
     createAgentSessionMock.mockResolvedValue({ session: sessionWithRuntimeDefaultModel } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test unresolved primary identity",
       fallbackProvider: "test",
       fallbackModelId: "fallback-model",
@@ -2821,7 +2867,7 @@ describe("piLog structured diagnostics", () => {
     createAgentSessionMock.mockResolvedValue({ session: sessionWithoutIdentity } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test no model identity",
       fallbackProvider: "test",
       fallbackModelId: "fallback-model",
@@ -2869,7 +2915,7 @@ describe("piLog structured diagnostics", () => {
       .mockResolvedValueOnce({ session: fallbackSession } as any);
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2930,7 +2976,7 @@ describe("piLog structured diagnostics", () => {
     });
 
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test Sonnet 5 fallback",
       defaultProvider: "anthropic",
       defaultModelId: "claude-sonnet-5",
@@ -2970,7 +3016,7 @@ describe("piLog structured diagnostics", () => {
       } as any);
 
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -2991,7 +3037,7 @@ describe("piLog structured diagnostics", () => {
     createAgentSessionMock.mockRejectedValueOnce(new Error("fatal model failure"));
 
     await expect(createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -3119,7 +3165,7 @@ describe("createFnAgent assistant text capture wiring", () => {
 
     const text: string[] = [];
     await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test capture wiring",
       defaultProvider: "test",
       defaultModelId: "primary-model",
@@ -3153,7 +3199,7 @@ describe("createFnAgent assistant text capture wiring", () => {
 
     const text: string[] = [];
     const { session } = await createFnAgent({
-      cwd: "/test/project",
+      cwd: SESSION_ROOT,
       systemPrompt: "Test capture wiring after swap",
       defaultProvider: "test",
       defaultModelId: "primary-model",

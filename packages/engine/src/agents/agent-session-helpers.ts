@@ -396,7 +396,16 @@ function firstThinkingLevel(...levels: Array<ThinkingLevel | string | undefined 
 
 /**
  * FNXC:Settings-ThinkingLevel 2026-07-10-00:00:
- * Model-lane thinking overrides must resolve through the same session option (`defaultThinkingLevel`) that pi.ts already guards with the thinking/reasoning conflict fallback. Keep node/step thinking first when supplied by callers, then task, project lane, global lane, selected-workflow lane, project default thinking override, and global default.
+ * Model-lane thinking overrides must resolve through the same session option (`defaultThinkingLevel`) that pi.ts already guards with the thinking/reasoning conflict fallback. Keep the caller-supplied node/step/task level first, then the selected-workflow lane, the project lane, the global lane, the project default thinking override, and the global default.
+ *
+ * FNXC:Settings-ThinkingLevel 2026-11-18-18:01:
+ * This block's order was stale: it named "project lane, global lane, selected-workflow lane". The order is
+ * set by `resolvePhaseThinkingLevel` in `@fusion/core`, whose `firstThinkingLevel` list is
+ * caller value, `resolveSelectedWorkflowModelLane`, `resolveSettingsLaneThinkingLevel` (the project lane),
+ * then the global lane, then the two defaults - so the selected-workflow lane OUTRANKS the project lane.
+ * `agent-session-helpers.test.ts` pins exactly that ("resolves primary thinking as task -> selected workflow
+ * -> project -> global"), and this comment is where the wrong order in `cron-runner.test.ts` most plausibly
+ * came from. Corrected in place; the resolver and the pinned test are the authority, not this prose.
  */
 export function resolveExecutorThinkingLevel(
   taskThinkingLevel: ThinkingLevel | string | undefined,

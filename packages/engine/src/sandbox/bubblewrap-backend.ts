@@ -1,4 +1,5 @@
 import { exec, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 
 import { detectBwrap } from "./bubblewrap-detect.js";
@@ -35,6 +36,25 @@ export class BubblewrapBackend implements SandboxBackend {
     private readonly nativeBackend: SandboxBackend = new NativeSandboxBackend(),
     private readonly bwrapRunner?: BubblewrapRunner,
   ) {}
+
+  /*
+  FNXC:AIoSandbox 2026-11-18-18:52:
+  `policyToBwrapArgs` only mounts a path when its `pathExists` seam says the source is on disk, and the seam
+  defaults to "everything exists" because the policy builder is a pure function. No caller here ever passed
+  a predicate, so every path this class supplied was emitted unconditionally - including the pnpm store
+  directory, which `resolvePnpmStorePath` takes from `pnpm store path --silent` and which therefore reflects
+  whatever `$HOME`/`PNPM_HOME` the calling process carries. bwrap does not tolerate a missing bind source:
+  it aborts the whole invocation with `bwrap: Can't find source path <p>` and exit 1, so one absent directory
+  made EVERY sandboxed command fail before the wrapped command ran. Measured on RUFU-732: under the shared
+  vitest HOME redirect the store resolved to a path that does not exist, and the real-integration case died
+  with exit 1 and that exact stderr while `echo hello` itself was never executed. Same shape in production
+  for a runner whose HOME differs from the daemon's or a store dir that was never created.
+
+  Supplying `existsSync` here is the fix at the seam the policy builder already exposed. It can only ever
+  drop a mount, never add one, so it narrows the sandbox rather than widening it; the isolation flags, the
+  read-only system binds, the environment filter, and `--chdir` are untouched.
+  */
+  private readonly pathExists = (path: string): boolean => existsSync(path);
 
   capabilities(): SandboxCapabilities {
     return {
@@ -74,6 +94,7 @@ export class BubblewrapBackend implements SandboxBackend {
       nodeBinPath: process.execPath,
       homeDir: process.env.HOME ?? "",
       envSource: options.env ?? process.env,
+      pathExists: this.pathExists,
     });
     return { command: "bwrap", args: [...policyArgs, "--", "/bin/sh", "-lc", command] };
   }
@@ -102,6 +123,7 @@ export class BubblewrapBackend implements SandboxBackend {
       nodeBinPath: process.execPath,
       homeDir: process.env.HOME ?? "",
       envSource: options.env ?? process.env,
+      pathExists: this.pathExists,
     });
 
     const bwrapPath = detect.path ?? "bwrap";
@@ -129,6 +151,7 @@ export class BubblewrapBackend implements SandboxBackend {
       nodeBinPath: process.execPath,
       homeDir: process.env.HOME ?? "",
       envSource: options.env ?? process.env,
+      pathExists: this.pathExists,
     });
     /*
     FNXC:WorkspaceSandbox 2026-08-22-21:44:

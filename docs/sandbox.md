@@ -19,6 +19,7 @@ Fusion supports an opt-in Linux sandbox backend using `bubblewrap` (`bwrap`).
 
 - Writable binds (`--bind`): worktree path, pnpm store path, plus configured `allowedWritePaths`
 - Read-only binds (`--ro-bind`): repo root (when distinct), system runtime paths (`/usr`, `/bin`, `/lib`, `/lib64`), TLS/DNS paths, and node binary directory
+- A bind is emitted only for a source that exists on disk. `policyToBwrapArgs()` takes a `pathExists` predicate and omits any path it rejects; `BubblewrapBackend` supplies `existsSync`. This matters because bwrap aborts the entire invocation on a missing bind source (`bwrap: Can't find source path <path>`, exit 1) before the wrapped command starts, and the pnpm store path is whatever `pnpm store path --silent` reports for the calling process rather than a path the backend controls. Omitting a mount for an absent directory can only narrow the sandbox. `policyToBwrapArgs()` defaults the predicate to "everything exists" so its unit tests can pass fabricated paths; a caller that wants argv that actually runs must pass a real predicate.
 - Temporary filesystem: `--tmpfs /tmp`
 - Working directory: `--chdir <worktreePath>`
 - Network isolation: `allowNetwork=false` adds `--unshare-net`
