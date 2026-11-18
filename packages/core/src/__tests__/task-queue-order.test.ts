@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareQueueBoostSequence,
+  decodeStoredQueueBoost,
   compareTasksByCompleteArrival,
   compareTasksByIntakeDisplayOrder,
   compareTasksByQueueOrder,
@@ -267,5 +268,55 @@ describe("queue presence and Boost availability", () => {
     expect(
       resolveQueuePresence({ ...live, column: "parking", columnFlags: { humanReview: false } }).reason,
     ).toBe("no-automatic-processing");
+  });
+});
+
+/*
+FNXC:TaskQueueOrder 2026-11-18-14:13:
+The decoder for a boost stored one JSON layer too deep (`jsonb_typeof(queue_boost) = 'string'`).
+Measured on production 2026-11-18: six rows carried that shape and four of them were still a valid
+rank for the card's current stay, so `QUEUE_BOOST_SEQUENCE` counted a boost the operator had been
+told was granted as zero — permanently, and with no surface reporting it.
+The pair of cases that matters is the middle two: the decoder must recognize the shape WITHOUT the
+read authority learning to accept it. If `normalizeTaskQueueBoost` ever starts parsing strings, the
+in-memory task would call a row boosted while the SQL `ORDER BY` still calls it unboosted, and the
+queue would then have two authorities over one rank.
+*/
+describe("decodeStoredQueueBoost", () => {
+  const boost: TaskQueueBoost = {
+    sequence: "11",
+    workflowId: "WF-004",
+    column: "todo",
+    columnEntryAt: "2026-11-15T01:39:23.000Z",
+    requestId: "pi-supervision-1043",
+  };
+
+  it("reads a well-formed object as an object, not a repair", () => {
+    expect(decodeStoredQueueBoost(boost)).toEqual({ encoding: "object", boost });
+  });
+
+  it("recognizes a boost stored as a JSON string of itself", () => {
+    const decoded = decodeStoredQueueBoost(JSON.stringify(boost));
+    expect(decoded.encoding).toBe("double-encoded");
+    expect(decoded.boost).toEqual(boost);
+  });
+
+  it("strips the leading zeros on the way out of the string form too", () => {
+    expect(decodeStoredQueueBoost(JSON.stringify({ ...boost, sequence: "007" })).boost?.sequence).toBe("7");
+  });
+
+  it("leaves a string that is not a boost exactly as malformed", () => {
+    expect(decodeStoredQueueBoost(JSON.stringify({ unrelated: true }))).toEqual({ encoding: "malformed", boost: null });
+    expect(decodeStoredQueueBoost("not json at all")).toEqual({ encoding: "malformed", boost: null });
+  });
+
+  it("reports absent for an unboosted row", () => {
+    expect(decodeStoredQueueBoost(null).encoding).toBe("absent");
+    expect(decodeStoredQueueBoost(undefined).encoding).toBe("absent");
+  });
+
+  it("keeps the read authority strict so SQL and memory cannot disagree", () => {
+    expect(normalizeTaskQueueBoost(JSON.stringify(boost))).toBeNull();
+    expect(isTaskQueueBoost(JSON.stringify(boost))).toBe(false);
   });
 });

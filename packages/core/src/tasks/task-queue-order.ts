@@ -110,6 +110,49 @@ export function normalizeTaskQueueBoost(value: unknown): TaskQueueBoost | null {
   };
 }
 
+/*
+FNXC:TaskQueueOrder 2026-11-18-14:13:
+A persisted boost can also arrive DOUBLE-ENCODED: the jsonb column holds a JSON string whose body is
+itself the boost object, so `jsonb_typeof(queue_boost) = 'string'` and every `->>'sequence'` read is
+NULL. Measured on production 2026-11-18: 6 rows carried that shape, and 4 of them were still a valid
+rank for the card's CURRENT stay (`column` and `columnEntryAt` both matched) — the operator had
+boosted them, HTTP answered 200, and `QUEUE_BOOST_SEQUENCE` counted them as 0 forever.
+
+`normalizeTaskQueueBoost` must stay strict. It is the READ authority, and its contract is that a read
+never promotes junk into a rank; making it tolerant would split the two authorities, because the SQL
+`QUEUE_BOOST_EFFECTIVE` expression cannot unwrap a string scalar without a `::jsonb` cast that would
+raise on a malformed value and take down every queue read. So the unwrap lives HERE, as a decoder the
+single writer calls on the raw column, and the repair is a write.
+*/
+export type StoredQueueBoostEncoding = "absent" | "object" | "double-encoded" | "malformed";
+
+/**
+ * Classify the raw `tasks.queue_boost` column value and decode it.
+ *
+ * Unlike `normalizeTaskQueueBoost` this sees the shape, not just the value: `double-encoded` means
+ * "a real boost, stored one JSON layer too deep" and is the only shape the writer may rewrite.
+ * A string that is not a boost object is `malformed` and is left exactly where it is — rewriting it
+ * would invent a rank the operator never asked for.
+ */
+export function decodeStoredQueueBoost(raw: unknown): {
+  encoding: StoredQueueBoostEncoding;
+  boost: TaskQueueBoost | null;
+} {
+  if (raw === null || raw === undefined) return { encoding: "absent", boost: null };
+  if (typeof raw === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { encoding: "malformed", boost: null };
+    }
+    const boost = normalizeTaskQueueBoost(parsed);
+    return { encoding: boost ? "double-encoded" : "malformed", boost };
+  }
+  const boost = normalizeTaskQueueBoost(raw);
+  return { encoding: boost ? "object" : "malformed", boost };
+}
+
 /**
  * The durable marker identifying one stay of a card in one column.
  *

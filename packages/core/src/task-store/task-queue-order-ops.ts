@@ -23,6 +23,7 @@ import { taskProjectScope, type DbTransaction } from "../postgres/data-layer.js"
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
 import { readTaskRowInTransaction } from "./async/async-persistence.js";
 import {
+  decodeStoredQueueBoost,
   normalizeTaskQueueBoost,
   resolveTaskColumnEntryAt,
   type TaskQueueBoost,
@@ -392,7 +393,17 @@ export interface BoostTaskOptions {
 }
 
 export type BoostTaskResult =
-  | { ok: true; task: Task; boost: TaskQueueBoost; idempotent: boolean }
+  | {
+      ok: true;
+      task: Task;
+      boost: TaskQueueBoost;
+      idempotent: boolean;
+      /**
+       * True when this call found the rank stored one JSON layer too deep and rewrote it in place.
+       * It reports no lifecycle change — the rank, the sequence and the stay are all unchanged.
+       */
+      repairedEncoding?: boolean;
+    }
   | { ok: false; reason: BoostTaskRefusalReason; task?: Task };
 
 /*
@@ -437,7 +448,15 @@ export async function boostTaskImpl(
       }
 
       // Idempotent retry: the same request id already holds this stay's rank.
-      const existing = normalizeTaskQueueBoost(current.queueBoost);
+      //
+      // FNXC:TaskQueueOrder 2026-11-18-14:13: read the RAW column, not `current.queueBoost`. The read
+      // path drops a double-encoded value to `undefined`, so a snapshot cannot tell "no boost" from
+      // "a boost the queue cannot parse" — and the old check therefore minted a SECOND sequence for a
+      // retry whose rank was already granted, while leaving the unreadable row behind as a permanent
+      // second opinion about the operator's intent. `decodeStoredQueueBoost` is the only place that
+      // recognizes that shape, and the repair rewrites the SAME sequence: never a re-rank.
+      const stored = decodeStoredQueueBoost(row.queueBoost);
+      const existing = stored.boost;
       if (
         existing &&
         existing.requestId === options.requestId &&
@@ -445,7 +464,22 @@ export async function boostTaskImpl(
         existing.columnEntryAt === columnEntryAt &&
         existing.workflowId === options.workflowId
       ) {
-        return { ok: true, task: current, boost: existing, idempotent: true };
+        if (stored.encoding !== "double-encoded") {
+          return { ok: true, task: current, boost: existing, idempotent: true };
+        }
+        const [repairedRow] = await tx
+          .update(tasks)
+          .set({ queueBoost: existing, updatedAt: new Date().toISOString() })
+          .where(and(eq(tasks.id, id), taskProjectScope(layer)))
+          .returning();
+        if (!repairedRow) return { ok: false, reason: "not-found" };
+        return {
+          ok: true,
+          task: store.rowToTask(store.pgRowToTaskRow(repairedRow)),
+          boost: existing,
+          idempotent: true,
+          repairedEncoding: true,
+        };
       }
 
       const [sequenceRow] = (await tx.execute(
