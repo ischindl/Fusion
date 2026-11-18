@@ -21,6 +21,7 @@ import type { CentralCore as CentralCoreApi, WorkflowIr } from "@fusion/core";
 import {
   DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
   resolveHybridExecutorReadiness,
+  type IsolationTransitionResult,
 } from "@fusion/engine";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
@@ -202,6 +203,55 @@ let statusReconcileClock: () => number = Date.now;
 /** Test seam for the re-arm clock, so the bound is proven by moving time rather than sleeping. */
 export function setProjectStatusReconcileClockForTests(now: () => number): void {
   statusReconcileClock = now;
+}
+
+/*
+FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+The executor reports a failed isolation transition as a VALUE, but an exception is a second channel that
+cannot be removed from the route: `CentralCore.transitionProjectIsolation` throws `Project not found: <id>`
+for a project that vanishes between the route's read and the transition, and a runtime layer this build does
+not know about can throw from inside the restart. Before this wrapper, both fell to the route's outer catch,
+whose substring test on `"not found"` answered `404` for a *runtime* lookup failure — naming the PROJECT as
+the missing thing after its own row had already been written with the new mode.
+
+Only this one call is wrapped: the route's outer conversion stays in place for every other field (`name`,
+`status`, `nodeId`), because those failures really are central-core lookups whose subject the message names
+correctly. A `Project not found: …` keeps its historical `404`; anything else becomes the same
+`503 isolation_transition_failed` the returned reasons use, carrying the caught message as `details.detail`
+and the caught error as the `ApiError` `cause` so the 5xx log keeps the origin stack.
+*/
+type IsolationTransitionCaller = Pick<
+  import("@fusion/engine").HybridExecutor,
+  "transitionProjectIsolation"
+>;
+
+async function runIsolationTransition(
+  executor: IsolationTransitionCaller,
+  projectId: string,
+  nextMode: "in-process" | "child-process",
+  force: boolean,
+): Promise<IsolationTransitionResult> {
+  try {
+    return await executor.transitionProjectIsolation(projectId, nextMode, { force });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail.includes("Project not found")) {
+      throw notFound("Project not found");
+    }
+    throw new ApiError(
+      503,
+      "isolation_transition_failed",
+      {
+        error: "isolation_transition_failed",
+        reason: "restart_failed",
+        detail,
+        message:
+          `The isolation mode could not be applied: the project's live runtime raised an error while restarting (${detail}). ` +
+          "The stored isolation mode and the live runtime may disagree. Verify the project's runtime state, then retry the transition or restart the dashboard to reload its runtimes.",
+      },
+      error,
+    );
+  }
 }
 
 export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
@@ -1141,37 +1191,87 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
                 readyWaitMs: options?.hybridExecutorReadyWaitMs ?? DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
               });
             }
-            const transition = await options.hybridExecutor.transitionProjectIsolation(
+            const transition = await runIsolationTransition(
+              options.hybridExecutor,
               req.params.id,
               isolationMode as "in-process" | "child-process",
-              { force: Boolean(force) },
+              Boolean(force),
             );
-            if (!transition.ok && transition.reason === "active_tasks") {
+            if (!transition.ok && transition.reason !== "noop") {
               /*
-              FNXC:IsolationTransitionBlockers 2026-10-15-06:40 (RUFU-328):
-              The 409 body used to be only a count, so an operator staring at "3 active tasks" had no way
-              to tell live work from a leaked in-memory binding — the reported incident sat refused for
-              hours over two cards whose rows already read `failed`, and nothing on the dashboard named
-              them. The ids ride through from the guard's durable read; when that read could not answer,
-              the key is OMITTED rather than sent empty, because an empty list would claim the board
-              proved nothing blocks while the transition was still refused. `activeTaskCount` remains in
-              every shape, so any client reading only the count is unaffected.
+              FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+              Handling is now TOTAL over the executor's failure vocabulary. The pre-RUFU-729 shape was
+              `if (!transition.ok && transition.reason === "active_tasks") throw …` followed UNCONDITIONALLY
+              by `delete updates.isolationMode;`, so every other reason fell through to
+              `central.updateProject(...)` and answered `200` with the OLD isolation mode in the body: a
+              failed mode change was indistinguishable from a completed one, and the operator kept waiting
+              for behavior that would never arrive. `noop` is the one non-success that is not a failure — the
+              project already runs the requested mode — so it is the only arm still allowed through, and a
+              reason this build cannot name still refuses rather than passing as success.
 
-              FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
-              `inFlightUnproven` is the second thing the count could not say: the refusal came from a
-              transport that cannot prove the project idle (a wedged child, an unreachable remote node),
-              so `activeTaskCount` is a last-known number that may well be zero while work runs. A client
-              that renders the count must branch on this flag, and a retry is only worth it once the
-              transport is reachable again — not after moving cards, which was the dead end the reporter
-              was left chasing. Omitted, never `false`, for a refusal that really did observe live work.
+              Every refusal below reuses the envelope this route already used for
+              `isolation_transition_unavailable`: the code is the `ApiError` message, the payload sits under
+              `details`, and the actionable sentence is `details.message`. No new status codes and no new
+              envelope keys beyond `reason` / `storedIsolationMode` / `detail`. Each sentence is true for its
+              own arm: a refusal that persisted nothing says the mode was not applied; `restart_failed` says
+              the stored mode IS the requested one while the live runtime may not be; an unrecognised reason
+              refuses to claim which mode is live, because it genuinely does not know.
               */
-              throw new ApiError(409, "active_tasks", {
-                error: "active_tasks",
-                activeTaskCount: transition.activeTaskCount ?? 0,
-                ...(transition.blockingTaskIds?.length
-                  ? { blockingTaskIds: transition.blockingTaskIds }
-                  : {}),
-                ...(transition.inFlightUnproven ? { inFlightUnproven: true } : {}),
+              if (transition.reason === "active_tasks") {
+                /*
+                FNXC:IsolationTransitionBlockers 2026-10-15-06:40 (RUFU-328):
+                The 409 body used to be only a count, so an operator staring at "3 active tasks" had no way
+                to tell live work from a leaked in-memory binding — the reported incident sat refused for
+                hours over two cards whose rows already read `failed`, and nothing on the dashboard named
+                them. The ids ride through from the guard's durable read; when that read could not answer,
+                the key is OMITTED rather than sent empty, because an empty list would claim the board
+                proved nothing blocks while the transition was still refused. `activeTaskCount` remains in
+                every shape, so any client reading only the count is unaffected.
+
+                FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+                `inFlightUnproven` is the second thing the count could not say: the refusal came from a
+                transport that cannot prove the project idle (a wedged child, an unreachable remote node),
+                so `activeTaskCount` is a last-known number that may well be zero while work runs. A client
+                that renders the count must branch on this flag, and a retry is only worth it once the
+                transport is reachable again — not after moving cards, which was the dead end the reporter
+                was left chasing. Omitted, never `false`, for a refusal that really did observe live work.
+                */
+                throw new ApiError(409, "active_tasks", {
+                  error: "active_tasks",
+                  activeTaskCount: transition.activeTaskCount ?? 0,
+                  ...(transition.blockingTaskIds?.length
+                    ? { blockingTaskIds: transition.blockingTaskIds }
+                    : {}),
+                  ...(transition.inFlightUnproven ? { inFlightUnproven: true } : {}),
+                });
+              }
+              if (transition.reason === "project_not_found") {
+                // Nothing was persisted for a project this route could not find; it is genuinely a 404.
+                throw notFound("Project not found");
+              }
+              if (transition.reason === "restart_failed") {
+                throw new ApiError(503, "isolation_transition_failed", {
+                  error: "isolation_transition_failed",
+                  reason: "restart_failed",
+                  storedIsolationMode: transition.storedIsolationMode,
+                  detail: transition.detail,
+                  message:
+                    `The stored isolation mode is now "${transition.storedIsolationMode}", but the project's live runtime did not complete its restart, so it may still be running under the previous mode. ` +
+                    "Verify the project's runtime state, then retry the transition or restart the dashboard to reload its runtimes.",
+                });
+              }
+              /*
+              FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+              Unreachable for an executor built from `IsolationTransitionResult`, and still answered: the
+              failure vocabulary crosses a package boundary as a runtime value, and the defect being removed
+              here was precisely a caller that handled only the reasons it happened to know about.
+              */
+              throw new ApiError(503, "isolation_transition_failed", {
+                error: "isolation_transition_failed",
+                reason: String((transition as { reason?: unknown }).reason ?? "unknown"),
+                message:
+                  "The isolation mode transition failed for a reason this build does not recognise, so the stored isolation mode and the live runtime may disagree. " +
+                  "Check the project's runtime state before retrying; the raw reason is reported as `details.reason`.",
               });
             }
             delete updates.isolationMode;

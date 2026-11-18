@@ -1,0 +1,7 @@
+---
+"@runfusion/fusion": patch
+---
+
+summary: A project isolation-mode change that fails now reports an error instead of looking like a success.
+category: fix
+dev: `PATCH /api/projects/:id` reacted to exactly one refusal reason (`active_tasks`) and treated every other non-success as success, answering `200` with the unchanged `isolationMode`. Handling is now total over a closed result union: `noop` stays a plain `200` (the project already runs the requested mode), `active_tasks` keeps its byte-identical `409`, `project_not_found` is a `404`, and `restart_failed` plus any unrecognised reason answer the new `503 isolation_transition_failed` in the existing envelope (`details.reason`, plus `storedIsolationMode`/`detail` for a failed restart, and an actionable `details.message`). One edge-case status change ships with it: a runtime lookup failing inside the restart used to reach the route's substring match on `"not found"` and answer `404`/`500`, naming the project as missing when it had been found and its row already updated — it is now `503 isolation_transition_failed`. `HybridExecutor.transitionProjectIsolation()` returns the new exported `IsolationTransitionResult` instead of `reason: string` and returns `restart_failed` where it used to throw (no rollback: the persisted change did happen), and `CentralCore.transitionProjectIsolation()` narrows its failure arm to the `noop` it is the only producer of.

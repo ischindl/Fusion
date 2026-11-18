@@ -292,4 +292,151 @@ describe("project isolation transition route", () => {
     expect(hybridExecutor.transitionProjectIsolation).toHaveBeenCalledTimes(1);
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
+
+  /*
+  FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+  The route reacted to exactly ONE refusal reason (`active_tasks`) and treated every other non-success
+  outcome as success: the `if (transition.reason === "active_tasks")` arm fell through to
+  `delete updates.isolationMode;` and then to `central.updateProject(...)`, so the request answered `200`
+  with the OLD isolation mode in the body and no error anywhere. An operator who changed the mode kept
+  believing the project ran under the mode they had just asked for. Reported while reviewing RUFU-332, and
+  explicitly held out of RUFU-332's scope.
+
+  The invariant these tests pin is total handling, not one more reason: EVERY non-success outcome must say
+  (a) that the mode did not take effect, (b) why, and (c) what to do next. `noop` is the one non-success
+  that is not a failure — the project already runs the requested mode — so it must stay a plain `200`,
+  which is what guards this change against over-correcting into refusing a no-op.
+  */
+  describe("refuses every non-success transition reason instead of answering success", () => {
+    /** The `error` code and the operator sentence of the standard dashboard error envelope. */
+    const envelope = (body: unknown) => body as { error?: string; details?: { message?: unknown } };
+
+    it("answers 503 isolation_transition_failed when the restart fails for a non-active_tasks reason", async () => {
+      /*
+      Defect observed on `main`: `200` whose body still said `isolationMode: "in-process"`, with
+      `central.updateProject` still called. A refused transition may not reach the client as a success.
+      */
+      const hybridExecutor = readyExecutor(
+        vi.fn().mockResolvedValue({
+          ok: false,
+          reason: "restart_failed",
+          storedIsolationMode: "child-process",
+          detail: "Runtime not found for project proj_1",
+        }),
+      );
+
+      const res = await request(
+        createApp({ hybridExecutor: hybridExecutor as any }),
+        "PATCH",
+        "/api/projects/proj_1",
+        JSON.stringify({ isolationMode: "child-process" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(503);
+      expect(envelope(res.body).error).toBe("isolation_transition_failed");
+      expect(typeof envelope(res.body).details?.message).toBe("string");
+      // The requested mode must not be written by the route as if the transition had completed.
+      expect(central.updateProject).not.toHaveBeenCalledWith(
+        "proj_1",
+        expect.objectContaining({ isolationMode: "child-process" }),
+      );
+    });
+
+    it("keeps reason noop a non-error 200 — the project already runs the requested mode", async () => {
+      // Guard against over-correction: `noop` is "no change needed", not a failure to report.
+      const hybridExecutor = readyExecutor(vi.fn().mockResolvedValue({ ok: false, reason: "noop" }));
+
+      const res = await request(
+        createApp({ hybridExecutor: hybridExecutor as any }),
+        "PATCH",
+        "/api/projects/proj_1",
+        JSON.stringify({ isolationMode: "child-process" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(200);
+      expect((res.body as { error?: string }).error).toBeUndefined();
+    });
+
+    it("answers a status error naming an unrecognised reason instead of answering success", async () => {
+      /*
+      The defensive arm: the executor's failure vocabulary is a closed union, but the route must not turn
+      an unforeseen reason back into a silent success — that is the defect being removed. The sentence may
+      not claim which mode is live, because for an unknown reason the route genuinely does not know.
+      */
+      const hybridExecutor = readyExecutor(
+        vi.fn().mockResolvedValue({ ok: false, reason: "some_future_reason" }),
+      );
+
+      const res = await request(
+        createApp({ hybridExecutor: hybridExecutor as any }),
+        "PATCH",
+        "/api/projects/proj_1",
+        JSON.stringify({ isolationMode: "child-process" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(503);
+      const body = res.body as { error?: string; details?: { reason?: string; message?: unknown } };
+      expect(body.error).toBe("isolation_transition_failed");
+      expect(body.details?.reason).toBe("some_future_reason");
+      expect(typeof body.details?.message).toBe("string");
+      expect(central.updateProject).not.toHaveBeenCalledWith(
+        "proj_1",
+        expect.objectContaining({ isolationMode: "child-process" }),
+      );
+    });
+
+    it("answers isolation_transition_failed when the transition call throws inside the runtime restart", async () => {
+      /*
+      `ProjectManager.restartProjectRuntime()` throws for reasons that are not busy-project refusals
+      (`Runtime not found for project …`, a failed `stop()`, a failed re-add). On `main` that throw escaped
+      to the route's outer catch, whose string match on `not found` turned a runtime lookup failure into a
+      `404` claiming the PROJECT was missing — when the project was found and its row had already been
+      updated. The body must not read as "project not found".
+      */
+      const hybridExecutor = readyExecutor(
+        vi.fn().mockRejectedValue(new Error("Runtime not found for project proj_1")),
+      );
+
+      const res = await request(
+        createApp({ hybridExecutor: hybridExecutor as any }),
+        "PATCH",
+        "/api/projects/proj_1",
+        JSON.stringify({ isolationMode: "child-process" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(503);
+      const body = res.body as { error?: string; details?: { reason?: string; detail?: string; message?: unknown } };
+      expect(body.error).toBe("isolation_transition_failed");
+      expect(body.details?.reason).toBe("restart_failed");
+      expect(body.details?.detail).toBe("Runtime not found for project proj_1");
+      expect(typeof body.details?.message).toBe("string");
+      expect(JSON.stringify(res.body)).not.toMatch(/project not found/i);
+      expect(central.updateProject).not.toHaveBeenCalledWith(
+        "proj_1",
+        expect.objectContaining({ isolationMode: "child-process" }),
+      );
+    });
+
+    it("still answers 404 when the project itself vanished mid-request", async () => {
+      // `CentralCore.transitionProjectIsolation` throws `Project not found: <id>`; that race stays a 404.
+      const hybridExecutor = readyExecutor(
+        vi.fn().mockRejectedValue(new Error("Project not found: proj_1")),
+      );
+
+      const res = await request(
+        createApp({ hybridExecutor: hybridExecutor as any }),
+        "PATCH",
+        "/api/projects/proj_1",
+        JSON.stringify({ isolationMode: "child-process" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(404);
+      expect(central.updateProject).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -169,6 +169,59 @@ export interface HybridExecutorOptions {
   startupCapacityProbeTimeoutMs?: number;
 }
 
+/*
+FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+Why this vocabulary is a closed union instead of `reason: string`, and who owns each fact.
+
+An operator's `PATCH /api/projects/:id` that changed isolation used to be able to answer as a success
+while the mode had not changed, because the only consumer reacted to the one reason it knew about
+(`active_tasks`) and treated everything else as "nothing to report". The root of that was a type that
+could not be handled exhaustively: `reason: string` is not a contract, so the caller could not know
+which outcomes existed and silently under-handled the rest. Each layer now reports only what it can
+know, and the union is where those three reports meet:
+
+- **CentralCore owns persistence.** It answers `ok` or `noop` (the requested mode already equals the
+  stored one) and throws for a missing project. It knows nothing about runtimes, so it reports nothing
+  about them.
+- **HybridExecutor owns live runtime state.** It is the only layer that learns whether the restart after
+  the persisted change actually completed, so it is the only producer of `active_tasks` (a refusal that
+  rolled the row back) and `restart_failed` (a failure that did NOT — the row already holds the requested
+  mode, which is why `storedIsolationMode` is `nextMode` and why no rollback is added here: rolling back
+  a half-completed restart would be a second runtime-state decision, not a report of the first).
+- **The route owns the operator sentence.** It converts each arm into a status code plus the wording an
+  operator can act on, and its handling is total: an arm it does not recognise still refuses, because a
+  reason this union has never heard of is still a reason the mode did not take effect.
+
+Adding an arm here is therefore a breaking change for the route, and that is the point — the compiler,
+not an incident, is what should notice a new failure mode.
+*/
+export type IsolationTransitionResult =
+  | { ok: true }
+  | { ok: false; reason: "project_not_found" }
+  /* Persisted mode already equals the requested mode: a non-change, not a failure. */
+  | { ok: false; reason: "noop" }
+  | {
+      ok: false;
+      reason: "active_tasks";
+      activeTaskCount?: number;
+      blockingTaskIds?: string[];
+      /*
+      FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+      Carried from `ProjectRuntimeRestartBlockedError.unproven`: the refusal is a transport that could
+      not prove the project idle, not an observation of live work. Under this flag `activeTaskCount` is
+      a last-known number that may be zero while work runs, so no surface may render it as a card count.
+      */
+      inFlightUnproven?: boolean;
+    }
+  | {
+      ok: false;
+      reason: "restart_failed";
+      /** The mode the project row holds NOW, i.e. the requested one — the write was never rolled back. */
+      storedIsolationMode: IsolationMode;
+      /** The caught error's message, for the operator payload and the engine log. */
+      detail: string;
+    };
+
 /**
  * HybridExecutor — Multi-project task execution orchestrator.
  *
@@ -587,6 +640,13 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
    * Non-force transitions that fail runtime restart due to active tasks roll back
    * the persisted isolationMode change to its previous value before returning.
    *
+   * FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+   * The return is {@link IsolationTransitionResult}, a closed union, and the two runtime-failure arms
+   * differ in what they leave persisted: `active_tasks` is a refusal that rolls the row back, while
+   * `restart_failed` is a failure AFTER the row was written, so the row keeps the requested mode and this
+   * method deliberately adds no rollback — the operator is told which of the two happened instead of the
+   * engine quietly rewriting runtime state it can no longer observe.
+   *
    * FNXC:IsolationTransitionBlockers 2026-10-15-06:05 (RUFU-328):
    * A bare `activeTaskCount` was the whole refusal, so an operator staring at `409 active_tasks` could not
    * tell whether work was running or bookkeeping had leaked — the reported saneca case refused for hours
@@ -601,22 +661,7 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     projectId: string,
     nextMode: IsolationMode,
     opts?: { force?: boolean },
-  ): Promise<
-    | { ok: true }
-    | {
-        ok: false;
-        reason: string;
-        activeTaskCount?: number;
-        blockingTaskIds?: string[];
-        /*
-        FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
-        Carried from `ProjectRuntimeRestartBlockedError.unproven`: the refusal is a transport that could
-        not prove the project idle, not an observation of live work. Under this flag `activeTaskCount` is
-        a last-known number that may be zero while work runs, so no surface may render it as a card count.
-        */
-        inFlightUnproven?: boolean;
-      }
-  > {
+  ): Promise<IsolationTransitionResult> {
     const current = await this.centralCore.getProject(projectId);
     if (!current) {
       return { ok: false, reason: "project_not_found" };
@@ -650,7 +695,21 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
           ...(unproven ? { inFlightUnproven: true } : {}),
         };
       }
-      throw error;
+      /*
+      FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+      Every other restart failure used to `throw error`, which the route then read as either a raw 500 or,
+      for the very common `Runtime not found for project <id>` throw, a `404` claiming the PROJECT was
+      missing — after its row had already been written with the new mode. Returning is the honest shape:
+      the persisted change stands (so no rollback is attempted, unlike `active_tasks`, which is a refusal
+      that never happened), and the live runtime state is reported as unresolved rather than as a success
+      or as a project-lookup failure. The caught error is logged here because the return value
+      deliberately carries only its message, not its stack.
+      */
+      const detail = error instanceof Error ? error.message : String(error);
+      hybridExecutorLog.warn(
+        `Isolation transition for ${projectId}: persisted ${nextMode}, but runtime restart failed (${detail})`
+      );
+      return { ok: false, reason: "restart_failed", storedIsolationMode: nextMode, detail };
     }
   }
 

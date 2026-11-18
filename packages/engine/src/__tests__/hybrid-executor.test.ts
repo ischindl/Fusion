@@ -576,5 +576,53 @@ describe("HybridExecutor", () => {
         inFlightUnproven: true,
       });
     });
+
+    /*
+    FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+    A restart failure that is NOT a busy-project refusal used to `throw`, so the dashboard's outer catch
+    read the message and answered a raw 500 — or a `404` for `Runtime not found for project <id>`, claiming
+    the PROJECT was missing after its row had already been written with the new mode. Returning
+    `restart_failed` is what lets the route say the three true things: the mode is now the requested one on
+    the board, the live runtime did not finish restarting, and the operator's next step. The rollback the
+    `active_tasks` arm performs is deliberately absent here: that arm refuses a change that never happened,
+    this one reports a change that did.
+    */
+    it("returns restart_failed instead of throwing when the restart fails for a non-active_tasks reason", async () => {
+      const manager = mockProjectManagerInstances[0];
+      manager?.restartProjectRuntime.mockRejectedValueOnce(new Error("Runtime not found for project proj_test123"));
+
+      const result = await executor.transitionProjectIsolation("proj_test123", "child-process");
+
+      expect(result).toEqual({
+        ok: false,
+        reason: "restart_failed",
+        // The row keeps the requested mode: central persisted it before the restart was attempted.
+        storedIsolationMode: "child-process",
+        detail: "Runtime not found for project proj_test123",
+      });
+      // No rollback: unlike `active_tasks`, nothing here proves the transition never happened.
+      expect(mockCentralCore.updateProject).not.toHaveBeenCalledWith("proj_test123", {
+        isolationMode: "in-process",
+      });
+    });
+
+    it("returns restart_failed for a failed forced restart instead of throwing", async () => {
+      // `force` skips the busy guard, so a rejection reaching this arm is a real runtime failure — and a
+      // forced request deserves an honest answer about its runtime state exactly as an unforced one does.
+      const manager = mockProjectManagerInstances[0];
+      manager?.restartProjectRuntime.mockRejectedValueOnce(new Error("stop() timed out after 30000ms"));
+
+      const result = await executor.transitionProjectIsolation("proj_test123", "child-process", { force: true });
+
+      expect(result).toEqual({
+        ok: false,
+        reason: "restart_failed",
+        storedIsolationMode: "child-process",
+        detail: "stop() timed out after 30000ms",
+      });
+      expect(mockCentralCore.updateProject).not.toHaveBeenCalledWith("proj_test123", {
+        isolationMode: "in-process",
+      });
+    });
   });
 });

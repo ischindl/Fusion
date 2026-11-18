@@ -794,11 +794,28 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
     return updated;
 }
 
+  /**
+   * Persist an isolation-mode change for a project.
+   *
+   * FNXC:IsolationTransitionOutcomes 2026-11-18-05:42 (RUFU-729):
+   * The signature used to widen its own failure arm to `reason: string` and carry an `activeTaskCount`
+   * this method never writes, which told every caller that persistence was where runtime refusals were
+   * reported — and the one HTTP consumer duly handled exactly the reason it happened to know about and
+   * treated the rest as success. The return type now states what this layer can actually answer:
+   *
+   * @returns `{ ok: true }` when the persisted mode changed, or `{ ok: false; reason: "noop" }` when the
+   *          requested mode already equals the stored one. Throws for a missing project.
+   *
+   * Runtime truth is not this layer's to report: whether the live runtime completed its restart belongs to
+   * `HybridExecutor.transitionProjectIsolation()` (which owns `active_tasks` and `restart_failed`), and the
+   * operator-facing wording belongs to the dashboard route. No business logic, logging, or runtime-failure
+   * reason belongs here.
+   */
   async transitionProjectIsolation(
     projectId: string,
     nextMode: IsolationMode,
     opts: { force?: boolean } = {}
-  ): Promise<{ ok: true } | { ok: false; reason: string; activeTaskCount?: number }> {
+  ): Promise<{ ok: true } | { ok: false; reason: "noop" }> {
     // Runtime restart force semantics are handled by HybridExecutor/ProjectManager.
     void opts;
     this.ensureInitialized();

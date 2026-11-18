@@ -1245,6 +1245,7 @@ export {
   type HybridExecutorReadiness,
   type HybridExecutorOptions,
   type HybridExecutorEvents,
+  type IsolationTransitionResult,
 } from "./concurrency/hybrid-executor.js";
 export { shouldUseHybridExecutor, type HybridExecutorGateDecision } from "./concurrency/hybrid-executor-gate.js";
 export { applyUnavailableNodePolicy, type PolicyDecision } from "./project/node-routing-policy.js";
