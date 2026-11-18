@@ -3153,6 +3153,20 @@ export {
   isQmdAvailable,
 } from "./memory/memory-backend.js";
 
+/*
+FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+The dashboard's memory test and per-file save routes need these decisions from the same module the
+core resolver reads, so the surface cannot re-derive a default backend of its own.
+*/
+export {
+  describeMemoryFileWrite,
+  resolveMemoryTestTarget,
+  settingsForMemoryTestTarget,
+  type MemoryBackendSettingsInput,
+  type MemoryFileWriteTruth,
+  type MemoryTestTarget,
+} from "./memory/memory-surface-truth.js";
+
 export {
   MemoryBackendError,
   type MemoryBackendErrorCode,

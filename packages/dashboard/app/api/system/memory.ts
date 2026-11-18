@@ -33,8 +33,29 @@ export function fetchMemoryFile(path: string, projectId?: string): Promise<{ pat
   return api<{ path: string; content: string }>(withProjectId(`/memory/file?${query}`, projectId));
 }
 
-export function saveMemoryFile(path: string, content: string, projectId?: string): Promise<{ success: boolean }> {
-  return api<{ success: boolean }>(withProjectId("/memory/file", projectId), {
+/*
+FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+Mirrors the `describeMemoryFileWrite` fields the file-save route now returns. The Memory screen's
+Save button posts to `/memory/file` with a path, and that path-scoped write stays in the local
+workspace even when the screen reads Stash — so the response has to carry where the bytes landed or
+the edit silently disappears on the next load.
+*/
+export interface MemoryFileWriteTruth {
+  /** Always `file`: the per-file editor writes the local memory workspace. */
+  storedIn: "file";
+  /** Backend the memory screen reads from. */
+  configuredBackend: string;
+  /** True when the save did not reach the backend the screen reads. */
+  diverges: boolean;
+  notice: string | null;
+}
+
+export function saveMemoryFile(
+  path: string,
+  content: string,
+  projectId?: string,
+): Promise<{ success: boolean } & MemoryFileWriteTruth> {
+  return api<{ success: boolean } & MemoryFileWriteTruth>(withProjectId("/memory/file", projectId), {
     method: "PUT",
     body: JSON.stringify({ path, content }),
   });
@@ -56,8 +77,8 @@ export function saveMemoryFile(path: string, content: string, projectId?: string
 export function compactMemory(
   path?: string,
   projectId?: string,
-): Promise<{ path?: string; content: string }> {
-  return api<{ path?: string; content: string }>(withProjectId("/memory/compact", projectId), {
+): Promise<{ path?: string; content: string } & Partial<MemoryFileWriteTruth>> {
+  return api<{ path?: string; content: string } & Partial<MemoryFileWriteTruth>>(withProjectId("/memory/compact", projectId), {
     method: "POST",
     body: JSON.stringify(path ? { path } : {}),
   });
@@ -213,8 +234,15 @@ export interface MemorySearchResult {
 
 export interface MemoryRetrievalTestResult {
   query: string;
+  /** Which backend this probe actually asked — the configured one, not always qmd. */
+  testedBackend: string;
   qmdAvailable: boolean;
+  /** True only when qmd is configured but not installed, so files were read instead. */
   usedFallback: boolean;
+  /** Set when the probe could not test what is configured. */
+  notice?: string | null;
+  /** Last Stash read outcome recorded by real recall paths. */
+  stashReadOutcome?: string | null;
   qmdInstallCommand: string;
   results: MemorySearchResult[];
 }

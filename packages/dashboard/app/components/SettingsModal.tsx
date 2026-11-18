@@ -3955,9 +3955,21 @@ export function SettingsModal({
 
   const handleSaveMemory = useCallback(async () => {
     try {
-      await saveMemoryFile(selectedMemoryPath, memoryContent, projectId);
+      const result = await saveMemoryFile(selectedMemoryPath, memoryContent, projectId);
       setMemoryDirty(false);
-      addToast(t("settings.memory.memorySaved", "Memory saved"), "success");
+      /*
+      FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+      This Save button posts a path to `/memory/file`, and a path-scoped save stays in the local
+      memory workspace even when the screen reads from Stash (the backend interface has no
+      path-scoped write). Before the route said so, the edit vanished on the next load with no
+      explanation and no error, so the warning is shown at the moment of the save.
+      */
+      addToast(
+        result.diverges && result.notice
+          ? result.notice
+          : t("settings.memory.memorySaved", "Memory saved"),
+        result.diverges ? "warning" : "success",
+      );
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to save memory", "error");
     }
@@ -3966,19 +3978,26 @@ export function SettingsModal({
   const handleCompactMemory = useCallback(async () => {
     setMemoryCompactLoading(true);
     try {
-      const { path, content } = await compactMemory(selectedMemoryPath, projectId);
-      const nextPath = path ?? selectedMemoryPath;
+      const result = await compactMemory(selectedMemoryPath, projectId);
+      const nextPath = result.path ?? selectedMemoryPath;
       if (selectedMemoryPath !== nextPath) {
         skipNextMemoryReloadRef.current = true;
       }
       setSelectedMemoryPath(nextPath);
-      setMemoryContent(content);
+      setMemoryContent(result.content);
       setMemoryDirty(false);
 
       const { files } = await fetchMemoryFiles(projectId);
       setMemoryFiles(files);
 
-      addToast(t("settings.memory.memoryCompacted", "Memory file compacted"), "success");
+      // Same disclosure as Save: compaction rewrote a workspace file, it did not write through to
+      // the backend the screen reads from.
+      addToast(
+        result.diverges && result.notice
+          ? result.notice
+          : t("settings.memory.memoryCompacted", "Memory file compacted"),
+        result.diverges ? "warning" : "success",
+      );
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to compact memory", "error");
     } finally {
@@ -3992,9 +4011,17 @@ export function SettingsModal({
     try {
       const result = await testMemoryRetrieval(memoryTestQuery, projectId);
       setMemoryTestResult(result);
+      /*
+      FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+      The toast used to speak only about qmd, because the route always probed qmd. It now names the
+      backend that was actually asked, so a Stash project's test result cannot read as a qmd verdict
+      — the misattribution that let an `ok` sit beside `memory:stash-read-refused` in the audit.
+      */
       addToast(
-        result.qmdAvailable ? "Memory retrieval test complete" : "qmd is not installed; local fallback was used",
-        result.qmdAvailable ? "success" : "warning",
+        result.notice
+          ? result.notice
+          : `Memory retrieval tested against the "${result.testedBackend}" backend`,
+        result.notice || result.usedFallback ? "warning" : "success",
       );
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to test memory retrieval", "error");

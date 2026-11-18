@@ -17,6 +17,7 @@ import {
   buildInsightExtractionPrompt,
   exportSettings,
   generateMemoryAudit,
+  describeMemoryFileWrite,
   getStashReadOutcome,
   stashBaseUrlFromSettings,
   getMemoryBackendCapabilities,
@@ -28,6 +29,8 @@ import {
   listMemoryBackendTypes,
   listProjectMemoryFiles,
   processAgentMemoryDreams,
+  resolveMemoryTestTarget,
+  settingsForMemoryTestTarget,
   processAndAuditInsightExtraction,
   processMemoryDreams,
   readInsightsMemory,
@@ -1485,7 +1488,16 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       if (backend.type === "qmd") {
         scheduleQmdProjectMemoryRefresh(rootDir);
       }
-      res.json({ success: true });
+      /*
+      FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+      The writable-capability gate above passes for Stash, but this write is path-scoped and
+      `MemoryBackend` has no path-scoped write — routing it through `writeMemory()` would put a
+      single file's body into the long-term memory blob and discard its path, which is a worse bug
+      than the silence being fixed. So the bytes stay in the local workspace and the response says
+      so: `{ success: true }` alone let the memory screen (which reads Stash) show nothing and gave
+      the operator no fact to reconcile it against.
+      */
+      res.json({ success: true, ...describeMemoryFileWrite(settings, { indexRefreshed: backend.type === "qmd" }) });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -1585,25 +1597,38 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         ? req.body.query.trim()
         : "project memory";
       const qmdAvailable = await isQmdAvailable();
-      if (qmdAvailable) {
+      /*
+      FNXC:MemorySurfaceTruth 2026-11-18-02:05:
+      This route used to overwrite the settings object with `{ memoryBackendType: "qmd" }`, so for a
+      Stash project the operator's "test" button probed qmd and reported the LAST Stash read outcome
+      as this test's verdict — an `ok` while the configured server was unreachable (audit
+      `memory:stash-read-refused`, `code: unreachable`, `keyResolved: true`, same day). It now probes
+      the configured backend, and names which one it probed.
+      */
+      const target = resolveMemoryTestTarget(settings, qmdAvailable);
+      if (target.testedBackend === "qmd" && qmdAvailable) {
         await refreshQmdProjectMemoryIndex(rootDir, { force: true });
       }
       const results = await searchProjectMemory(
         rootDir,
         { query, limit: 5 },
-        // This route pins the backend to qmd, so it is not a Stash read surface and needs no
-        // secrets reader (RUFU-994 Step 0): the resolve would early-return on backend type.
-        { ...settings, memoryBackendType: "qmd" },
+        settingsForMemoryTestTarget(settings, target),
+        undefined,
+        // A Stash-targeted probe IS a Stash read surface, so it takes the one secrets reader like
+        // every other Stash read (RUFU-994). The resolve early-returns for qmd/file/readonly.
+        scopedStore,
       );
 
       res.json({
         query,
+        testedBackend: target.testedBackend,
         qmdAvailable,
-        usedFallback: !qmdAvailable,
+        usedFallback: target.usedFallback,
+        notice: target.notice,
         qmdInstallCommand: QMD_INSTALL_COMMAND,
-        // RUFU-994: this route pins the backend to qmd above, so its own search is not a Stash
-        // read surface; the field reports the last Stash read outcome real recall paths recorded
-        // against the configured server, which is the fact an operator is testing for here.
+        // The last outcome real recall paths recorded against the configured Stash server. With
+        // Stash configured this probe asks that server itself, so the two now agree by construction
+        // instead of one echoing the other.
         stashReadOutcome: getStashReadOutcome(stashBaseUrlFromSettings(settings))?.code ?? null,
         results,
       });
@@ -1670,7 +1695,13 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         scheduleQmdProjectMemoryRefresh(rootDir);
       }
 
-      res.json({ path: result.path, content: compacted });
+      // Same disclosure as `PUT /memory/file`: compaction rewrites a workspace file, it does not
+      // write through to the configured backend.
+      res.json({
+        path: result.path,
+        content: compacted,
+        ...describeMemoryFileWrite(settings, { indexRefreshed: backend.type === "qmd" }),
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
