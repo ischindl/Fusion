@@ -68,9 +68,29 @@ function makeAuditor() {
 }
 
 function makeRun() {
+  /*
+   * FNXC:EngineTests 2026-11-17-16:27 (RUFU-623):
+   * FN-9442 (32fb16778b) grew the pinned-acquisition store surface: a task-pinned checkout whose registered
+   * branch differs from the task's own branch now reads the task row (`store.getTask`), proves the renamed-branch
+   * rebind, and writes the identity back through a compare-and-set (`store.updateTaskAtomic`). This fake still
+   * declared only `updateTask` + `logEntry`, so all three cases below died with
+   * `TypeError: store.getTask is not a function` before ever reaching the reclaim they exist to assert. The fake
+   * now covers every seam production touches on this path, so the lane can never be green only because a missing
+   * store method was swallowed. These fixtures are detached, so the rebind proof refuses before `listTasks` or
+   * `updateTaskAtomic` is reached; the shapes mirror `worktree-acquisition.test.ts` (the mutator receives the
+   * live row and returns the patch, or null to refuse the move).
+   */
+  const row: Record<string, unknown> = { updatedAt: "2026-10-04T00:00:00Z" };
   const store = {
     updateTask: vi.fn(async () => undefined),
     logEntry: vi.fn(async () => undefined),
+    getTask: vi.fn(async (id: string) => ({ ...row, id })),
+    updateTaskAtomic: vi.fn(async (_id: string, updater: (live: Record<string, unknown>) => Record<string, unknown> | null) => {
+      const patch = await updater(row);
+      if (patch) Object.assign(row, patch);
+      return row;
+    }),
+    listTasks: vi.fn(async () => []),
   } as any;
   const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   return { store, logger };

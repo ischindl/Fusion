@@ -1214,38 +1214,77 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
         return reuseWarmWorktree(pinnedPath, resumedBranch, "existing");
       }
       if (classification.ok && !isForeignTaskPinnedBranch(registeredBranch, resumedBranch)) {
-        const snapshot = await store.getTask(task.id);
-        if (!snapshot.updatedAt) throw new Error("Task snapshot unavailable for branch rebind");
-        const proof = await proveTaskWorktreeRebind({
-          rootDir, worktreePath: pinnedPath, task, store,
-          integrationBranch: await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console }),
-        });
-        if (opts.suppressSingularWorktreePersist) throw new Error("Renamed branch recovery requires a singular task assignment");
-        let rebound = false;
-        const persisted = await store.updateTaskAtomic(task.id, (live) => {
-          const identityFields = ["branch", "worktree", "column", "status", "paused", "userPaused", "checkedOutBy", "workflowIrPinNodeId", "lineageId"] as const;
-          if (live.paused || live.userPaused || live.deletedAt || live.updatedAt !== snapshot.updatedAt || identityFields.some((key) => (live[key] ?? null) !== (task[key] ?? null))) return null;
-          if (activeSessionRegistry.isPathActive(pinnedPath)) return null;
-          rebound = true;
-          return { worktree: pinnedPath, branch: proof.branch, branchWriteOrigin: branchWriteOriginFor(proof.branch) };
-        }, runContext, () => !activeSessionRegistry.isPathActive(pinnedPath), {
-          expectedUpdatedAt: snapshot.updatedAt,
-          expectedCheckedOutBy: snapshot.checkedOutBy ?? null,
-          expectedCheckoutNodeId: snapshot.checkoutNodeId ?? null,
-          expectedCheckoutLeaseEpoch: snapshot.checkoutLeaseEpoch ?? 0,
-        });
-        if (!rebound || persisted.branch !== proof.branch || persisted.worktree !== pinnedPath)
-          throw new Error(`preserving ${pinnedPath}: task ownership changed during branch rebind`);
-        await installTaskWorktreeIdentityGuard({
-          worktreePath: pinnedPath, taskId: task.id, expectedBranch: proof.branch,
-          commitMsgHookEnabled: settings.commitMsgHookEnabled, taskPrefix: settings.taskPrefix,
-          taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
-          commitAuthorEnabled: settings.commitAuthorEnabled, commitAuthorName: settings.commitAuthorName,
-          commitAuthorEmail: settings.commitAuthorEmail,
-        });
-        await store.logEntry(task.id, "Rebound task-pinned checkout to its ownership-proven renamed branch", proof.branch, runContext);
-        // This is identity repair, not a base refresh: preserve HEAD, dirty files and ignored evidence.
-        return guardAcquisitionReturn({ worktreePath: pinnedPath, branch: proof.branch, source: "existing", hydrated: false, isResume: true });
+        /*
+         * FNXC:WorktreeRebindAdoption 2026-11-17-16:20:
+         * FN-9442 (32fb16778b) made an unprovable renamed-branch rebind TERMINAL. The snapshot read, its guard,
+         * and `proveTaskWorktreeRebind` all threw inside the reservation `try`, whose only exit is a `finally`,
+         * so nothing between those throws and the end of `acquirePinnedWorktree` could absorb them. A pinned
+         * checkout that git names no branch for (the detached crash-recovery / archive-restore shape RUFU-298
+         * documents) therefore terminalized the card exactly as RUFU-298 killed RUFU-260: "Worktree acquisition
+         * failed after 3 heartbeat attempts". The prover's own refusal sentence begins with "preserving", so a
+         * refused rebind was always meant to lead into preservation, never into a dead card.
+         * The attempt is now bounded, and a refusal that carries NO ownership verdict is ADVISORY: it logs one
+         * warning and falls through to the classification-driven reclaim below — the pre-FN-9442 flow RUFU-298's
+         * real-git assertions were authored green against. Only a PROVEN rebind keeps its write path, and the
+         * ownership-drift CAS rejection stays terminal (asserted in worktree-acquisition.test.ts): a checkout
+         * another task owns must never be adopted silently. The catch writes no durable row, so the reclaim
+         * path owns the record.
+         *
+         * FNXC:WorktreeRebindAdoption 2026-11-18-14:53 (RUFU-730 boundary, found by this card's own suite):
+         * "No ownership verdict" holds ONLY for a checkout git names no branch for. RUFU-730 deliberately left
+         * `isForeignTaskPinnedBranch` on the `fusion/fn-\d+` grammar, so a pinned checkout on e.g.
+         * `fusion/rufu-0000` is neither a recognized foreign owner nor this task's branch, and the prover's
+         * refusal is the ONLY thing standing between acquisition and a `git worktree remove` on another
+         * project's checkout. Falling through there would destroy provably unattributable work, so a refusal
+         * where `registeredBranch` is set keeps throwing, unchanged from FN-9442. A branchless (detached)
+         * checkout offers no branch to attribute: the path is derived from this task's id, so the content
+         * classification owns the decision — preserve the evidence aside, or prune only the proven-regenerable
+         * class. Pinned by worktree-acquisition-pinned.test.ts (named branch refuses, nothing removed) and
+         * worktree-acquisition.test.ts (branchless falls through to the preserve-rename reclaim).
+         */
+        let rebind: { proof: { branch: string; head: string }; snapshot: Awaited<ReturnType<TaskStore["getTask"]>> } | null = null;
+        try {
+          const snapshot = await store.getTask(task.id);
+          if (!snapshot.updatedAt) throw new Error("Task snapshot unavailable for branch rebind");
+          const proof = await proveTaskWorktreeRebind({
+            rootDir, worktreePath: pinnedPath, task, store,
+            integrationBranch: await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console }),
+          });
+          if (opts.suppressSingularWorktreePersist) throw new Error("Renamed branch recovery requires a singular task assignment");
+          rebind = { proof, snapshot };
+        } catch (rebindError: unknown) {
+          // A branch git can name is an ownership claim the prover could not clear: terminal, per RUFU-730.
+          if (registeredBranch) throw rebindError;
+          logger?.warn(`${task.id}: task-owned branch rebind at ${pinnedPath} was not proven (${formatError(rebindError).message}); deferring to the classification-driven reclaim decision`);
+        }
+        if (rebind) {
+          const { proof, snapshot } = rebind;
+          let rebound = false;
+          const persisted = await store.updateTaskAtomic(task.id, (live) => {
+            const identityFields = ["branch", "worktree", "column", "status", "paused", "userPaused", "checkedOutBy", "workflowIrPinNodeId", "lineageId"] as const;
+            if (live.paused || live.userPaused || live.deletedAt || live.updatedAt !== snapshot.updatedAt || identityFields.some((key) => (live[key] ?? null) !== (task[key] ?? null))) return null;
+            if (activeSessionRegistry.isPathActive(pinnedPath)) return null;
+            rebound = true;
+            return { worktree: pinnedPath, branch: proof.branch, branchWriteOrigin: branchWriteOriginFor(proof.branch) };
+          }, runContext, () => !activeSessionRegistry.isPathActive(pinnedPath), {
+            expectedUpdatedAt: snapshot.updatedAt,
+            expectedCheckedOutBy: snapshot.checkedOutBy ?? null,
+            expectedCheckoutNodeId: snapshot.checkoutNodeId ?? null,
+            expectedCheckoutLeaseEpoch: snapshot.checkoutLeaseEpoch ?? 0,
+          });
+          if (!rebound || persisted.branch !== proof.branch || persisted.worktree !== pinnedPath)
+            throw new Error(`preserving ${pinnedPath}: task ownership changed during branch rebind`);
+          await installTaskWorktreeIdentityGuard({
+            worktreePath: pinnedPath, taskId: task.id, expectedBranch: proof.branch,
+            commitMsgHookEnabled: settings.commitMsgHookEnabled, taskPrefix: settings.taskPrefix,
+            taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
+            commitAuthorEnabled: settings.commitAuthorEnabled, commitAuthorName: settings.commitAuthorName,
+            commitAuthorEmail: settings.commitAuthorEmail,
+          });
+          await store.logEntry(task.id, "Rebound task-pinned checkout to its ownership-proven renamed branch", proof.branch, runContext);
+          // This is identity repair, not a base refresh: preserve HEAD, dirty files and ignored evidence.
+          return guardAcquisitionReturn({ worktreePath: pinnedPath, branch: proof.branch, source: "existing", hydrated: false, isResume: true });
+        }
       }
       // Invalid / foreign-branch / stale (crash leftover, archive→restore) → reclaim in place: remove the
       // registered worktree (owner probe via removeWorktree) then recreate fresh at the SAME path — never suffix.

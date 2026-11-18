@@ -203,6 +203,65 @@ describe("acquireTaskWorktree", () => {
     expect(store.updateTask).not.toHaveBeenCalled();
   });
 
+  /*
+   * FNXC:WorktreeRebindAdoption 2026-11-17-16:27 (RUFU-623):
+   * FN-9442 made an unprovable rebind terminal by throwing into a `try`/`finally` with no catch, reviving the
+   * terminalization RUFU-298 exists to prevent ("Worktree acquisition failed after 3 heartbeat attempts"). The
+   * `it.each` above pins the ownership-drift CAS contract (that MUST stay a rejection) and the prover's own
+   * `it.each` pins the helper's refusal; neither pins what ACQUISITION must do with a refusal. This case pins
+   * the missing half for the branchless shape — a detached crash-recovery/archive-restore checkout, the one
+   * shape git names no branch for, so a refusal there carries no ownership verdict. It asserts the disposition,
+   * not the mechanism, so it stays honest if the containment is later restructured. A refusal on a checkout
+   * that DOES name a branch stays terminal and is pinned in worktree-acquisition-pinned.test.ts (RUFU-730).
+   */
+  it("falls through to the classification-driven reclaim when a branchless pinned checkout cannot prove a rebind", async () => {
+    const rootDir = makeRepo();
+    const pinnedPath = join(rootDir, ".worktrees", "fn-1");
+    git(rootDir, `git worktree add -b fusion/renamed '${pinnedPath}'`);
+    writeFileSync(join(pinnedPath, "change"), "work\n");
+    git(pinnedPath, "git add change");
+    git(pinnedPath, 'git commit -m "task change" -m "Fusion-Task-Id: FN-1"');
+    writeFileSync(join(pinnedPath, "user-file"), "retain\n");
+    // The RUFU-298 shape: a restored checkout git has no branch name for. Detached, so the prover runs and refuses.
+    git(pinnedPath, "git checkout --detach HEAD");
+    store.listTasks = vi.fn().mockResolvedValue([]);
+    store.getTask = vi.fn().mockResolvedValue({ ...task, worktree: pinnedPath, branch: "fusion/fn-1", updatedAt: "2026-10-04T00:00:00Z" });
+    store.updateTaskAtomic = vi.fn(async (_id: string, updater: (live: any) => any) => {
+      const patch = await updater({ ...task, worktree: pinnedPath, branch: "fusion/fn-1", updatedAt: "2026-10-04T00:00:00Z" });
+      if (patch) await store.updateTask("FN-1", patch);
+      return { ...task, ...patch };
+    });
+    const auditGit = vi.fn().mockResolvedValue(undefined);
+    const loggerWarn = vi.fn();
+
+    const result = await acquireTaskWorktree({
+      rootDir, task: { ...task, worktree: pinnedPath, branch: "fusion/fn-1" }, store,
+      settings: { worktreesDir: ".worktrees" }, runInitCommand: false,
+      audit: { git: auditGit } as any,
+      logger: { log: vi.fn(), warn: loggerWarn, error: vi.fn(), debug: vi.fn() },
+    });
+
+    // The block was ENTERED and attempted, so a silently skipped rebind can never masquerade as the fix.
+    expect(store.getTask).toHaveBeenCalledWith("FN-1");
+    // The refusal was ADVISORY: no identity write happened on any store seam.
+    expect(store.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ branch: "fusion/renamed" }));
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining("deferring to the classification-driven reclaim"));
+    // And the reclaim owns the disposition: it records the decision, preserves the evidence, recreates, survives.
+    expect(auditGit).toHaveBeenCalledWith(expect.objectContaining({
+      type: "worktree:incomplete-detected",
+      target: pinnedPath,
+      metadata: expect.objectContaining({ source: "pinned-acquire", taskId: "FN-1" }),
+    }));
+    expect(store.logEntry).toHaveBeenCalledWith("FN-1", expect.stringContaining("reclaiming in place"), undefined, undefined);
+    expect(result).toMatchObject({ worktreePath: pinnedPath, branch: "fusion/fn-1", source: "fresh", isResume: false });
+    expect(git(pinnedPath, "git rev-parse --abbrev-ref HEAD")).toBe("fusion/fn-1");
+    const recoveryRoot = join(rootDir, ".fusion", "recovery", "worktrees");
+    const preserved = readdirSync(recoveryRoot);
+    expect(preserved).toHaveLength(1);
+    expect(readFileSync(join(recoveryRoot, preserved[0], "user-file"), "utf8")).toBe("retain\n");
+  });
+
   function dependencyFixture() {
     const rootDir = track(mkdtempSync(join(tmpdir(), "fn-258-dependency-root-")));
     const worktreePath = track(mkdtempSync(join(tmpdir(), "fn-258-dependency-worktree-")));
