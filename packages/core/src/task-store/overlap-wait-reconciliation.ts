@@ -1,10 +1,10 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { withTaskLogProjections } from "./task-log-projections.js";
 import type { TaskStore } from "../store.js";
 import type { Task, TaskOverlapWait } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import * as schema from "../postgres/schema/index.js";
-import { resolveTaskCompleteColumns, resolveTaskWipColumns } from "../workflows/workflow-lifecycle-traits.js";
+import { resolveTaskCompleteColumns, resolveTaskWipColumns, resolveTaskLifecycleColumns } from "../workflows/workflow-lifecycle-traits.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
 import { readTaskRowInTransaction } from "./async/async-persistence.js";
 import { getTaskActivityLogEntryLimit } from "./comments.js";
@@ -64,6 +64,26 @@ export async function reconcileTaskOverlapWaitsImpl(
     wipById.set(id, new Set(await resolveTaskWipColumns(store, id, irCache)));
   }
   /*
+  FNXC:OverlapWaitRelease 2026-11-18-01:03 (RUFU-1043):
+  The `vacant` face may only speak about a holder resting in a lane that cannot deliver work, so the
+  holder's OWN lane vocabulary is resolved here and shared through the same `irCache` the other two lane
+  reads already use — one IR read per workflow per pass, not three.
+
+  `resolveTaskLifecycleColumns` returning `undefined` is deliberately mapped to "cannot answer", never to
+  "no delivering lane": RUFU-341 documents that a missing lane answer has three causes and only one of them
+  means absence. Unknown vocabulary therefore refuses the face, which is the fail-closed direction.
+  */
+  const lifecycleById = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
+  for (const id of refs) {
+    lifecycleById.set(id, await resolveTaskLifecycleColumns(store, id, irCache));
+  }
+  const holderLaneCannotDeliver = (id: string, column: string): boolean => {
+    const lanes = lifecycleById.get(id);
+    if (!lanes) return false;
+    const delivering = [lanes.wip, lanes.review, lanes.complete].filter((lane): lane is string => Boolean(lane));
+    return !delivering.includes(column);
+  };
+  /*
   FNXC:LaneWiring 2026-11-04-09:05 (RUFU-469):
   Both release call sites below pass the lane bag as an INLINE OBJECT LITERAL, and must keep doing so.
   Factoring it into a `lanesFor(id)` helper is the obvious readability move and it BREAKS the lane-wiring
@@ -90,6 +110,24 @@ export async function reconcileTaskOverlapWaitsImpl(
       const row = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, projectId);
       blockers.set(id, row ? store.rowToTask(store.pgRowToTaskRow(row)) : undefined);
     }
+    /*
+    FNXC:OverlapWaitRelease 2026-11-18-01:03 (RUFU-1043):
+    Liveness for the `vacant` face, read HERE rather than inside the predicate. `workflow_work_items` is the
+    only surface that knows whether a holder still has work it has not abandoned, and it must be read in the
+    SAME transaction as the release decision — a pre-read would let a holder be dispatched between the read
+    and the cancel, which is the exact race the `delivered` face's lane conjunct exists to refuse. One query
+    for every blocker of this waiter, not one per row.
+    */
+    const liveWorkItemBlockerIds = new Set<string>();
+    if (blockerIds.size) {
+      const live = await tx.select({ taskId: schema.project.workflowWorkItems.taskId }).from(schema.project.workflowWorkItems)
+        .where(and(
+          eq(schema.project.workflowWorkItems.projectId, projectId),
+          inArray(schema.project.workflowWorkItems.taskId, [...blockerIds]),
+          sql`${schema.project.workflowWorkItems.state} IN ('running', 'runnable', 'retrying')`,
+        ));
+      for (const row of live) liveWorkItemBlockerIds.add(row.taskId);
+    }
     const released = new Map<string, string>();
     let unresolved = false;
     const now = new Date().toISOString();
@@ -99,7 +137,8 @@ export async function reconcileTaskOverlapWaitsImpl(
       const reason = overlapPredecessorRelease(episode, blocker, {
         completeColumns: completeById.get(row.blockerTaskId) ?? emptyLanes,
         wipColumns: wipById.get(row.blockerTaskId) ?? emptyLanes,
-      });
+      }, { hasLiveWorkItem: liveWorkItemBlockerIds.has(row.blockerTaskId),
+        holderLaneCannotDeliver: blocker ? holderLaneCannotDeliver(row.blockerTaskId, blocker.column) : false });
       if (reason) released.set(row.blockerTaskId, reason);
       else released.delete(row.blockerTaskId);
       if (row.phase === "cancelled" || row.phase === "delivered" || row.phase === "ready") continue;
@@ -138,7 +177,8 @@ export async function reconcileTaskOverlapWaitsImpl(
       const reason = released.get(id) ?? overlapPredecessorRelease({ observedAt: now }, blocker, {
         completeColumns: completeById.get(id) ?? emptyLanes,
         wipColumns: wipById.get(id) ?? emptyLanes,
-      });
+      }, { hasLiveWorkItem: liveWorkItemBlockerIds.has(id),
+        holderLaneCannotDeliver: blocker ? holderLaneCannotDeliver(id, blocker.column) : false });
       // A declared dependency on a reset task is still real work, not a file-scope lease.
       if (ownComplete || (reason && !(key === "blockedBy" && reason === "reset" && current.dependencies?.includes(id)))) {
         values[key] = null;

@@ -10,7 +10,7 @@ but retire an abandoned execution with no delivery instead of waiting forever fo
 Explicit task.dependencies remain operator intent; only stale scheduling indicators are cleared.
 */
 export const OVERLAP_DELIVERY_UNAVAILABLE_ERROR = "Delivered file evidence is not yet available for overlap synchronization";
-export type OverlapPredecessorRelease = "reset" | "deleted" | "complete" | "missing" | "delivered";
+export type OverlapPredecessorRelease = "reset" | "deleted" | "complete" | "missing" | "delivered" | "vacant";
 
 /*
 FNXC:OverlapWaitRelease 2026-11-04-09:55 (RUFU-469):
@@ -94,10 +94,29 @@ export function observedOverlapDeliveries(episode: Pick<TaskOverlapWait, "observ
     value !== null && typeof value === "object" && typeof value.repository === "string") : [];
 }
 
+/*
+FNXC:OverlapWaitRelease 2026-11-18-01:03 (RUFU-1043):
+`hasLiveWorkItem` is the fourth input and it is OPTIONAL ON PURPOSE: every existing caller keeps its
+current answer, and a caller that cannot read liveness must never gain the `vacant` face by accident.
+The reconciliation seam passes it because that is the only place that can read `workflow_work_items`
+inside the same transaction that decides the release; this predicate stays pure.
+*/
+export interface OverlapReleaseLiveness {
+  /** True when the blocker still owns a work item in `running`/`runnable`/`retrying`. */
+  hasLiveWorkItem?: boolean;
+  /**
+   * True ONLY when the caller resolved the holder's own lane vocabulary AND proved the holder rests in a
+   * lane that can still deliver work (intake / hold / planning / rebound). Unknown vocabulary must pass
+   * `false`: RUFU-341 documents that "no answer" from a lane resolver is never evidence of absence.
+   */
+  holderLaneCannotDeliver?: boolean;
+}
+
 export function overlapPredecessorRelease(
   episode: Pick<TaskOverlapWait, "observedAt" | "observation">,
   blocker: Task | undefined,
   lanes: OverlapReleaseLanes,
+  liveness: OverlapReleaseLiveness = {},
 ): OverlapPredecessorRelease | undefined {
   if (typeof episode.observation?.blockerResetAt === "string") return "reset";
   if (!blocker) return "missing";
@@ -151,5 +170,42 @@ export function overlapPredecessorRelease(
   if (!lanes.wipColumns.has(blocker.column)
     && !taskHoldsUnmergedCheckout(blocker)
     && overlapDeliverySnapshots(blocker).some(hasConcreteOverlapDelivery)) return "delivered";
+  /*
+  FNXC:OverlapWaitRelease 2026-11-18-01:03 (RUFU-1043):
+  The `delivered` face above requires concrete delivery proof, so it structurally cannot release the holder
+  shape that froze tonight's board: a card that NEVER executed has nothing to deliver, so every waiter's
+  `!concrete` branch keeps the obligation forever. Measured on RunFusion 2026-11-17/18: 549 of 595 open
+  overlap edges were held by blockers with no worktree pointer, 82 cards carried a last log line naming an
+  `active file-scope lease` for a blocker that was in `todo` with no checkout, and RUFU-1044 was refused
+  119 times across 31 hours by a `hold-release-sweep` refusal whose own capacity facts read `0 of 21`.
+  One of those holders (RUFU-454) had zero files of its own against `main` while 454's own log demanded
+  delivered files from the card that was waiting on it — a mutual premise with no edge in both directions,
+  so nothing classified it as a cycle either.
+
+  Five conjuncts, ordered fail-closed. The face is deliberately narrower than the symptom: it speaks only
+  about a holder resting in a lane that CANNOT deliver, so a holder parked in a review lane with an
+  undelivered branch keeps its claim and the `delivered` face stays the only way out of that shape.
+    1. Not a WIP lane — mid-acquisition holders keep their claim, exactly as the `delivered` face requires.
+    2. `taskHoldsUnmergedCheckout` refuses, so a retained single OR workspace checkout is never vacated.
+    3. `holderLaneCannotDeliver === true`, from the caller's resolved lane vocabulary. This is what keeps
+       the face out of review lanes, where an unlanded branch is the normal state and releasing a waiter
+       would let it collide with work that is genuinely still coming.
+    4. `!blocker.worktree` — the pointer itself, not merely the helper's aggregate: this face claims the
+       holder holds NOTHING, so it must not rest on a derived read alone.
+    5. `hasLiveWorkItem === false`, stated as an equality rather than `!== true`. A holder that is merely
+       planning or parked mid-graph still owns work it has not abandoned, and a caller that cannot read
+       `workflow_work_items` must not gain the release by omission. A holder whose pointer has DIVERGED
+       from git (RUFU-1054's class) is refused by conjunct 3 rather than by a pointer test; RUFU-1054
+       stays the owner of the divergence, this face only declines to worsen it.
+
+  Releasing a vacant holder is not forgiving a future collision: the obligation is re-derived the moment
+  the holder acquires a checkout again, which is exactly the behaviour that made hand-releasing these rows
+  tonight pointless. The face removes a stale premise, not a live lock.
+  */
+  if (!lanes.wipColumns.has(blocker.column)
+    && !taskHoldsUnmergedCheckout(blocker)
+    && !blocker.worktree
+    && liveness.holderLaneCannotDeliver === true
+    && liveness.hasLiveWorkItem === false) return "vacant";
   return undefined;
 }
