@@ -791,6 +791,7 @@ Planning session limit: maximum **1000 planning sessions per hour**.
 
 ```bash
 fn task list
+fn task lock-census [--json]
 fn task show FN-001
 fn task logs FN-001 --follow --limit 50 --type tool
 ```
@@ -803,7 +804,39 @@ fn task logs FN-001 --follow --limit 50 --type tool
 - unavailable-node policy value
 - source provenance line (`Source: <origin>`), including parent task / GitHub issue URL context when present
 
+#### Spec-lock census (`fn task lock-census`)
+
+A spec whose plan cannot be locked can never be plan-approved, and until RUFU-535 nothing on the board
+answered which cards were stuck that way or why. The plan lock requires exactly one section — `## Mission`
+— and refuses the lock when it is absent, empty, duplicated, or when a duplicate-redirect sentinel has
+replaced the spec. The park names the parser code (`mission-missing`); the census names the real cause.
+
+`fn task lock-census` is **read-only**: it never moves, pauses, edits, or re-parks a card. It classifies
+every live card outside a terminal lane through the same core probe the approval funnel uses, so a card
+cannot read healthy here and refuse to lock on the next approval attempt.
+
+```bash
+fn task lock-census                    # one table row per card whose lock is unavailable
+fn task lock-census --json             # one object per card, for scripts and CI pre-flight
+```
+
+Each row carries: `id`, `disposition`, `reason`, `missing section`, `expected heading`, `recovery owner`,
+`path` — plus a one-sentence summary naming the heading to write, the exact `PROMPT.md` to open, and who
+owns the fix.
+
+| Disposition | Meaning | Recovery owner |
+|---|---|---|
+| `unapprovable` | the spec's own authoring shape can never lock | `planner-respec` (or `operator` while the card is held) |
+| `intentionally-inert` | the spec is a `DUPLICATE: <ID>` redirect by design | `none` — nothing is owed |
+| `prompt-file-missing` | there is no readable spec to lock | `operator` |
+
+Exit code is **1** when any row is `unapprovable` or `prompt-file-missing`, and **0** otherwise — so a
+board holding only intentional duplicate parks stays green while one genuinely stuck card trips the
+tripwire. Cards in a terminal lane are excluded; if the project's lane vocabulary cannot be resolved the
+census fails **open** (nothing excluded, with a printed warning) rather than silently hiding a stuck card.
+
 Every `fn task` subcommand that touches the board retries transient storage
+
 failures (FN-7731, generalized to all subcommands in FN-7734): if PostgreSQL
 reports a retryable transaction or availability error, the command retries
 with bounded exponential backoff instead of failing

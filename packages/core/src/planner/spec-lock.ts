@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { stripGeneratedOriginalDescription } from "../tasks/original-description-region.js";
+import type { SpecLockUnavailableVerdict } from "./spec-lock-probe.js";
 
 export const SPEC_LOCK_PARSER_VERSION = 1;
 
@@ -10,12 +11,25 @@ export type SpecParseStatus = "available" | "unavailable";
 /** Prefix for durable gate diagnostics when the spec parser cannot produce lockable evidence. */
 export const PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC = "Plan approved but spec lock unavailable:";
 
-/** A deterministic parser rejection carrying enough evidence for lifecycle recovery. */
+/*
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+The carried field is the probe verdict, added as an OPTIONAL fourth argument so every existing
+`new UnavailablePlanLockError(reason, sections, sourceHash)` construction and pinned fixture stays
+source-compatible. Type-only import: `spec-lock-probe.ts` parses through this module, so a value import
+here would be a real runtime cycle. `message` stays byte-identical — three suites and two parked
+`task.error` values pin it.
+*/
 export class UnavailablePlanLockError extends Error {
   constructor(
     public readonly reason: SpecParseReason | "unknown",
     public readonly unavailableSections: SpecLockSection[],
     public readonly sourceHash: string,
+    /**
+     * Why the parse refused, in operator words, with the spec path and the recovery owner. Absent for a
+     * construction site that has no spec context (a diagnostic throw from a test or a replay), and every
+     * consumer must keep its legacy bytes in that case.
+     */
+    public readonly probe?: SpecLockUnavailableVerdict,
   ) {
     super(`Cannot lock an unavailable plan: ${reason}`);
     this.name = "UnavailablePlanLockError";
@@ -79,6 +93,28 @@ const sections: Array<{ key: SpecLockSection; headings: string[]; required: bool
   { key: "dependencies", headings: ["dependencies"], required: false },
   { key: "lineage", headings: ["mission lineage", "parent-child lineage"], required: false },
 ];
+
+/*
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+A lock refusal is only actionable when it names the heading the author must actually write. The
+parser's own vocabulary is a lowercased alias list (`"mission"`, `"completion criteria"`), which is
+correct for matching and useless in an operator sentence — nobody types `## mission` and gets an
+approval. This table is the DISPLAY label for each section, keyed by `SpecLockSection` so a new
+lock section is a compile error until it names its own heading, instead of an unavailable verdict
+that quietly reports no heading at all.
+
+Held beside `sections` on purpose: the alias table stays the ONLY parsing input and this table is
+read by nothing in the parse path, so naming a heading here cannot widen what locks.
+*/
+export const SPEC_LOCK_EXPECTED_HEADINGS: Record<SpecLockSection, string> = {
+  mission: "## Mission",
+  "file-scope": "## File Scope",
+  steps: "## Steps",
+  "acceptance-criteria": "## Completion Criteria",
+  "non-goals": "## Do NOT",
+  dependencies: "## Dependencies",
+  lineage: "## Mission Lineage",
+};
 
 const hash = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 /*

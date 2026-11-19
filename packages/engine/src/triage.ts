@@ -5444,8 +5444,19 @@ export class TriageProcessor {
           const prior = getPlanningSpecLockUnavailableFailure(task);
           const sections = err.unavailableSections.join(", ") || "unknown section";
           const failureMessage = `PLANNING_FAILED_SPEC_LOCK_UNAVAILABLE: ${err.reason} (${sections})`;
+          /*
+          FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+          The parked `task.error` above stays byte-exact — two fixtures pin it and the shrink suite
+          asserts its own verdict never mentions `mission-missing` — so the named cause travels on the
+          HISTORY LINE only, as one extra sentence beside RUFU-534's size clause. That ordering is the
+          division of labour between the two cards: the neighbour's sentence says whether the spec was
+          DAMAGED, this one says the spec's own authoring shape can never be approved, and a probe-less
+          error (a replay, a diagnostic throw) keeps the legacy bytes unchanged because the sentence is
+          empty then.
+          */
+          const namedCause = err.probe ? ` ${err.probe.summary}` : "";
           if (prior?.sourceHash === err.sourceHash) {
-            await this.store.logEntry(task.id, `${failureMessage}; identical prompt parse verdict repeated. ${headingExculpation}.`).catch(() => undefined);
+            await this.store.logEntry(task.id, `${failureMessage}; identical prompt parse verdict repeated. ${headingExculpation}.${namedCause}`).catch(() => undefined);
             const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
               status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
             })).catch(async (writeError: unknown) => {
@@ -5456,7 +5467,7 @@ export class TriageProcessor {
             return;
           }
           const decision = computeRecoveryDecision({ recoveryRetryCount: task.recoveryRetryCount, nextRecoveryAt: task.nextRecoveryAt });
-          const retryMessage = `${failureMessage}; recording deterministic parser evidence and retrying once for changed prompt text. ${headingExculpation}.`;
+          const retryMessage = `${failureMessage}; recording deterministic parser evidence and retrying once for changed prompt text. ${headingExculpation}.${namedCause}`;
           await this.store.logEntry(task.id, retryMessage).catch(() => undefined);
           if (decision.shouldRetry) {
             const retryHoldStatus = await this.resolvePlanningRetryHoldStatus(task);

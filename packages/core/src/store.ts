@@ -11,6 +11,7 @@ import { clearTerminalFailureAutoRecoveryBudget } from "./tasks/terminal-failure
 import { join } from "node:path";
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, UnavailablePlanLockError, type CurrentPlanEvidence, type PlanEvidenceBindings, type SpecLock } from "./planner/spec-lock.js";
+import { classifyCanonicalPlan, SPEC_LOCK_EXPECTED_HEADINGS, type SpecLockUnavailableVerdict } from "./planner/spec-lock-probe.js";
 import { evaluateSpecDrift, hasPriorLockDivergence, type DriftReport } from "./planner/drift-report.js";
 import * as schema from "./postgres/schema/index.js";
 import { type FSWatcher } from "node:fs";
@@ -32,8 +33,15 @@ FNXC:SpecLock 2026-08-09-21:01:
 Current-plan evidence includes durable scope relations that can mutate independently of PROMPT.md.
 Keep this projection small and structural; it captures IDs only and never copies prompt prose into
 telemetry or a mutable task field.
+
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+Exported, not kept module-private, so a pre-flight probe and the read-only census classify a card with
+the SAME binding derivation the lock funnel uses. A census that re-derived bindings locally could
+report a card as lockable (or unapprovable) from inputs the real approval attempt never sees, which is
+exactly how a diagnostic surface starts lying. Live bindings still enrich only `dependencies` and
+`lineage` — a `missionId`/`sliceId` NEVER rescues a missing `## Mission` heading.
 */
-function specLockBindings(task: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">): PlanEvidenceBindings {
+export function specLockBindings(task: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">): PlanEvidenceBindings {
   return {
     dependencies: task.dependencies ?? [],
     missionId: task.missionId,
@@ -2026,12 +2034,72 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const unavailableSections = (Object.entries(currentPlan.plan.sections) as Array<[import("./planner/spec-lock.js").SpecLockSection, import("./planner/spec-lock.js").CanonicalPlanSection]>)
         .filter(([, section]) => section.status === "unavailable")
         .map(([key]) => key);
-      throw new UnavailablePlanLockError(currentPlan.plan.reason ?? "unknown", unavailableSections, currentPlan.sourceHash);
+      /*
+      FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+      This throw is the ONLY production site that constructs `UnavailablePlanLockError`, so classifying
+      the cause HERE is what makes all three approval surfaces (triage finalization, the graph Plan
+      Review node, and the dashboard human-approve route) name the same cause without any of them
+      parsing again. No second parse: the plan was just computed by the capture above.
+      */
+      throw new UnavailablePlanLockError(
+        currentPlan.plan.reason ?? "unknown",
+        unavailableSections,
+        currentPlan.sourceHash,
+        await this.specLockUnavailableVerdict(taskId, currentPlan.plan, prompt),
+      );
     }
     const prior = await this.getLatestSpecLock(taskId);
     if (prior?.approvalFingerprint === approvalFingerprint && prior.currentPlanHash === currentPlan.plan.contentHash) return prior;
     const lock: SpecLock = { version: (prior?.version ?? 0) + 1, acceptedAt: new Date().toISOString(), approvalFingerprint, currentPlanVersion: currentPlan.version, currentPlanHash: currentPlan.plan.contentHash, plan: currentPlan.plan, ...(prior ? { priorVersion: prior.version, diff: diffSpecLocks(prior.plan, currentPlan.plan) } : {}) };
     return this.appendSpecLock(taskId, lock);
+  }
+  /**
+   * FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+   * Names WHY the just-computed parse cannot lock, for the error the funnel throws. Three inputs come
+   * from live state rather than from the text, and each one changes what the operator is told:
+   *  - `promptPath`: the exact `PROMPT.md` a re-author must open;
+   *  - `paused`: a held card cannot be re-specced by a planner, so its recovery is the operator's;
+   *  - `promptFileMissing`: the caller's prompt string can come from memory, so only the on-disk read
+   *    can distinguish "the spec says the wrong shape" from "there is no spec to read".
+   * Deliberately read-only and never fatal: a failing pause read degrades to "not paused", which is the
+   * same verdict the pre-probe park gave, rather than replacing one unhelpful error with another.
+   */
+  private async specLockUnavailableVerdict(
+    taskId: string,
+    plan: import("./planner/spec-lock.js").CanonicalPlan,
+    prompt: string,
+  ): Promise<SpecLockUnavailableVerdict> {
+    const dir = this.taskDir(taskId);
+    const promptPath = join(dir, "PROMPT.md");
+    const onDisk = await readTaskPlanPrompt(dir).catch(() => null);
+    const paused = await this.getTask(taskId)
+      .then((task) => task.userPaused === true || task.paused === true)
+      .catch(() => false);
+    const verdict = classifyCanonicalPlan(plan, {
+      taskId,
+      promptPath,
+      paused,
+      promptFileMissing: onDisk === null || onDisk.trim() === "",
+      prompt,
+    });
+    /*
+    `classifyCanonicalPlan` returns `lockable` only for a plan carrying a content hash, which the caller
+    has just excluded. A `lockable` result here would mean the funnel's own predicate and the probe
+    disagree, so the fallback keeps the named-cause contract instead of throwing a second shape.
+    */
+    if (verdict.status === "lockable") {
+      return {
+        status: "unavailable",
+        reason: plan.reason ?? "unknown",
+        missingSection: "mission",
+        expectedHeading: SPEC_LOCK_EXPECTED_HEADINGS.mission,
+        promptPath,
+        disposition: "unapprovable",
+        recoveryOwner: paused ? "operator" : "planner-respec",
+        summary: `${taskId} cannot be plan-approved: its spec at ${promptPath} yields no lockable plan content (parser reason: ${plan.reason ?? "unknown"}). Recovery owner: ${paused ? "operator" : "planner-respec"}.`,
+      };
+    }
+    return verdict;
   }
   async appendSpecDriftReport(taskId: string, report: DriftReport): Promise<DriftReport> {
     return this.withPlanningLifecycleLock(taskId, () => this.appendSpecDriftReportWhilePlanningLocked(taskId, report));

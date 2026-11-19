@@ -90,6 +90,27 @@ describe("spec lock canonicalization", () => {
     expect(canonicalizePlan(text).status).toBe("unavailable");
   });
 
+  /*
+  FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+  `applyLivePlanBindings` enriches `dependencies` and `lineage` from the live task row and NOTHING
+  else, so a mission-linked card is no more protected from a missing `## Mission` than an unlinked one.
+  That never-rescue rule is the contract the RUFU-535 probe reports, so it is pinned directly on the
+  parser here: a card carrying a mission, a slice, a parent, and declared dependencies still refuses to
+  lock while its spec has no required section, and locks the moment the heading is present.
+  */
+  it("never lets live mission, slice, parent, or dependency bindings stand in for the required Mission section", () => {
+    const bindings = { missionId: "M-001", sliceId: "S-002", dependencies: ["RUFU-001"], sourceParentTaskId: "RUFU-000" };
+    const missionless = prompt.replace("## Mission\n\nBuild a safe widget.\n\n", "");
+    expect(canonicalizePlan(missionless, bindings)).toMatchObject({ status: "unavailable", reason: "mission-missing" });
+    expect(canonicalizePlan(missionless, bindings).contentHash).toBeUndefined();
+    expect(canonicalizePlan(prompt, bindings)).toMatchObject({ status: "available" });
+    expect(canonicalizePlan(prompt, bindings).contentHash).toBeTruthy();
+  });
+
+  it("names an empty Mission separately from an absent one", () => {
+    expect(canonicalizePlan(prompt.replace("Build a safe widget.", "   "))).toMatchObject({ status: "unavailable", reason: "mission-empty" });
+  });
+
   it("matches recursive glob boundaries without corrupting double-stars", () => {
     const recursive = evidence(prompt.replace("src/widget.ts", "src/**/*.ts"));
     expect(evaluateSpecDrift({ latestLock: lock(recursive), currentPlan: recursive, modifiedFiles: ["src/widget.ts", "src/deep/widget.ts"] }).findings).toEqual([]);

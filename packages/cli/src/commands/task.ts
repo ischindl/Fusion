@@ -10,6 +10,12 @@ but the merged body has no call site, so keeping them would be dead references. 
 */
 import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, findApprovalDestroyingRetry, recordApprovalDestroyingRetryRefusal, buildPlanningStrandedRetryPatch, classifyPlanningStrandedRetry, describePlanningStrandedRetryAdmission, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
+/*
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535): `fn task lock-census` reads through the SAME three core
+seams the approval funnel uses — the probe, the binding derivation, and the spec reader — so a census
+row can never disagree with the lock the next approval attempt will hit.
+*/
+import { probeSpecLockReadiness, readTaskPlanPrompt, specLockBindings, type SpecLockDisposition, type SpecLockRecoveryOwner, type Task } from "@fusion/core";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { createSession, createTaskFromPlanSession, ensureDurablePlanningSessionStore, getSession as getPlanningSession, submitResponse, validateSession, RateLimitError, SessionNotFoundError, InvalidSessionStateError } from "@fusion/dashboard/planning";
@@ -949,6 +955,183 @@ export async function buildTaskListBoardLines(
     lines.push("");
   }
   return lines;
+}
+
+/*
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+A card whose `PROMPT.md` lacks the spec lock's only required section can NEVER be plan-approved, and
+before this command nothing on the board answered "which cards are stuck that way?" — the park names a
+parser code, the identical-sourceHash dedup re-parks silently, and the cards simply sat in `todo`
+(RUFU-424, RUFU-492 measured at filing). `fn task lock-census` is the read-only pre-flight surface:
+one row per non-terminal card whose lock parse is unavailable, classified by its real cause.
+
+The classification is never recomputed here. `probeSpecLockReadiness` is fed the SAME binding
+derivation the store funnel uses (`specLockBindings`) and the SAME spec reader (`readTaskPlanPrompt`),
+so a card cannot read `lockable` here and refuse to lock five seconds later because a diagnostic
+invented its own inputs.
+
+Two classes are separated on purpose:
+  - `unapprovable` / `prompt-file-missing` trip the exit code (they need a re-spec or a human);
+  - `intentionally-inert` (a `DUPLICATE: <ID>` redirect sentinel) never does — ten intentional parks
+    would otherwise bury the one card that really is stuck.
+*/
+
+/** One census row: a card whose spec lock is unavailable, with its named cause. */
+export interface LockCensusRow {
+  id: string;
+  disposition: SpecLockDisposition;
+  reason: string | null;
+  missingSection: string | null;
+  expectedHeading: string | null;
+  recoveryOwner: SpecLockRecoveryOwner;
+  path: string;
+  summary: string;
+}
+
+/** The card fields the census reads. Full rows only: a slim row cannot answer bindings or pause state. */
+export type LockCensusTask = Pick<Task, "id" | "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId"> & {
+  prompt?: string | null;
+  userPaused?: boolean;
+  paused?: boolean;
+};
+
+export interface LockCensusDeps {
+  /** On-disk spec text, or null when `PROMPT.md` is absent or unreadable. */
+  readPrompt: (task: LockCensusTask) => Promise<string | null> | string | null;
+  /** The `PROMPT.md` path the row names, so the operator can open exactly that file. */
+  promptPath: (task: LockCensusTask) => string;
+}
+
+/** Rows a human or a script must act on. `intentionally-inert` is deliberately excluded. */
+export function isLockCensusActionable(row: Pick<LockCensusRow, "disposition">): boolean {
+  return row.disposition === "unapprovable" || row.disposition === "prompt-file-missing";
+}
+
+/**
+ * Classify every card through the shared probe. Deterministic id order, and only unavailable locks are
+ * returned — a lockable card is the healthy case and a census that lists it cannot be scanned.
+ */
+export async function buildSpecLockCensusRows(
+  tasks: readonly LockCensusTask[],
+  deps: LockCensusDeps,
+): Promise<LockCensusRow[]> {
+  const rows: LockCensusRow[] = [];
+  for (const task of [...tasks].sort((left, right) => left.id.localeCompare(right.id))) {
+    const onDisk = await deps.readPrompt(task);
+    const prompt = onDisk ?? task.prompt ?? "";
+    const verdict = probeSpecLockReadiness({
+      prompt,
+      bindings: specLockBindings(task),
+      taskId: task.id,
+      promptPath: deps.promptPath(task),
+      // A held card cannot be re-specced by a planner, so its recovery owner is the operator.
+      paused: task.userPaused === true || task.paused === true,
+      // The row's `prompt` field can outlive the file, so only the disk read answers this class.
+      promptFileMissing: onDisk === null || onDisk.trim() === "",
+    });
+    if (verdict.status === "lockable") continue;
+    rows.push({
+      id: task.id,
+      disposition: verdict.disposition,
+      reason: verdict.reason,
+      missingSection: verdict.missingSection,
+      expectedHeading: verdict.expectedHeading,
+      recoveryOwner: verdict.recoveryOwner,
+      path: verdict.promptPath ?? deps.promptPath(task),
+      summary: verdict.summary,
+    });
+  }
+  return rows;
+}
+
+/**
+ * The board membership the census may report: every live card outside a terminal lane.
+ *
+ * Fail-OPEN by decision. A lane vocabulary that cannot be resolved keeps every card visible and says
+ * so, because the failure mode this command exists to prevent is a card that is silently missing from
+ * the list — the exact shape the legacy `fn task list` column loop had.
+ */
+export async function selectSpecLockCensusTasks(
+  store: Parameters<typeof resolveProjectColumnsForRoles>[0],
+  tasks: readonly LockCensusTask[] & { column?: string }[],
+): Promise<{ candidates: typeof tasks; excludedTerminalCount: number; laneVocabularyDegraded: boolean }> {
+  const terminalColumns = await resolveProjectColumnsForRoles(store, TERMINAL_ROLES).catch(() => undefined);
+  if (!terminalColumns) {
+    return { candidates: [...tasks], excludedTerminalCount: 0, laneVocabularyDegraded: true };
+  }
+  const withColumn = tasks as Array<LockCensusTask & { column?: string }>;
+  const candidates = withColumn.filter((task) => !terminalColumns.has(task.column ?? ""));
+  return {
+    candidates: candidates as typeof tasks,
+    excludedTerminalCount: withColumn.length - candidates.length,
+    laneVocabularyDegraded: false,
+  };
+}
+
+const LOCK_CENSUS_COLUMNS = ["id", "disposition", "reason", "missing section", "expected heading", "recovery owner", "path"] as const;
+
+/** Human-readable report lines, shared by the command and its test so neither re-formats the other. */
+export function formatSpecLockCensusRows(rows: readonly LockCensusRow[], excludedTerminalCount: number): string[] {
+  const lines: string[] = [""];
+  if (excludedTerminalCount > 0) lines.push(`  Excluded ${excludedTerminalCount} card(s) in a terminal lane.`);
+  if (rows.length === 0) {
+    lines.push("  No live card has an unavailable spec lock.");
+    lines.push("");
+    return lines;
+  }
+  lines.push(`  ${LOCK_CENSUS_COLUMNS.join(" | ")}`);
+  for (const row of rows) {
+    lines.push(`  ${[row.id, row.disposition, row.reason ?? "-", row.missingSection ?? "-", row.expectedHeading ?? "-", row.recoveryOwner, row.path].join(" | ")}`);
+  }
+  const actionable = rows.filter((row) => isLockCensusActionable(row)).length;
+  lines.push("");
+  lines.push(`  ${rows.length} card(s) with an unavailable spec lock; ${actionable} need a named recovery (the rest are intentional redirect sentinels).`);
+  for (const row of rows) {
+    lines.push(`    ${row.id}: ${row.summary}`);
+  }
+  lines.push("");
+  return lines;
+}
+
+/**
+ * `fn task lock-census [--json]` — read-only. It never moves, pauses, edits, or re-parks a card; the
+ * exit code is the tripwire a script can key on (1 when any card needs a named recovery).
+ */
+export async function runTaskLockCensus(options: { json?: boolean } = {}, projectName?: string): Promise<void> {
+  const json = options.json === true;
+  const context = await resolveBoardContext(projectName, "lock-census", "resolve project");
+  try {
+    const tasks = await retryBoardCall(context, "lock-census", "list tasks", () => context.store.listTasks());
+    const membership = await selectSpecLockCensusTasks(
+      context.store as unknown as Parameters<typeof resolveProjectColumnsForRoles>[0],
+      tasks as unknown as Parameters<typeof selectSpecLockCensusTasks>[1],
+    );
+    const rows = await buildSpecLockCensusRows(membership.candidates, {
+      readPrompt: (task) => readTaskPlanPrompt(context.store.taskDir(task.id)),
+      promptPath: (task) => join(context.store.taskDir(task.id), "PROMPT.md"),
+    });
+    const exitCode = rows.some((row) => isLockCensusActionable(row)) ? 1 : 0;
+    if (json) {
+      console.log(JSON.stringify(rows, null, 2));
+      if (membership.laneVocabularyDegraded) {
+        console.error("lock-census: terminal-lane vocabulary unavailable; no card was excluded from the census");
+      }
+      if (membership.excludedTerminalCount > 0) {
+        console.error(`lock-census: excluded ${membership.excludedTerminalCount} card(s) in a terminal lane`);
+      }
+      await closeBoardContextAndExit(context, exitCode);
+    }
+    for (const line of formatSpecLockCensusRows(rows, membership.excludedTerminalCount)) {
+      console.log(line);
+    }
+    if (membership.laneVocabularyDegraded) {
+      console.log("  WARNING: the terminal-lane vocabulary could not be resolved, so NO card was excluded — this list may include finished cards.");
+    }
+    await closeBoardContextAndExit(context, exitCode);
+  } catch (error) {
+    await closeProjectStore(context).catch(() => {});
+    throw error;
+  }
 }
 
 export async function runTaskUpdate(id: string, stepStr: string, status: string, projectName?: string) {

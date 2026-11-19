@@ -124,7 +124,7 @@ async function loadCommandHandlers() {
   This line retired task archiving (only `fn goals archive` remains), and `commands/task.ts` exports neither handler,
   so keeping canonical's names would destructure `undefined` and re-add a dead dispatch. Ours + canonical's addition.
   */
-  const { runTaskCreate, runTaskList, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, parseTaskReconcileArgs, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
+  const { runTaskCreate, runTaskList, runTaskLockCensus, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, parseTaskReconcileArgs, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup, runPrMergeability } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
@@ -174,6 +174,7 @@ async function loadCommandHandlers() {
     runDesktop,
     runTaskCreate,
     runTaskList,
+    runTaskLockCensus,
     runTaskMove,
     runTaskRename,
     runTaskMerge,
@@ -342,6 +343,7 @@ Usage:
   fn task create [desc] [opts]         Create a new task (goes to triage; supports --title <text>, --node <name>, --no-dedup, --yes)
   fn task plan [description] [opts]    Create task via AI-guided planning (--resume <sessionId> continues a plan to create another task)
   fn task list                        List all tasks
+  fn task lock-census [--json]        Report live cards whose spec lock can never be approved (exit 1 when one needs a named recovery)
   fn task show <id>                   Show task details, steps, log
   fn task logs <id> [--follow] [--limit <n>] [--type <type>]
                                       Show task agent execution logs
@@ -842,6 +844,7 @@ export async function main() {
     runDesktop,
     runTaskCreate,
     runTaskList,
+    runTaskLockCensus,
     runTaskMove,
     runTaskRename,
     runTaskMerge,
@@ -1448,6 +1451,14 @@ export async function main() {
             await runTaskPlan(initialPlan || undefined, yesFlag, projectName, baseBranch, resumeSessionId);
             break;
           }
+          /*
+          FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+          Read-only census: it classifies every live card's spec lock and never moves, pauses, edits, or
+          re-parks one. Exit 1 when a card needs a named recovery makes it usable as a CI pre-flight.
+          */
+          case "lock-census":
+            await runTaskLockCensus({ json: args.includes("--json") }, projectName);
+            break;
           case "list":
           case "ls":
             await runTaskList(projectName);

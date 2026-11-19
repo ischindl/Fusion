@@ -550,7 +550,15 @@ export async function persistWorkflowStepResultWithOutcome(
           await deps.store.lockCurrentPlanWhilePlanningLocked(taskId, fingerprint, prompt);
         } catch (error) {
           if (!isUnavailablePlanLockError(error)) throw error;
-          unavailablePlanLockDiagnostic = `${PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC} ${error.reason} (${error.unavailableSections.join(", ") || "unknown section"}).`;
+          /*
+          FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+          This diagnostic is what the failed Plan Review step result carries into `output`/`notes`, so it
+          is the graph surface's only chance to say WHICH section blocks approval and who owns the fix.
+          The `${PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC} ${reason} (${sections}).` prefix is byte-identical for
+          a probe-less error — `workflow-graph-optional-step-fix.test.ts` pins those exact strings.
+          */
+          const namedCause = error.probe ? ` ${error.probe.summary}` : "";
+          unavailablePlanLockDiagnostic = `${PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC} ${error.reason} (${error.unavailableSections.join(", ") || "unknown section"}).${namedCause}`;
           activityResult = {
             ...result,
             status: "failed",

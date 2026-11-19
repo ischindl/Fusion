@@ -210,7 +210,18 @@ export { PLAN_PREMISE_KINDS, parsePlanPremises } from "./planner/plan-premises.j
 export type { PlanPremise, PlanPremiseKind, PlanPremisesParseResult } from "./planner/plan-premises.js";
 export { canonicalizePlan, createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, isUnavailablePlanLockError, PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC, SPEC_LOCK_PARSER_VERSION, UnavailablePlanLockError } from "./planner/spec-lock.js";
 export { evaluateSpecDrift, hasPriorLockDivergence, isCurrentSpecDriftReport } from "./planner/drift-report.js";
-export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, SpecLock, SpecLockDiff, SpecLockSection, SpecParseReason } from "./planner/spec-lock.js";
+export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, PlanEvidenceBindings, SpecLock, SpecLockDiff, SpecLockSection, SpecParseReason } from "./planner/spec-lock.js";
+/*
+FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535):
+The named-cause probe is core-owned so every lock-attempt surface and the read-only census classify a
+spec the same way; `specLockBindings` and `readTaskPlanPrompt` travel with it because a census that
+derives bindings or reads the spec by another route can disagree with the real approval attempt.
+Mirrored verbatim in `index.gate.ts`, which is the barrel the engine-core merge gate aliases.
+*/
+export { classifyCanonicalPlan, probeSpecLockReadiness, SPEC_LOCK_EXPECTED_HEADINGS } from "./planner/spec-lock-probe.js";
+export type { SpecLockClassificationContext, SpecLockDisposition, SpecLockLockableVerdict, SpecLockProbeInput, SpecLockRecoveryOwner, SpecLockUnavailableVerdict, SpecLockVerdict } from "./planner/spec-lock-probe.js";
+export { specLockBindings } from "./store.js";
+export { readTaskPlanPrompt } from "./task-store/patchnode-plan-source.js";
 /*
 FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
 The one-generation-per-section report and its publication refusal are exported from the root barrel so
