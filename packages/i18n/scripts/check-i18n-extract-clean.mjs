@@ -63,14 +63,20 @@ const run = promisify(execFile);
  * a surface needs is the normal case, so the constant tracks it; the direction that stays forbidden is
  * committing an extract diff to make the number move.
  */
+/*
+FNXC:i18n-ExtractChurn 2026-11-19-16:06 (re-measured, 159679 → 159673):
+`i18next.config.ts` stopped sweeping e2e fixtures into `extract`, so the extractor no longer relocates their invented copy
+across the 17 catalog files. Measured the same way as before: clean tree, `pnpm i18n:extract`, `git diff --numstat`, restore.
+The budget tightened by 6 lines (3 insertions + 3 deletions); no constant was chosen by hand.
+*/
 export const EXTRACT_CHURN_BASELINE = {
-  measuredAt: "2026-11-18",
-  baseSha: "91ab8277bb965f063081865d1586a6bed55718a8",
+  measuredAt: "2026-11-19",
+  baseSha: "d3ca5876b21c9c70a7bf944dea8e4db90bc608db",
   command: "pnpm i18n:extract",
   files: 17,
-  insertions: 77282,
-  deletions: 82397,
-  totalChurn: 159679,
+  insertions: 77279,
+  deletions: 82394,
+  totalChurn: 159673,
 };
 
 /** Parse `git diff --numstat` output into per-file churn rows. Pure. */
