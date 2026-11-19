@@ -23,6 +23,7 @@ import {
   __resetVectorCapabilityCacheForTests,
   STASH_VECTOR_CAPABILITY_TTL_MS,
   getStashReadOutcome,
+  stashProjectIdentityFor,
   normalizeStashSearchQuery,
   stashRelevanceScore,
   queryStashEvents,
@@ -53,6 +54,36 @@ function makeFakeHttp(
     payload: { events: Array<Record<string, any>> };
   }>;
   return { calls, client, folderCalls, batchCalls };
+}
+
+/*
+FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+SHARED FIXTURE FACTORY. A Stash row states which project wrote it (`metadata.discriminator`), and the
+read path now verifies that claim, so a row served without one is indistinguishable from another
+project's row and is dropped. Fakes that model a SEARCH response therefore have to say whose rows
+they are; `answersAs(rootDir, body)` stamps the asking root's identity onto every row of a
+results/events body at the one place these suites build responses, so no individual score/order/
+fallback fixture has to remember it (and none can forget it).
+
+A fake that wants to model a FOREIGN row bypasses this helper and writes the other discriminator
+itself — that is what `stash-read-scope.test.ts` does.
+*/
+function answersAs(rootDir: string, body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  const discriminator = stashProjectIdentityFor(rootDir).discriminator;
+  const stamp = (rows: unknown) =>
+    Array.isArray(rows)
+      ? rows.map((row) =>
+          row && typeof row === "object"
+            ? { ...row, metadata: { ...((row as Record<string, unknown>).metadata as object | undefined), discriminator } }
+            : row,
+        )
+      : rows;
+  const b = body as Record<string, unknown>;
+  if (Array.isArray(b.results) || Array.isArray(b.events)) {
+    return { ...b, ...(Array.isArray(b.results) ? { results: stamp(b.results) } : {}), ...(Array.isArray(b.events) ? { events: stamp(b.events) } : {}) };
+  }
+  return body;
 }
 
 /** RUFU-121 folder-cache TTL (pinned by spec: 3,600,000 ms ≈ 1h). */
@@ -415,9 +446,10 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     semantic: (path: string) => unknown,
     keyword: (path: string) => unknown = () => ({ results: [] }),
   ) {
+    // Every search row these cases serve belongs to `/proj/demo`, the root each case searches as.
     const fake = makeFakeHttp((path) => {
-      if (path.startsWith(SEMANTIC_PREFIX)) return semantic(path);
-      if (path.startsWith(KEYWORD_PREFIX)) return keyword(path);
+      if (path.startsWith(SEMANTIC_PREFIX)) return answersAs("/proj/demo", semantic(path));
+      if (path.startsWith(KEYWORD_PREFIX)) return answersAs("/proj/demo", keyword(path));
       return null;
     });
     const semanticCalls = () => fake.calls.filter((c) => c.path.startsWith(SEMANTIC_PREFIX));
@@ -706,7 +738,7 @@ describe("StashMemoryBackend.search relevance score (RUFU-133)", () => {
 
   function keywordFake(impl: (path: string) => unknown = () => ({ results: [] })) {
     const fake = makeFakeHttp((path) => {
-      if (path.startsWith(KEYWORD_PREFIX)) return impl(path);
+      if (path.startsWith(KEYWORD_PREFIX)) return answersAs("/proj/demo", impl(path));
       return null;
     });
     const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client });

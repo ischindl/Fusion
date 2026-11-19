@@ -2004,6 +2004,8 @@ The Files modal provides a workspace-aware file browser and editor.
 
 Memory view provides a multi-file editor for project and daily memory files. Its file editors share the same highlighted-text **Add comment** affordance as the Files modal, so memory snippets can seed a New Task with file path, snippet, and comment context. Editable file editors also provide localized **Undo** and **Redo** toolbar controls and the standard platform shortcuts: <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Z</kbd> to undo, plus <kbd>Ctrl</kbd>+<kbd>Y</kbd> or <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> to redo.
 
+When the retrieval test returns no rows on a Stash backend, the result panel now says which of two things happened. An empty memory shows only "no results"; a memory that is not empty but whose rows could not be attributed to this project shows an extra line counting them — "Excluded N line(s) from other Fusion projects and M line(s) with no project identity." A Stash account is shared by every Fusion project of one operator and the search route scopes by owner only, so Fusion verifies project identity when it reads and drops what fails that check; the counts (Settings → Memory shows the same line) are what separates "nothing was stored" from "something was found and deliberately not shown". The line never quotes a dropped row or names the other project.
+
 > Available when the `experimentalFeatures.memoryView` toggle is enabled.
 
 ![Memory view](./screenshots/memory-view.png)

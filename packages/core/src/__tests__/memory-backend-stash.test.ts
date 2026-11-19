@@ -4,6 +4,7 @@ import https from "node:https";
 import {
   StashMemoryBackend,
   DEFAULT_STASH_URL,
+  stashProjectIdentityFor,
 } from "../memory/memory-backend-stash.js";
 import type { MemorySearchOptions } from "../memory/memory-backend.js";
 
@@ -16,12 +17,22 @@ import type { MemorySearchOptions } from "../memory/memory-backend.js";
  * read() fail-closed, capture no-op when unreachable, and capture idempotency
  * (the REST batch endpoint is idempotent via tuple upsert, and capture() never
  * throws so a retry on an unreachable server is a no-op that does not block).
- * Cross-project isolation is a server-side (SQL-scoped) contract enforced by
- * Stash's search_scope_events (owner_user_id IN accessible_scope_ids_sql(1));
- * the client tags each uploaded event with a per-project discriminator for
- * provenance, and we assert that discriminator tagging keeps project A and
- * project B apart on a shared backend instance (no in-memory filter relied on).
+ * Cross-project isolation is NOT a server-side contract for Fusion: Stash scopes by owner, so every
+ * project of one operator is one readable domain (measured 2026-11-19; see the RUFU-1008 note on
+ * `projectDiscriminatorFor`). The client verifies each returned row's `metadata.discriminator`
+ * against the asking root, so a search fixture below must name the root that owns its rows - see
+ * `rowFor` - and the isolation cases assert that verification, not an assumed server filter.
  */
+
+/**
+ * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+ * Shared fixture factory. A Stash row states who wrote it, and the read path now enforces that claim,
+ * so a row built without an identity is dropped like any other project's. `rowFor(root, …)` stamps
+ * the identity that root's writes carry, derived by the same function the write and read lanes use.
+ */
+function rowFor(rootDir: string, row: Record<string, unknown>): Record<string, unknown> {
+  return { ...row, metadata: { ...(row.metadata as object | undefined), discriminator: stashProjectIdentityFor(rootDir).discriminator } };
+}
 
 type MockResponse = { statusCode: number; body: unknown };
 type RequestLog = {
@@ -150,8 +161,8 @@ describe("StashMemoryBackend", () => {
         statusCode: 200,
         body: {
           results: [
-            { id: 1, content: "first memory", session_id: "sess_abc" },
-            { id: 2, content: "second memory", session_id: "sess_abc" },
+            rowFor("/proj", { id: 1, content: "first memory", session_id: "sess_abc" }),
+            rowFor("/proj", { id: 2, content: "second memory", session_id: "sess_abc" }),
           ],
         },
       });
@@ -180,7 +191,7 @@ describe("StashMemoryBackend", () => {
     });
 
     it("uses the events[] key when results[] is absent", async () => {
-      responder = () => ({ statusCode: 200, body: { events: [{ content: "from events key", session_id: "s1" }] } });
+      responder = () => ({ statusCode: 200, body: { events: [rowFor("/proj", { content: "from events key", session_id: "s1" })] } });
       const promise = backend().search("/proj", { query: "x" });
       await deliver();
       const results = await promise;
@@ -221,7 +232,7 @@ describe("StashMemoryBackend", () => {
     });
 
     it("returns markdown summary when results exist", async () => {
-      responder = () => ({ statusCode: 200, body: { results: [{ content: "hello", session_id: "s1" }] } });
+      responder = () => ({ statusCode: 200, body: { results: [rowFor("/proj", { content: "hello", session_id: "s1" })] } });
       const promise = backend().read("/proj");
       await deliver();
       const r = await promise;

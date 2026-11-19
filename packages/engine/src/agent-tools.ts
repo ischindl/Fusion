@@ -758,7 +758,7 @@ export const memorySearchParams = Type.Object({
   tool's `topic` as a ranking hint. The description now states the real contract so
   agents stop believing filtered results come back.
   */
-  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. 'all', empty, or '*' means whole-project scope. Honest contract: the topic reaches backends as a ranking HINT only — no backend filters results by it (Stash dropped the inert &topic= in RUFU-121), so never post-filter results in-memory either; narrow results by refining `query`. The operator's conversation focus additionally biases the proactive recall cue (RUFU-172)." })),
+  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. 'all', empty, or '*' means whole-project scope. Honest contract: the topic reaches backends as a ranking HINT only — no backend filters results by it (Stash dropped the inert &topic= in RUFU-121), so never post-filter results by topic in-memory either; narrow results by refining `query`. Project identity is a different axis and is ALWAYS applied: the client drops rows another Fusion project wrote (RUFU-1008), so a short result list can mean 'filtered', not 'empty'. The operator's conversation focus additionally biases the proactive recall cue (RUFU-172)." })),
   limit: Type.Optional(Type.Number({ description: "Maximum snippets to return (default: 5, max: 20)" })),
 });
 
@@ -838,8 +838,16 @@ type MemoryToolOptions = {
   RUFU-172 wording correction: this used to call that a "within-project read filter".
   Nothing filters — no backend narrows its result set by topic (Stash dropped the inert
   &topic= in RUFU-121), so the value is a read-time focus hint. The same resolved focus
-  also biases the proactive per-turn recall cue (RUFU-172 lane T). Cross-project scope
-  isolation is unaffected either way.
+  also biases the proactive per-turn recall cue (RUFU-172 lane T).
+
+  FNXC:StashReadScope 2026-11-19-15:24 (RUFU-1008):
+  The closing sentence here used to read "Cross-project scope isolation is unaffected either way",
+  which was true of the topic and false of the sentence: it implied something else was holding the
+  line. Nothing was — a Stash read is scoped by OWNER, so every Fusion project of one operator is one
+  readable domain and recall leaked sibling projects' lines. Isolation now has a named owner: a topic
+  still never filters, and project identity ALWAYS filters, inside `StashMemoryBackend.search()`
+  (`packages/core/src/memory/memory-backend-stash.ts`), which drops any row that cannot prove it was
+  written by the asking project.
   */
   focus?: string;
   /*
@@ -5656,8 +5664,8 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
       // active topic when a focus is set — either explicitly via params.topic, or
       // from the enclosing conversation's focus (options.focus). 'all'/''/'*' clears
       // to whole-project scope. It narrows nothing — the topic reaches searchProjectMemory
-      // → backend.search as a read-time hint — and it never weakens cross-project scope
-      // isolation.
+      // → backend.search as a read-time hint, and a topic has never restricted what a
+      // search may return (RUFU-1008 put that duty on project identity, not on the topic).
       /*
       FNXC:MemoryFocusContract 2026-08-31-19:41:
       RUFU-172 contract correction: the sentence this block used to carry (“for Stash
@@ -5665,7 +5673,20 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
       written — the Stash route accepts `q`+`limit` only, and RUFU-121 deleted the inert
       param. The topic is a HINT on backend.search options (topic-aware backends may
       rank by it; Stash ignores it). The operator focus now also biases the proactive
-      per-turn recall cue (RUFU-172 lane T). “Never post-filter in-memory” still holds.
+      per-turn recall cue (RUFU-172 lane T).
+
+      FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+      The closing sentence “Never post-filter in-memory” still held only because a server-side filter
+      was assumed to be doing the isolation. It was not: Stash read scope is the OWNER, so every
+      Fusion project of one operator is one readable domain, and the route ignores undeclared params
+      (measured 2026-11-19). The contract is now split by KIND and both halves are honored here:
+      - TOPIC never filters — it is a ranking hint, and nothing in this tool narrows results by topic.
+      - PROJECT IDENTITY always filters — `StashMemoryBackend.search()` refuses any row that cannot
+        prove it was written by the asking project (`metadata.discriminator`, or the `session_id`
+        `write()` derives). Recall may come back EMPTY because of that, and that is the intended
+        failure: cross-project lines were being injected into prompts.
+      So “never post-filter by topic” is the rule that survives; “never post-filter at all” is dead,
+      and the drop counts it produces are reported (`memory:stash-read-scope`).
       */
       const activeTopic = resolveMemorySearchTopic(params.topic ?? options?.focus);
       const projectResults = await searchProjectMemory(rootDir, {

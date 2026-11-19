@@ -7229,7 +7229,8 @@
     "saveInsights": "Enregistrer les insights",
     "categories": "Catégories",
     "retrievalTestComplete": "Test de récupération de mémoire terminé",
-    "insightsMemoryLabel": "Mémoire des insights"
+    "insightsMemoryLabel": "Mémoire des insights",
+    "stashScopeDropped": ""
   },
   "app": {
     "sqliteMigration": {

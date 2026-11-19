@@ -7229,7 +7229,8 @@
     "saveInsights": "Guardar perspectivas",
     "categories": "Categorías",
     "retrievalTestComplete": "Prueba de recuperación de memoria completada",
-    "insightsMemoryLabel": "Memoria de perspectivas"
+    "insightsMemoryLabel": "Memoria de perspectivas",
+    "stashScopeDropped": ""
   },
   "app": {
     "sqliteMigration": {

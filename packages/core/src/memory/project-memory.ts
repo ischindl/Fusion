@@ -41,6 +41,7 @@ import {
 import { resolveStashMemorySettings } from "./stash-settings.js";
 import {
   reportStashReadOutcome,
+  reportStashReadScopeForRoot,
   stashBaseUrlFromSettings,
   type StashReadStoreHost,
 } from "./memory-backend-stash.js";
@@ -340,6 +341,9 @@ export async function readProjectMemoryWithBackend(
     // RUFU-994: this entry holds the store, so it is where the refusal becomes a counted
     // row + one warn line. Fire-and-forget; the returned content is already decided.
     reportStashReadOutcome(secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+    // RUFU-1008: the same argument covers the other empty-causing class — rows that arrived and
+    // belonged to another project. `read()` goes through `search()`, so the scope record exists.
+    reportStashReadScopeForRoot(secretsReader, stashBaseUrlFromSettings(resolvedSettings), rootDir);
   }
 }
 
@@ -547,6 +551,9 @@ export async function searchProjectMemory(
     // this is the seam that turns a swallowed 401 into a counted row. The returned array is
     // already decided — reporting cannot change it.
     reportStashReadOutcome(secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+    // RUFU-1008: and the seam that counts rows dropped for belonging to another project, without
+    // which a recall emptied by the scope filter is indistinguishable from a project with nothing.
+    reportStashReadScopeForRoot(secretsReader, stashBaseUrlFromSettings(resolvedSettings), rootDir);
   }
 }
 
@@ -706,6 +713,8 @@ export async function buildProactiveMemoryCueBlock(
     // RUFU-994: same reason as `searchProjectMemory` — the cue builder is the executor's
     // proactive read seam and holds the store host.
     reportStashReadOutcome(opts?.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+    // RUFU-1008: ditto for dropped-by-scope rows; an empty cue must not hide a foreign-project hit.
+    reportStashReadScopeForRoot(opts?.secretsReader, stashBaseUrlFromSettings(resolvedSettings), rootDir);
   }
 }
 

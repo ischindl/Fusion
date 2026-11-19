@@ -863,7 +863,26 @@ QMD-backed memory behavior also applies to agent-private memory workspaces under
 - Agent-memory writes from tool and non-tool paths (including `processAgentMemoryDreams()`) schedule agent-specific QMD refreshes so new dreams/long-term updates remain discoverable without manual reindexing.
 
 **Dashboard API:**
-- `GET /api/memory/backend` — Returns current backend status and capabilities
+- `GET /api/memory/backend` — Returns current backend status and capabilities, including `stashReadOutcome` (why a Stash read refused) and `stashReadScope` (what a scoped Stash read dropped)
+
+**Recall carries only provably-own lines (RUFU-1008).** A Stash-backed recall may contain only rows whose
+project identity is *proved* to be the reading project's; a row whose identity cannot be proved is not
+returned and is counted. Stash partitions its store by **owner user id**, and one operator owns every
+Fusion project on their account, so the server is not the isolation boundary for reads — the client is.
+The single choke point is `scopeItemsToProject()` in `packages/core/src/memory/memory-backend-stash.ts`,
+which both the keyword and the semantic branch cross before anything is mapped, and which `read()`
+inherits because `read()` is built on `search()`. Admission is exact equality on
+`metadata.discriminator` or the top-level `session_id`; no prefix, substring, or normalised match is
+allowed, because a resemblance test admits a sibling project's row while looking like a guard. Every
+dropped row is accounted per `(server, project)` as `all-own` / `dropped-foreign` /
+`dropped-unidentified`, surfaced as `stashReadScope` on both memory routes, counted in
+`memory:stash-read-scope` run-audit rows (counts and the fixed class only), and rendered beside a
+retrieval result when it is non-zero — so an empty recall caused by filtering is never mistaken for an
+empty memory. No Stash scope parameter is sent: measured inert (RUFU-121, re-measured RUFU-1008 Step 0),
+and an inert parameter advertises an enforcement that does not exist. A counted empty answer is the
+correct answer; widening the match to keep rows would be cross-project leakage named as a fallback.
+Failing closed on an unreachable backend (FNXC:StashFailClosed) is unchanged — a scope drop never
+blocks a task.
 
 See [Memory Plugin Contract](./memory-plugin-contract.md) for the full plan.
 

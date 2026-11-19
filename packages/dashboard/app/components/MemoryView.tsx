@@ -4,6 +4,7 @@ import { Brain, Loader2 } from "lucide-react";
 import "./MemoryView.css";
 import "./SettingsModal.css";
 import type { MemoryFileInfo, MemoryRetrievalTestResult } from "../api";
+import { MemoryStashScopeNotice } from "./MemoryStashScopeNotice";
 import { FileEditor } from "./FileEditor";
 import { ViewHeader } from "./ViewHeader";
 import { ViewLayout } from "./ViewLayout";
@@ -939,6 +940,15 @@ export function MemoryView({ projectId, addToast, onSendSelectionToTask }: Memor
                       <small>
                         {t("memory.testResultStatus", "qmd {{qmdStatus}} · {{fallbackStatus}}", { qmdStatus: memoryTestResult.qmdAvailable ? t("memory.qmdStatusAvailable", "available") : t("memory.qmdStatusMissing", "missing"), fallbackStatus: memoryTestResult.usedFallback ? t("memory.localFallbackUsed", "local fallback used") : t("memory.qmdPathUsed", "qmd path used") })}
                       </small>
+                      {/*
+                      FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+                      Same notice as Settings > Memory, mounted from the shared `MemoryStashScopeNotice`
+                      component so the two surfaces cannot word it differently. Without it this panel
+                      reports "0 results" for a query whose rows the server DID return — the account is
+                      shared across Fusion projects and the route scopes by owner only — which is the
+                      false report this card exists to remove.
+                      */}
+                      <MemoryStashScopeNotice scope={memoryTestResult.stashReadScope} />
                       {memoryTestResult.results.length > 0 ? (
                         <ul>
                           {memoryTestResult.results.map((result, index) => (

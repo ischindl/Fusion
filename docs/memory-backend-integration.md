@@ -100,6 +100,15 @@ Three surfaces carry it, none of which needs the container log:
 
 No key material, URL, response body, or server error text reaches any of the three.
 
+**A scoped read that dropped rows is a different truth from a refused one, and is reported separately.**
+The codes above answer "did we get to look at all"; a second closed class answers "what did we keep":
+`all-own` (every row the server returned belongs to this project), `dropped-foreign` (a row proved to
+belong to another Fusion project on this Stash account was crossed out), and `dropped-unidentified` (a
+row carried no project identity at all, which includes a server that stopped returning `metadata` in its
+search response). The last class is why a recall can be **empty while the memory is not**: Fusion does not
+keep an unattributable row, so a backend that omits `metadata` yields a counted empty answer rather than
+someone else's notes. Section 4 covers the match rule and where the counts surface.
+
 `stashVectorSearch` (schema-only, no settings row) defaults to **`false`** and stays that way. When it
 is on and the semantic endpoint refuses — for capability reasons or on auth grounds — Fusion suppresses
 further semantic attempts for one cache window instead of burning the request on every turn, while the
@@ -109,16 +118,42 @@ the window expires, not on the next turn; the keyword lane recovers immediately.
 ## 4. Per-project isolation
 
 Memory events carry a **provenance discriminator** derived from the project root (e.g.
-`fusion:<slug>`). The discriminator is **not** the isolation mechanism:
+`fusion:<slug>`), and since RUFU-1008 that discriminator is also **the isolation mechanism** — enforced
+by Fusion on the way in, not by Stash on the way out.
 
-> Stash enforces isolation itself, scoping all reads and writes to the operator's own owner
-> user id (`owner_user_id IN accessible_scope_ids_sql(1)`). The Fusion discriminator tag is
-> **provenance / grep-ability only** — it lets an operator query "which Fusion project wrote
-> this event" — and it is never confused with a required request field.
+> Stash scopes its store by **owner user id** (`owner_user_id IN accessible_scope_ids_sql(1)`). It has
+> no notion of a Fusion project. Two Fusion projects owned by different operators are therefore
+> isolated; every Fusion project belonging to **one** operator shares a single read domain, and a
+> search returns all of them.
 
-Because Stash scopes by operator identity, two Fusion projects belonging to different
-operators are naturally isolated, while a single operator's projects share the owner scope and
-are distinguishable by the discriminator tag.
+What replaced the earlier claim that "Stash enforces isolation itself" is a client-side check at the one
+place a Stash read enters Fusion — `scopeItemsToProject()` in `packages/core/src/memory/memory-backend-stash.ts`,
+which both the keyword and the semantic branch pass through before anything is mapped, and which `read()`
+inherits because `read()` is built on `search()`. A row is ours when **exact equality** holds:
+
+- its `metadata.discriminator` equals the discriminator this project root derives, or
+- its top-level `session_id` equals the id `write()` derives from this root.
+
+No prefix, no substring, no normalisation, no case folding. A resemblance test is the defect: it would
+admit a sibling project's row while looking like a guard. A row that cannot be attributed — including one
+whose `metadata` exists but carries no discriminator — is dropped rather than kept, so recall from a
+server that stopped returning `metadata` goes **empty** and stays empty. A counted empty answer is the
+correct answer; widening the match to keep rows would be cross-project leakage wearing the name of a
+fallback.
+
+Two consequences an operator should know:
+
+- **The scope filter is not a server parameter.** RUFU-121 measured the Stash search route to be inert to
+  undeclared query parameters, and re-measured on 2026-11-19 (RUFU-1008 Step 0) that adding a session or
+  folder id to the request changes nothing about what comes back. Fusion therefore sends **no** scope
+  parameter: it would advertise an enforcement that does not exist. Filtering happens after the response.
+- **Every drop is counted and reported.** Each read classifies its own answer as `all-own`,
+  `dropped-foreign`, or `dropped-unidentified` and records the counts per **(Stash server, project)** —
+  one dashboard process serves several projects, so a server-keyed counter would show one project's drops
+  on another's page. `all-own` records nothing beyond the counters; a read that dropped rows emits
+  `memory:stash-read-refused`'s sibling, [`memory:stash-read-scope`](run-audit.md#a-stash-read-that-dropped-another-projects-rows-rufu-1008),
+  and surfaces its counts as `stashReadScope` on `GET /api/memory/backend` and `POST /api/memory/test`.
+  Counts and a fixed class only: never a dropped line, another project's discriminator, or the server URL.
 
 ## 5. Per-conversation memory focus (read-time ranking bias)
 

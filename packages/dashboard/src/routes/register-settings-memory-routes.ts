@@ -19,6 +19,8 @@ import {
   generateMemoryAudit,
   describeMemoryFileWrite,
   getStashReadOutcome,
+  getStashReadScope,
+  stashProjectIdentityFor,
   stashBaseUrlFromSettings,
   getMemoryBackendCapabilities,
   importSettings,
@@ -1557,6 +1559,20 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         code from a closed set — never a URL, a response body, or error text.
         */
         stashReadOutcome: getStashReadOutcome(stashBaseUrlFromSettings(settings))?.code ?? null,
+        /*
+        FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+        The other half of "why does my memory look empty". `stashReadOutcome` answers whether the
+        server let us look; this answers what the answer cost — rows dropped because they belong to
+        another Fusion project on the same Stash account, or carry no project identity at all. It is
+        keyed by (server, THIS project's identity), because one Stash daemon serves every project of
+        one operator from one process and a server-keyed counter would show one project's drops on
+        another's page. Counts and a fixed class only: no URL, no row id, no recalled text.
+        */
+        stashReadScope:
+          getStashReadScope(
+            stashBaseUrlFromSettings(settings),
+            stashProjectIdentityFor(scopedStore.getRootDir()).discriminator,
+          ) ?? null,
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -1630,6 +1646,18 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         // Stash configured this probe asks that server itself, so the two now agree by construction
         // instead of one echoing the other.
         stashReadOutcome: getStashReadOutcome(stashBaseUrlFromSettings(settings))?.code ?? null,
+        /*
+        FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+        This probe ran a real scoped search a moment ago, so the counts it reports are the counts this
+        query produced — which is exactly when an operator needs them: a "0 results" answer that had
+        rows behind it is the failure this surface makes visible. Same (server, project) key as
+        GET /memory/backend, counts only.
+        */
+        stashReadScope:
+          getStashReadScope(
+            stashBaseUrlFromSettings(settings),
+            stashProjectIdentityFor(rootDir).discriminator,
+          ) ?? null,
         results,
       });
     } catch (err: unknown) {

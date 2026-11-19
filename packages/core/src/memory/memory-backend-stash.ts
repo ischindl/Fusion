@@ -80,6 +80,13 @@ interface StashSearchResultItem {
   created_at?: string;
   snippet?: string;
   /**
+   * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+   * Declared so the read-side identity check reads a shape rather than guessing one: the live server
+   * returns `metadata` on both search routes with `discriminator` inside it (measured 2026-11-19),
+   * and that value is what isolates one Fusion project's rows from another's at read time.
+   */
+  metadata?: { discriminator?: unknown; [key: string]: unknown } | null;
+  /**
    * FNXC:RUFU133StashScore 2026-08-25-20:17:
    * RUFU-133: raw FTS rank (Stash ts_rank) when the deployed image supplies
    * it — the tier-2 relevance input. Declared `number` to document the
@@ -512,6 +519,193 @@ export function reportStashReadOutcome(
 /** RUFU-994 test seam: clear the per-process read-outcome map. */
 export function __resetStashReadDiagnosticsForTests(): void {
   stashReadDiagnostics.clear();
+  // RUFU-1008: the scope counters share this reset so a suite cannot inherit another case's
+  // drop counts (the dedupe markers below would otherwise stay armed across cases).
+  stashReadScopeDiagnostics.clear();
+  lastStashReadScopeAuditAt.clear();
+}
+
+/*
+FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+"The project's memory is empty" and "recall found rows that belong to another project" are two
+truths, and an operator must be able to tell them apart from a board surface — the same demand
+RUFU-994 raised about `auth-rejected`, which is why this is a SEPARATE record and never folded into
+`getStashReadOutcome`: "we were not allowed to look" and "what we saw is not ours" need different
+repairs.
+
+Keyed by the PAIR (baseUrl, discriminator), not by the server alone: one Stash daemon serves every
+project of one operator inside one process, so a baseUrl-keyed counter would show project A's dropped
+rows on project B's settings page — reproducing the leak on the diagnostics surface.
+*/
+
+/** Bound mirrors `STASH_READ_DIAGNOSTICS_MAX`: (server, project) pairs per process are small. */
+const STASH_READ_SCOPE_DIAGNOSTICS_MAX = 64;
+
+/**
+ * What this process last has to say about one (server, project) pair. Counts and a fixed class only.
+ *
+ * FNXC:StashReadScope 2026-11-19-16:08 (RUFU-1008 code review, P1):
+ * `at` is the instant of the read that PRODUCED the record, not the instant of the most recent read
+ * for the pair: a drop-class record is sticky (see `recordStashReadScope`), so a later clean read
+ * never re-stamps it. A reader that needs to weigh staleness therefore has the honest clock here.
+ */
+export interface StashReadScope {
+  outcome: StashReadScopeOutcomeCode;
+  /** Rows the server answered before scoping (`ownCount` + both drop counts). */
+  matchedCount: number;
+  ownCount: number;
+  droppedForeignCount: number;
+  droppedUnidentifiedCount: number;
+  /** The `limit` the caller asked for — lets a reader see whether the class filled the window. */
+  limit: number;
+  /** Epoch ms of the scoped read that produced the record. */
+  at: number;
+}
+
+const stashReadScopeDiagnostics = new Map<string, StashReadScope>();
+
+function scopeDiagnosticsKey(baseUrl: string, discriminator: string): string {
+  // Same separator discipline as the refusal dedupe key: a NUL cannot appear in a URL or a slug.
+  return `${baseUrl}\u0000${discriminator}`;
+}
+
+/*
+FNXC:StashReadScope 2026-11-19-16:08 (RUFU-1008 code review, P1):
+A drop-class record is STICKY: an `all-own` read never overwrites a recorded
+`dropped-foreign` / `dropped-unidentified` for the same (server, project) pair. The reason is the
+per-turn recall lane, which is the highest-frequency Stash reader and the one that produced the
+reported symptom: `buildPerTurnMemoryRecallCue()` searches twice (lane P project keywords, lane T
+focus terms) and reports ONCE, after both. If lane P's answer contained foreign rows and lane T's
+focus query happened to answer with only own rows, a last-write-wins record read at report time says
+`all-own`, and `reportStashReadScope` returns immediately on `all-own` — no audit row, no warn line,
+and both operator surfaces show zero drops. AC4's "empty versus dropped" distinction would then be
+lost on exactly the lane that leaks. A clean read cannot un-happen a read that returned another
+project's rows, so the worse class survives; a newer DROP still overwrites an older drop (the latest
+drop is the relevant one), and `at` keeps the timestamp of the read that earned it.
+*/
+function recordStashReadScope(
+  baseUrl: string,
+  discriminator: string,
+  scope: Omit<StashReadScope, "at">,
+  nowMs: number,
+): void {
+  const key = scopeDiagnosticsKey(baseUrl, discriminator);
+  const existing = stashReadScopeDiagnostics.get(key);
+  if (existing && scope.outcome === "all-own" && existing.outcome !== "all-own") return;
+  const stamped: StashReadScope = { ...scope, at: nowMs };
+  if (stashReadScopeDiagnostics.has(key) || stashReadScopeDiagnostics.size < STASH_READ_SCOPE_DIAGNOSTICS_MAX) {
+    stashReadScopeDiagnostics.set(key, stamped);
+    return;
+  }
+  // Insert-order eviction, mirroring every other Stash map in this module.
+  const oldest = stashReadScopeDiagnostics.keys().next();
+  if (!oldest.done) stashReadScopeDiagnostics.delete(oldest.value);
+  stashReadScopeDiagnostics.set(key, stamped);
+}
+
+/**
+ * Scoped-read record for one (Stash server, project) pair, or null when this process has read nothing
+ * for it. Both arguments are required on purpose: an absent discriminator would ask about every
+ * project on the server at once, which is the ambiguity this record exists to remove. A drop class
+ * returned here may be older than the most recent read for the pair — that is the stickiness above,
+ * and `at` is what makes it judgeable.
+ */
+export function getStashReadScope(baseUrl?: string, discriminator?: string): StashReadScope | null {
+  if (!baseUrl || !discriminator) return null;
+  return stashReadScopeDiagnostics.get(scopeDiagnosticsKey(baseUrl, discriminator)) ?? null;
+}
+
+/**
+ * The run-audit id for a scoped read that had to drop rows. Declared in `@fusion/core`'s closed
+ * `RunAuditMutationType` union; like `memory:stash-read-refused` it sits OUTSIDE the curated
+ * delivery-pipeline catalogue and is documented as prose in `docs/run-audit.md`.
+ */
+export const STASH_READ_SCOPE_MUTATION_TYPE: RunAuditMutationType = "memory:stash-read-scope";
+
+/** Same 15-minute floor as the refusal rows: a chat lane recalls every turn, and `all-own` is silent. */
+export const STASH_READ_SCOPE_AUDIT_REFRESH_FLOOR_MS = STASH_READ_REFUSAL_AUDIT_REFRESH_FLOOR_MS;
+
+const lastStashReadScopeAuditAt = new Map<string, number>();
+
+/** Test seam: forget the scope dedupe markers so a suite can observe a fresh emission. */
+export function __resetStashReadScopeAuditDedupeForTests(): void {
+  lastStashReadScopeAuditAt.clear();
+}
+
+/**
+ * Record that a scoped read dropped rows: at most one audit row and one warn line per
+ * (server, project, class) per window, through the FN-9177 bounded core seam.
+ *
+ * `all-own` writes NOTHING — the same rule RUFU-994 set for `ok`/`no-match`, because a per-turn
+ * recall lane would otherwise write a row every turn and bury the drops under routine traffic.
+ *
+ * Metadata is counts and one fixed class only. Never a URL (a Stash URL can carry credentials in
+ * its userinfo, and the audit store is readable by anything with query access), never a dropped
+ * row's `id`/`uri` or text, and deliberately no `endpoint`: the counts are taken after the keyword
+ * and semantic branches have been scoped, so an endpoint key would claim an attribution we do not
+ * have — and RUFU-1008 must not make the two branches answer differently.
+ */
+export function reportStashReadScope(
+  host: StashReadStoreHost | null | undefined,
+  baseUrl: string | undefined,
+  identity: StashProjectIdentity,
+  scope: StashReadScope,
+  opts: { nowMs?: number; refreshFloorMs?: number; log?: RunAuditLogger } = {},
+): void {
+  if (!baseUrl || scope.outcome === "all-own") return;
+  const nowMs = opts.nowMs ?? Date.now();
+  const floorMs = opts.refreshFloorMs ?? STASH_READ_SCOPE_AUDIT_REFRESH_FLOOR_MS;
+  const log: RunAuditLogger = opts.log ?? stashReadAuditLog;
+  try {
+    const dedupeKey = scopeDiagnosticsKey(baseUrl, identity.discriminator) + "\u0000" + scope.outcome;
+    const lastAt = lastStashReadScopeAuditAt.get(dedupeKey);
+    if (lastAt !== undefined && lastAt + floorMs > nowMs) return;
+    if (lastStashReadScopeAuditAt.size >= 256) lastStashReadScopeAuditAt.clear();
+    lastStashReadScopeAuditAt.set(dedupeKey, nowMs);
+    log.warn(
+      `[memory] stash read scope outcome=${scope.outcome} own=${scope.ownCount} droppedForeign=${scope.droppedForeignCount} droppedUnidentified=${scope.droppedUnidentifiedCount}`,
+    );
+    void emitBoundedRunAudit(
+      host,
+      {
+        agentId: STASH_READ_AUDIT_AGENT_ID,
+        runId: `${STASH_READ_SCOPE_MUTATION_TYPE}:${scope.outcome}`,
+        domain: "database",
+        mutationType: STASH_READ_SCOPE_MUTATION_TYPE,
+        target: "stash-memory",
+        metadata: {
+          outcome: scope.outcome,
+          matchedCount: scope.matchedCount,
+          ownCount: scope.ownCount,
+          droppedForeignCount: scope.droppedForeignCount,
+          droppedUnidentifiedCount: scope.droppedUnidentifiedCount,
+          limit: scope.limit,
+        },
+      },
+      { log },
+    );
+  } catch {
+    // Swallowed on purpose: a diagnostic may never become a lifecycle dependency of the read it
+    // describes (FN-9177's contract, restated here for the scope pair).
+  }
+}
+
+/**
+ * The one call a read ENTRY makes after its search has returned: take this root's identity, read the
+ * scope record the backend left behind, and report it. It lives here (not in the four entries) so
+ * the identity used for the getter is the identity the filter used — two derivations could drift
+ * apart and silently stop reporting, the same failure class as RUFU-994's non-resolving key.
+ */
+export function reportStashReadScopeForRoot(
+  host: StashReadStoreHost | null | undefined,
+  baseUrl: string | undefined,
+  rootDir: string,
+  opts: { nowMs?: number; refreshFloorMs?: number; log?: RunAuditLogger } = {},
+): void {
+  if (!baseUrl) return;
+  const identity = stashProjectIdentityFor(rootDir);
+  const scope = getStashReadScope(baseUrl, identity.discriminator);
+  if (scope) reportStashReadScope(host, baseUrl, identity, scope, opts);
 }
 
 /**
@@ -539,22 +733,153 @@ function classifyStashTransportFailure(err: unknown): StashReadOutcomeCode {
   return "unreachable";
 }
 
+/*
+FNXC:StashIsolation 2026-11-19-13:41 (RUFU-1008):
+The block that used to sit on `projectDiscriminatorFor` below claimed Stash enforces cross-project
+isolation at the SQL level and that the discriminator is "only a provenance/grep-ability tag". That
+held for ONE dimension only: Stash scopes by `owner_user_id`, so every project of one operator is a
+single read domain and nothing on the server separates them. Measured on the live server
+2026-11-19: an unscoped `GET /api/v1/me/sessions/events/search?q=…&limit=…` returned rows whose
+`metadata.discriminator` was `dgx_spark-3346c25997` and `gedapp-b4ee5f7bf6` while the asking Fusion
+workspace was `Fusion-c5a69b9f0d`, and the route honours no scope parameter at all — adding
+`session_folder_id` or a garbage param returned a byte-identical result id list (RUFU-121's inert
+param precedent, re-measured).
+
+So the discriminator IS the read-side isolation mechanism, and Fusion is the only party that can
+enforce it: writes stamp it (`write()`/`capture()` metadata), reads demand it back
+(`classifyStashReadScope`), and a row that cannot prove it belongs to the asking project is never
+returned. The server-side read filter this comment used to credit does not exist.
+*/
 /**
- * Derive a stable, per-project stash session namespace discriminator prefix.
- *
- * FNXC:StashIsolation 2026-08-05-16:06:
- * All events uploaded by Fusion are tagged with a per-project discriminator so
- * search can be scoped to the current project. STASH ITSELF enforces
- * cross-project isolation at the SQL level (memory_service.search_scope_events:
- * `owner_user_id IN accessible_scope_ids_sql(1)`), so the discriminator tag is
- * NOT the isolation mechanism — it is only a provenance/grrapability tag. We
- * NEVER rely on an in-memory filter as the isolation mechanism.
+ * Derive a stable, per-project stash session namespace discriminator.
  */
 function projectDiscriminatorFor(rootDir: string | undefined): string {
   if (!rootDir) return "fusion-default";
   const projectName = basename(rootDir) || "project";
   const slug = createHash("sha1").update(rootDir).digest("hex").slice(0, 10);
   return `${projectName}-${slug}`;
+}
+
+/*
+FNXC:StashReadIdentity 2026-11-19-13:41 (RUFU-1008):
+ONE function derives the identity a project claims, and both directions of the Stash seam call it:
+`write()`/`capture()` stamp it onto the event, `search()`/`read()` verify every returned row against
+it. Before this card the two sides each computed it inline in two places, and only the write side
+used its result — which is how a read came to return another workspace's notes.
+
+Two values, because the two write paths stamp identity differently:
+- `discriminator` — on every event, in `metadata.discriminator` (both `write()` and `capture()`).
+- `sessionId` — the top-level `session_id` `write()` supplies for free-text captures.
+
+`sessionFolderId` is deliberately NOT part of this identity: the folder id is resolved against the
+Fusion project id (the cache key is `${baseUrl}::${projectId}`) which no read entry holds, and the
+probe measured 2026-11-19 that neither search route returns `session_folder_id` on its response
+items at all, so a folder match branch could never fire. Carrying an always-absent field would
+pretend a third mechanism exists.
+*/
+export interface StashProjectIdentity {
+  /** `metadata.discriminator` value this project's writes stamp. */
+  readonly discriminator: string;
+  /** Top-level `session_id` value `write()` stamps for free-text captures. */
+  readonly sessionId: string;
+}
+
+/** The `session_id` a free-text `write()` derives from a root (shared by write and read). */
+function stashSessionIdFor(rootDir: string | undefined): string {
+  const d = projectDiscriminatorFor(rootDir) || "fusion";
+  return `fusion-${d}`.slice(0, 64);
+}
+
+/** The identity this project claims against Stash — the ONE source for the write and read sides. */
+export function stashProjectIdentityFor(rootDir: string): StashProjectIdentity {
+  return {
+    discriminator: projectDiscriminatorFor(rootDir),
+    sessionId: stashSessionIdFor(rootDir),
+  };
+}
+
+/*
+FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+Stash partitions its store by OWNER, and an operator with several Fusion projects has exactly one
+owner. The read route carries no scope filter (measured inert 2026-11-19, RUFU-121's precedent), so
+the only place project isolation can be enforced is here, on the way in. This is that place.
+
+The rule is exact equality, never a resemblance: a row is ours when its `metadata.discriminator`
+equals this root's discriminator, or its top-level `session_id` equals the id `write()` derives from
+this root. No prefix, no substring, no normalisation, no case folding — the same rule that would
+admit `fusion-task-VLLM-117` beside `fusion-task-RUFU-1008` is the defect being removed, so the
+match is deliberately the narrowest thing that still recognises our own rows.
+
+Anything the rule cannot attribute is dropped, including a row whose `metadata` is present but
+carries no discriminator (a Stash-internal curator row, for instance). That is a real cost: recall
+from a server that stopped returning `metadata` goes EMPTY, and it stays empty. An empty recall that
+is counted and reported (`dropped-unidentified`) is the correct answer; a recall widened to keep rows
+whose owner is unknown is the leak this card exists to close.
+*/
+
+/** What one scoped read found, as a closed three-value class. */
+export const STASH_READ_SCOPE_OUTCOMES = [
+  "all-own",
+  "dropped-foreign",
+  "dropped-unidentified",
+] as const;
+export type StashReadScopeOutcomeCode = (typeof STASH_READ_SCOPE_OUTCOMES)[number];
+
+/** Result of scoping one server answer to one project. */
+export interface StashReadScopeClassification {
+  /** Surviving rows, in the server's own order (the server already applied `limit`). */
+  kept: StashSearchResultItem[];
+  ownCount: number;
+  foreignCount: number;
+  unidentifiedCount: number;
+  /**
+   * `dropped-foreign` wins when both classes are present: an attributable row belonging to another
+   * project is the security-relevant fact, and an operator reading one number must read the worse
+   * one, not the incidental one.
+   */
+  outcome: StashReadScopeOutcomeCode;
+}
+
+/** True when a response row carries exactly the identity this project writes with. */
+function stashRowIsOwn(item: StashSearchResultItem, identity: StashProjectIdentity): boolean {
+  const meta = item.metadata;
+  if (meta && typeof meta === "object") {
+    const disc = (meta as { discriminator?: unknown }).discriminator;
+    if (typeof disc === "string" && disc === identity.discriminator) return true;
+  }
+  return typeof item.session_id === "string" && item.session_id === identity.sessionId;
+}
+
+/** True when the row names a project identity and it is not ours (as opposed to naming none). */
+function stashRowIsForeign(item: StashSearchResultItem, identity: StashProjectIdentity): boolean {
+  const meta = item.metadata;
+  if (!meta || typeof meta !== "object") return false;
+  const disc = (meta as { discriminator?: unknown }).discriminator;
+  return typeof disc === "string" && disc !== identity.discriminator;
+}
+
+/**
+ * Split one Stash answer into this project's rows and the rows that must not reach a prompt. Pure:
+ * no I/O, no mutation, and the returned order is the server's order unchanged.
+ */
+export function classifyStashReadScope(
+  items: readonly StashSearchResultItem[],
+  identity: StashProjectIdentity,
+): StashReadScopeClassification {
+  const kept: StashSearchResultItem[] = [];
+  let foreignCount = 0;
+  let unidentifiedCount = 0;
+  for (const item of items) {
+    if (stashRowIsOwn(item, identity)) {
+      kept.push(item);
+      continue;
+    }
+    if (stashRowIsForeign(item, identity)) foreignCount += 1;
+    else unidentifiedCount += 1;
+  }
+  const outcome: StashReadScopeOutcomeCode =
+    foreignCount > 0 ? "dropped-foreign" : unidentifiedCount > 0 ? "dropped-unidentified" : "all-own";
+  return { kept, ownCount: kept.length, foreignCount, unidentifiedCount, outcome };
 }
 
 /**
@@ -722,7 +1047,7 @@ export class StashMemoryBackend implements MemoryBackend {
       ((path, method, payload) => stashHttpJsonRequest(this.baseUrl, this.apiKey, path, method, payload));
   }
 
-  /** Per-project provenance discriminator (not the isolation mechanism). */
+  /** Provenance tag stamped on every write — and the identity every read verifies (RUFU-1008). */
   private discriminatorFor(rootDir: string): string {
     return projectDiscriminatorFor(rootDir);
   }
@@ -734,8 +1059,9 @@ export class StashMemoryBackend implements MemoryBackend {
    * idempotent per project without colliding across projects.
    */
   private sessionIdFor(rootDir: string): string {
-    const d = this.discriminatorFor(rootDir) || "fusion";
-    return `fusion-${d}`.slice(0, 64);
+    // RUFU-1008: delegates to the ONE identity derivation the read side verifies against, so the two
+    // sides cannot drift (`stashProjectIdentityFor` is that function's public face).
+    return stashSessionIdFor(rootDir);
   }
 
   /**
@@ -871,6 +1197,11 @@ export class StashMemoryBackend implements MemoryBackend {
    * Search stash events via GET /api/v1/me/sessions/events/search.
    * Maps each result to a MemorySearchResult. Fails CLOSED to [] on any error.
    *
+   * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): every row the server answers with is verified
+   * against this root's identity before it is returned — see `scopeItemsToProject()`. A row that
+   * cannot prove it was written by this project is dropped and counted, so a Stash account shared by
+   * several Fusion projects can no longer deliver one project's notes into another's prompt.
+   *
    * FNXC:Rufu126VectorSearch 2026-08-19-10:50:
    * RUFU-126: vector-first / fallback invariant (decisions D1–D5, see
    * docs/research/stash-vector-search-evaluation.md):
@@ -909,7 +1240,7 @@ export class StashMemoryBackend implements MemoryBackend {
       rawTrimmed.split(/\s+/).length >= 2 &&
       this.vectorSearchAvailable()
     ) {
-      const vectorHits = await this.vectorSearchHits(rawTrimmed, limit);
+      const vectorHits = await this.vectorSearchHits(rawTrimmed, limit, rootDir);
       if (vectorHits) return vectorHits;
     }
     /*
@@ -946,7 +1277,11 @@ export class StashMemoryBackend implements MemoryBackend {
         "GET",
       );
       const items = resp.results ?? resp.events ?? [];
-      const filtered = items.filter((it) => it && typeof it === "object");
+      const filtered = this.scopeItemsToProject(
+        items.filter((it) => it && typeof it === "object"),
+        rootDir,
+        limit,
+      );
       // FNXC:RUFU133StashScore 2026-08-25-20:17:
       // RUFU-133: maxRank = the max usable rank across ALL surviving items
       // (0 when none), computed BEFORE the map — ts_rank is only meaningful
@@ -999,7 +1334,11 @@ export class StashMemoryBackend implements MemoryBackend {
   call). The raw trimmed query is sent UN-normalized (the embedder tokenizes on its
   own), capped at 200 chars.
   */
-  private async vectorSearchHits(rawQuery: string, limit: number): Promise<MemorySearchResult[] | null> {
+  private async vectorSearchHits(
+    rawQuery: string,
+    limit: number,
+    rootDir: string,
+  ): Promise<MemorySearchResult[] | null> {
     const q = rawQuery.slice(0, 200);
     try {
       const resp = await this.httpRequest<StashSearchResponse>(
@@ -1013,8 +1352,12 @@ export class StashMemoryBackend implements MemoryBackend {
         this.noteReadOutcome("semantic-search", Array.isArray(items) ? "no-match" : "malformed", 0);
         return null;
       }
-      const hits = items
-        .filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object")
+      const own = this.scopeItemsToProject(
+        items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object"),
+        rootDir,
+        limit,
+      );
+      const hits = own
         .map((it, idx) => {
           // D5: vector rank = similarity (0..1); missing/null/non-finite → 1.0.
           // FNXC:RUFU133StashScore 2026-08-25-20:17: typed `unknown` (the
@@ -1085,6 +1428,47 @@ export class StashMemoryBackend implements MemoryBackend {
     );
   }
 
+  /*
+  FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+  THE read-side choke point. Both search branches pass their raw server rows through here and nothing
+  reaches a caller without it: the keyword branch of `search()`, and `vectorSearchHits()` — whose
+  hits used to `return` straight out of `search()` and would otherwise have bypassed any filter placed
+  on the keyword route (a vector-first bypass is exactly why one shared call, not one shared line,
+  is the invariant). `read()` needs no separate filter because it calls `search()`.
+
+  What it does NOT do: send a scope parameter. Measured 2026-11-19 against the live server, the route
+  ignores undeclared params (RUFU-121's precedent re-confirmed), so a param would advertise an
+  enforcement that does not exist; the refusal here is explicit and counted instead.
+
+  Every scoped read reaches this record, `all-own` included, because the operator surfaces must
+  distinguish "this project has nothing" from "rows arrived and were dropped" — an absent record is
+  the first question they would have to ask. `all-own` never displaces an existing drop class (see
+  `recordStashReadScope`): a two-lane reader reports once, after its second search, and a clean second
+  search must not erase what the first one returned.
+  */
+  private scopeItemsToProject(
+    items: StashSearchResultItem[],
+    rootDir: string,
+    limit: number,
+  ): StashSearchResultItem[] {
+    const identity = stashProjectIdentityFor(rootDir);
+    const classification = classifyStashReadScope(items, identity);
+    recordStashReadScope(
+      this.baseUrl,
+      identity.discriminator,
+      {
+        outcome: classification.outcome,
+        matchedCount: items.length,
+        ownCount: classification.ownCount,
+        droppedForeignCount: classification.foreignCount,
+        droppedUnidentifiedCount: classification.unidentifiedCount,
+        limit,
+      },
+      this.now(),
+    );
+    return classification.kept;
+  }
+
   /** Classify a read failure, attributing a credential-less attempt to us, not to the server. */
   private readFailureCode(err: unknown): StashReadOutcomeCode {
     if (this.apiKey === "") return "key-unresolved";
@@ -1096,6 +1480,12 @@ export class StashMemoryBackend implements MemoryBackend {
   /**
    * Probe stash reachability. Never throws — returns false on any error
    * (stash down means "no memory here", consistent with fail-closed).
+   *
+   * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): deliberately NOT scoped.
+   * Its `?q=&limit=1` asks "did the server answer at all"; it is an auth/reachability probe, not a
+   * data surface, and its `true` must never be read as "this project has memories". It therefore
+   * contributes nothing to the scope counters — counting it would put a number on a request that
+   * never inspects an owner.
    */
   async exists(_rootDir: string): Promise<boolean> {
     try {

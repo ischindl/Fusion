@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { StashMemoryBackend, DEFAULT_STASH_URL } from "../memory-backend-stash.js";
+import { StashMemoryBackend, DEFAULT_STASH_URL, getStashReadScope, stashProjectIdentityFor } from "../memory-backend-stash.js";
 import type { MemorySearchOptions } from "../memory-backend.js";
 import { searchProjectMemory } from "../project-memory.js";
 
@@ -183,13 +183,21 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
       // &topic= param entirely; the assertion below now confirms the request
       // carries NO topic param while the verbatim-mapping guarantee is
       // unchanged.
+      //
+      // FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+      // Both rows now carry project A's real discriminator. That is not decoration: the client DOES
+      // filter by project identity now, so an unattributed row is dropped and this case would pass
+      // vacuously on an empty list. What stays unpinned-by-filtering is the axis this case is about:
+      // two of project A's own rows with UNRELATED topics both come back, so no topic narrowing
+      // happened anywhere.
       const b = backend();
+      const own = stashProjectIdentityFor("/repos/projectA").discriminator;
       responder = () => ({
         statusCode: 200,
         body: {
           events: [
-            { id: 1, content: "stash memory hit", session_id: "fusion-1-a", metadata: { topic: "stash lcm" } },
-            { id: 2, content: "gui improvement note", session_id: "fusion-1-b", metadata: { topic: "gui" } },
+            { id: 1, content: "stash memory hit", session_id: "fusion-1-a", metadata: { discriminator: own, topic: "stash lcm" } },
+            { id: 2, content: "gui improvement note", session_id: "fusion-1-b", metadata: { discriminator: own, topic: "gui" } },
           ],
         },
       });
@@ -240,8 +248,7 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
     it("a topic-scoped project-X search never reintroduces project-Y session leakage", async () => {
       //
       // FNXC:StashTopicNoLeak 2026-08-13-16:35:
-      // A topic must never weaken, bypass, or mask the Stash server-side
-      // `owner_user_id` SQL scope. Here we simulate a correctly scoped route for
+      // A topic must never weaken, bypass, or mask cross-project isolation. Here we simulate a correctly scoped route for
       // project A and assert a project-X topic search never contains project B's
       // sessions/discriminator.
       //
@@ -249,14 +256,25 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
       // RUFU-172 wording sweep: this comment used to call focus a "WITHIN-project read
       // filter". It is not — no backend narrows its result set by topic (RUFU-121 removed
       // the inert &topic=; RUFU-172 uses the focus only as a ranking input). Cross-project
-      // isolation is what this test still proves, and it is enforced by the owner_user_id
-      // scope, not by any topic filter.
+      // isolation is what this test still proves.
+      //
+      // FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+      // What this case used to prove has changed mechanism. It simulated a route that had ALREADY
+      // filtered to project A, so it proved nothing about Fusion: Stash scopes by OWNER, one
+      // operator's projects are one readable domain, and an unscoped route answers with everyone's
+      // rows (measured against the live server 2026-11-19). The fixture now returns BOTH projects'
+      // rows with their real derived discriminators, and the assertion is the one that matters: the
+      // client drops the foreign row. A discriminator that did not match its own root would now be
+      // dropped too, which is why these fixtures derive it instead of inventing it.
       const b = backend();
+      const ownDiscriminator = stashProjectIdentityFor("/repos/projectA").discriminator;
+      const foreignDiscriminator = stashProjectIdentityFor("/repos/projectB").discriminator;
       responder = () => ({
         statusCode: 200,
         body: {
           events: [
-            { id: 10, content: "Stash & LCM memory plan", session_id: "fusion-1-a", metadata: { discriminator: "projectA-a1b2", topic: "stash lcm" } },
+            { id: 10, content: "Stash & LCM memory plan", session_id: "fusion-1-a", metadata: { discriminator: ownDiscriminator, topic: "stash lcm" } },
+            { id: 11, content: "B secret", session_id: "fusion-2-b", metadata: { discriminator: foreignDiscriminator, topic: "stash lcm" } },
           ],
         },
       });
@@ -273,20 +291,43 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
       const searchReq = [...log].reverse().find((r) => r.path?.includes("/events/search"));
       expect(searchReq!.path).not.toContain("topic=");
       expect(results.some((r) => r.path.includes("fusion-2-b"))).toBe(false);
+      // The drop is counted, not silent: one foreign row out of two matched.
+      expect(getStashReadScope(DEFAULT_STASH_URL, ownDiscriminator)).toMatchObject({
+        outcome: "dropped-foreign",
+        matchedCount: 2,
+        ownCount: 1,
+        droppedForeignCount: 1,
+      });
     });
 
-    it("project X's search never surfaces project Y's sessions (owner_user_id isolation preserved)", async () => {
+    it("project X's search never surfaces project Y's sessions (verified client-side by project identity)", async () => {
+      /*
+      FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+      The parenthetical used to read "owner_user_id isolation preserved", and the case earned it only
+      vacuously: the single row it served was already X's, so an empty answer passed it too. The
+      route gives Fusion every row of the owner, so the fixture now does the same and the assertion
+      names the mechanism that actually protects a prompt.
+      */
       const b = backend();
+      const ownDiscriminator = stashProjectIdentityFor("/repos/projectX").discriminator;
+      const foreignDiscriminator = stashProjectIdentityFor("/repos/projectY").discriminator;
       responder = () => ({
         statusCode: 200,
-        body: { events: [{ id: 1, content: "X only", session_id: "fusion-1-a", metadata: { discriminator: "projectX-aaaa" } }] },
+        body: {
+          events: [
+            { id: 1, content: "X only", session_id: "fusion-1-a", metadata: { discriminator: ownDiscriminator } },
+            { id: 2, content: "Y secret", session_id: "fusion-2-b", metadata: { discriminator: foreignDiscriminator } },
+          ],
+        },
       });
       const ps = b.search("/repos/projectX", { query: "query" } satisfies MemorySearchOptions);
       await deliver();
       const results = await ps;
+      expect(results).toHaveLength(1);
       expect(results.every((r) => r.snippet.includes("X only"))).toBe(true);
       expect(results.some((r) => r.path.includes("fusion-2-b"))).toBe(false);
       expect(results.some((r) => r.snippet.includes("Y secret"))).toBe(false);
+      expect(getStashReadScope(DEFAULT_STASH_URL, ownDiscriminator)?.droppedForeignCount).toBe(1);
     });
   });
 

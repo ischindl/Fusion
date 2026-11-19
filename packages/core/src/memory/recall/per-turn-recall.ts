@@ -10,6 +10,7 @@ import { resolveMemoryBackend, type MemorySearchResult } from "../memory-backend
 import { resolveStashMemorySettings } from "../stash-settings.js";
 import {
   reportStashReadOutcome,
+  reportStashReadScopeForRoot,
   stashBaseUrlFromSettings,
   type StashReadStoreHost,
 } from "../memory-backend-stash.js";
@@ -475,6 +476,13 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
     projectHits = [...(results ?? []), ...fileHits];
   } catch {
     reportStashReadOutcome(options.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+    // RUFU-1008: a thrown search still leaves the last scope record for this (server, project) pair,
+    // so a lane that died after a foreign-project answer stays reported.
+    reportStashReadScopeForRoot(
+      options.secretsReader,
+      stashBaseUrlFromSettings(resolvedSettings),
+      options.rootDir,
+    );
     return "";
   }
   // Client-side score filter (Stash has no server-side score filter).
@@ -504,6 +512,25 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   as lane P, so a lane-T refusal is still counted when lane P happened to produce a cue.
   */
   reportStashReadOutcome(options.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+  /*
+  FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+  Lane P and lane T have both been scoped by the backend before their results reached this function,
+  so the per-turn recall - the highest-frequency reader of Stash - reports what the filter cost it.
+  This is the entry where an all-foreign answer looks identical to "nothing stored" (the cue is "" in
+  both cases), which is exactly why the class has to be counted rather than inferred from the cue.
+
+  FNXC:StashReadScope 2026-11-19-16:08 (RUFU-1008 code review, P1):
+  One report site serves TWO searches, and the order matters: lane T's own scoped read lands in the
+  record after lane P's, so reporting here reads lane T's class last. That is only honest because the
+  record is sticky for the drop classes - a lane T answer made purely of own rows cannot overwrite a
+  `dropped-foreign` lane P left behind. A reader that added a second search without that stickiness
+  would silently un-report the leak.
+  */
+  reportStashReadScopeForRoot(
+    options.secretsReader,
+    stashBaseUrlFromSettings(resolvedSettings),
+    options.rootDir,
+  );
 
   // Silent skip when neither lane yields a usable hit (matches today's empty contract).
   if (laneP.length === 0 && laneT.length === 0) {

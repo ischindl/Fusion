@@ -1590,6 +1590,58 @@ pass through it. It is declared in `@fusion/core`'s `RunAuditMutationType` (the 
 established for core- and dashboard-emitted rows), because its emitter reaches the sink through the core
 seam rather than the engine's `DatabaseMutationType`.
 
+### A Stash read that dropped another project's rows (RUFU-1008)
+
+`memory:stash-read-scope` records one filtered read per (Stash server, project, outcome) per 15-minute
+window. It is the sibling of `memory:stash-read-refused` above and answers a different question: the
+refusal row says *we were not allowed to look*; this row says *we looked, and the answer was not all
+ours.*
+
+Stash partitions memory by **owner**, and one operator has exactly one owner id, so every Fusion project
+of that operator shares one read domain. Measured on the host that motivated this card: one Stash daemon
+answered a `RUFU-1008` project's query with rows whose `metadata.discriminator` was `VLLM`'s and `GEDA`'s.
+The read path now verifies each row's identity and drops what is not ours (see
+[`docs/memory-backend-integration.md`](memory-backend-integration.md) § 4), which creates a new failure
+mode the refusal row cannot describe: a query answered with **zero** usable rows because every row was
+crossed out. "Nothing stored" and "everything was filtered away" were about to become the same empty
+answer again, one step further along from the RUFU-994 pair.
+
+Metadata is a closed six keys: `outcome` (fixed enum `all-own` | `dropped-foreign` | `dropped-unidentified`),
+`matchedCount`, `ownCount`, `droppedForeignCount`, `droppedUnidentifiedCount` (numbers), and `limit`
+(the row cap the caller asked for). `dropped-foreign` wins over `dropped-unidentified` when a read dropped
+both classes, and the two counts are reported separately so an operator can tell "the account is shared"
+from "the server stopped returning `metadata`" — the first is expected on a multi-project host, the second
+means recall is going blind and is the one that needs attention. `all-own` writes **no** row, matching
+RUFU-994's `ok` / `no-match` silence: the common healthy read must not generate telemetry, or the drops
+would drown in traffic the operator is trying to count.
+
+There is deliberately **no `endpoint` key**, unlike the refusal row. Counts are taken after both the
+keyword and the semantic branch have been scoped, so naming an endpoint would attribute a number to a
+request the classification does not distinguish. No dropped row's id, text, or uri appears; no other
+project's discriminator or name appears; the Stash URL appears nowhere in the row or in `target`, for the
+same reason the refusal row omits it — a Stash URL may carry credentials in its userinfo segment and the
+audit store is readable by anything with query access to it. `target` is the fixed literal `stash-memory`.
+
+Emission is `reportStashReadScope()`, reached through `reportStashReadScopeForRoot()` from the same four
+core read entries RUFU-994 instrumented (`readProjectMemoryWithBackend`, `searchProjectMemory`,
+`buildProactiveMemoryCueBlock`, `buildPerTurnMemoryRecallCue`). It is one `log.warn` plus one row per
+(server, project, outcome) per window — the same 15-minute floor, because a chat lane recalls every turn
+and an unbounded emit would write one row per turn on a host where the sharing is permanent rather than a
+misconfiguration. Emission goes through the FN-9177 bounded core seam: an absent, throwing, rejecting, or
+never-settling sink leaves the recall result, the log line, and the recorded counts identical, and the
+dedupe marker advances even when the sink fails (`packages/core/src/memory/__tests__/stash-read-scope.test.ts`).
+
+The same counts reach the operator through `stashReadScope` on `GET /api/memory/backend` and
+`POST /api/memory/test`, keyed by (configured server, **this** project's discriminator) so one project's
+drops never appear on another project's page, and rendered by one shared component
+(`MemoryStashScopeNotice`) that both memory surfaces mount — Settings → Memory and the Memory view cannot
+word it differently. It says nothing when nothing was dropped.
+
+Like RUFU-462's `runtime:heap-ceiling` and RUFU-279's `memory:*` trio, this event sits deliberately OUTSIDE
+the curated delivery-pipeline catalogue that `run-audit-catalogue.test.ts` locks table-for-table: whether a
+memory read had to discard another project's rows is not a delivery-pipeline step. It is declared in
+`@fusion/core`'s `RunAuditMutationType`, because its emitter reaches the sink through the core seam.
+
 ### The graph row no consumer would take (RUFU-1050)
 
 `task:reconcile-unclaimed-graph-work` records one repair performed by the owning pass

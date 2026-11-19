@@ -10529,6 +10529,7 @@
     "healthHealthy": "Healthy",
     "graphResults": "results",
     "testResultStatus": "qmd {{qmdStatus}} · {{fallbackStatus}}",
+    "stashScopeDropped": "Excluded {{foreign}} line(s) from other Fusion projects and {{unidentified}} line(s) with no project identity.",
     "dreamProcessingComplete": "Dream processing completed",
     "currentBackendTitle": "Current Backend",
     "categories": "Categories",

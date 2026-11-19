@@ -221,6 +221,16 @@ export interface MemoryBackendStatus {
   qmdAvailable?: boolean;
   /** Suggested install command when qmd is unavailable */
   qmdInstallCommand?: string;
+  /**
+   * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+   * What the last Stash read for THIS project cost in dropped rows, or null when this process has
+   * read nothing for it. `outcome: "dropped-foreign"` is the operator-relevant class: the server
+   * answered, and the answer belonged to another Fusion project on the same Stash account. Counts
+   * and one fixed class only - never a URL, a row identifier, or any recalled text. Mirrors
+   * `StashReadScope` in `@fusion/core` (the browser bundle keeps its own structural copy, the way
+   * `MemorySearchResult` does here).
+   */
+  stashReadScope?: StashReadScope | null;
 }
 
 export interface MemorySearchResult {
@@ -230,6 +240,35 @@ export interface MemorySearchResult {
   snippet: string;
   score: number;
   backend: string;
+}
+
+/**
+ * How many rows a Stash read dropped for this project (`0` when there is nothing to report).
+ *
+ * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): one predicate shared by both memory surfaces so
+ * the Settings section and the Memory view cannot disagree about when the sentence appears; the
+ * wording itself is shared by the `memory.stashScopeDropped` key they both call.
+ */
+export function stashScopeDroppedCount(scope?: StashReadScope | null): number {
+  if (!scope) return 0;
+  return scope.droppedForeignCount + scope.droppedUnidentifiedCount;
+}
+
+/**
+ * One Stash read's project-scope accounting (mirrors `StashReadScope` in `@fusion/core`).
+ *
+ * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): the closed three-value class plus counts. A
+ * Stash read is scoped by OWNER on the server, so per-project isolation is verified client-side and
+ * counted here; `matchedCount` is `ownCount` plus both drop counts.
+ */
+export interface StashReadScope {
+  outcome: "all-own" | "dropped-foreign" | "dropped-unidentified";
+  matchedCount: number;
+  ownCount: number;
+  droppedForeignCount: number;
+  droppedUnidentifiedCount: number;
+  limit: number;
+  at: number;
 }
 
 export interface MemoryRetrievalTestResult {
@@ -243,6 +282,8 @@ export interface MemoryRetrievalTestResult {
   notice?: string | null;
   /** Last Stash read outcome recorded by real recall paths. */
   stashReadOutcome?: string | null;
+  /** Last scoped-read drop counts for this project (see `MemoryBackendStatus.stashReadScope`). */
+  stashReadScope?: StashReadScope | null;
   qmdInstallCommand: string;
   results: MemorySearchResult[];
 }

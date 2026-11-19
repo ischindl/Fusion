@@ -38,6 +38,7 @@ import {
   STASH_READ_REFUSAL_AUDIT_REFRESH_FLOOR_MS,
   getStashReadOutcome,
   reportStashReadOutcome,
+  stashProjectIdentityFor,
   __resetStashReadDiagnosticsForTests,
   __resetStashReadAuditDedupeForTests,
   __resetVectorCapabilityCacheForTests,
@@ -97,10 +98,26 @@ interface LoopbackStash {
  * `refuseEvenWhenAuthed` models a server that rejects a VALID key on the read
  * routers (the alternative Step 0 had to disprove); `emptyResults` models the
  * honest "nothing stored" state that must stay distinguishable from a refusal.
+ *
+ * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+ * A served row now has to NAME ITS OWNER (`metadata.discriminator`), because the asking side does:
+ * Stash answers an unscoped query with every row of the owner and Fusion drops what is not its own,
+ * so a fixture row with no identity is dropped exactly like a foreign one and the case silently
+ * asserts on an empty list. The default names `/project` - the root every case in this file recalls
+ * as unless it passes its own - and a case with another root passes `ownDiscriminator` for it. The
+ * stand-in CANNOT derive it from the request: the read route carries no scope parameter, which is
+ * the measured fact this whole card rests on.
  */
 async function startLoopbackStash(
-  opts: { refuseEvenWhenAuthed?: boolean; emptyResults?: boolean; refuseSemanticOnly?: boolean } = {},
+  opts: {
+    refuseEvenWhenAuthed?: boolean;
+    emptyResults?: boolean;
+    refuseSemanticOnly?: boolean;
+    /** Whose row this is; defaults to the `/project` root every other case in this file recalls as. */
+    ownDiscriminator?: string;
+  } = {},
 ): Promise<LoopbackStash> {
+  const ownDiscriminator = opts.ownDiscriminator ?? stashProjectIdentityFor("/project").discriminator;
   const requests: RecordedRequest[] = [];
   const state: Pick<LoopbackStash, "allowsAuthorizedReads" | "refuseSemanticOnly"> = {
     allowsAuthorizedReads: !opts.refuseEvenWhenAuthed,
@@ -134,7 +151,15 @@ async function startLoopbackStash(
       send(200, {
         results: opts.emptyResults
           ? []
-          : [{ id: "ev-1", session_id: "ses-1", content: "recalled memory body", event_type: "memory" }],
+          : [
+              {
+                id: "ev-1",
+                session_id: "ses-1",
+                content: "recalled memory body",
+                event_type: "memory",
+                metadata: { discriminator: ownDiscriminator },
+              },
+            ],
       });
       return;
     }
@@ -716,7 +741,7 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
     // The exact reproduction from the report: tokens absent from every transcript row (the
     // loopback only stores "recalled memory body") but verbatim on a line past 600.
     projectRoot = projectRootWithMemoryFile();
-    server = await startLoopbackStash();
+    server = await startLoopbackStash({ ownDiscriminator: stashProjectIdentityFor(projectRoot).discriminator });
     const reader = secretsReaderReturning(RESOLVED_SECRET);
 
     const hits = await searchProjectMemory(
@@ -765,7 +790,7 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
 
   it("a project without .fusion/memory/ returns exactly today's remote-only array", async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "rufu1010-nomemory-"));
-    server = await startLoopbackStash();
+    server = await startLoopbackStash({ ownDiscriminator: stashProjectIdentityFor(projectRoot).discriminator });
     const reader = secretsReaderReturning(RESOLVED_SECRET);
 
     const hits = await searchProjectMemory(
@@ -798,7 +823,7 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
 
   it("the per-turn recall cue carries the memory-file path with its line range under stash", async () => {
     projectRoot = projectRootWithMemoryFile();
-    server = await startLoopbackStash();
+    server = await startLoopbackStash({ ownDiscriminator: stashProjectIdentityFor(projectRoot).discriminator });
     const reader = secretsReaderReturning(RESOLVED_SECRET);
 
     const cue = await buildPerTurnMemoryRecallCue({
@@ -818,7 +843,7 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
 
   it("the executor session-start cue carries the memory-file path with its line range under stash", async () => {
     projectRoot = projectRootWithMemoryFile();
-    server = await startLoopbackStash();
+    server = await startLoopbackStash({ ownDiscriminator: stashProjectIdentityFor(projectRoot).discriminator });
     const reader = secretsReaderReturning(RESOLVED_SECRET);
 
     const block = await buildProactiveMemoryCueBlock(

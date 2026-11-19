@@ -2740,6 +2740,14 @@ export {
   // derivation it is keyed by, so the memory routes can name a refusal without a container log.
   getStashReadOutcome,
   stashBaseUrlFromSettings,
+  // FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): the identity a project claims and the record of
+  // what scoping cost it, so a memory surface can say "rows arrived and were dropped" instead of
+  // looking identical to "nothing stored". One derivation is exported precisely so no consumer
+  // recomputes an identity that the filter would then disagree with.
+  getStashReadScope,
+  stashProjectIdentityFor,
+  reportStashReadScope,
+  STASH_READ_SCOPE_MUTATION_TYPE,
 } from "./memory/memory-backend-stash.js";
 export type {
   StashEvent,
@@ -2755,6 +2763,10 @@ export type {
   StashReadOutcome,
   StashReadOutcomeCode,
   StashReadEndpoint,
+  // FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): read-side identity and its closed drop class.
+  StashProjectIdentity,
+  StashReadScope,
+  StashReadScopeOutcomeCode,
 } from "./memory/memory-backend-stash.js";
 
 // FNXC:RUFU121StashSettingsInCore 2026-08-18-19:53: (RUFU-121) Stash settings/secret

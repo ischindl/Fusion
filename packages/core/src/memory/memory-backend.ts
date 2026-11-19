@@ -131,7 +131,11 @@ export interface MemorySearchOptions {
    * (RUFU-035/RUFU-068) optional read-time focus/topic. Backends that support
    * topic scoping push `options.topic` down to their search transport;
    * topic-agnostic backends ignore it. Focus is strictly a WITHIN-project read
-   * filter — it never affects cross-project scope isolation.
+   * hint — it never widens cross-project isolation. That sentence needed its
+   * mechanism named (RUFU-1008): a Stash read is scoped by OWNER, so one operator's
+   * Fusion projects are ONE readable domain and isolation is verified client-side
+   * against the asking project's identity in `StashMemoryBackend.scopeItemsToProject`.
+   * No topic value can widen that check.
    *
    * FNXC:RUFU121TopicRemoval 2026-08-18-19:53:
    * RUFU-121: the Stash backend no longer pushes `topic` down to its search

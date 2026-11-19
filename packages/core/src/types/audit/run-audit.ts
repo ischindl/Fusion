@@ -292,6 +292,30 @@ export type RunAuditMutationType =
   documents it in prose and keeps it out of the tables locked to `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
   */
   | "memory:stash-read-refused"
+  /*
+  FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+  A Stash read that had to DROP rows because they belong to another Fusion project. Stash scopes its
+  store by OWNER, so every project of one operator is one readable domain and the route honours no
+  scope parameter (measured inert 2026-11-19); the client therefore verifies each row's identity and
+  refuses what it cannot attribute. Without this event, a card whose recall was answered ONLY by
+  foreign rows reported exactly what a card with an empty memory reports: nothing.
+
+  Metadata is the closed set `outcome` (fixed enum `all-own` | `dropped-foreign` |
+  `dropped-unidentified`), `matchedCount`, `ownCount`, `droppedForeignCount`,
+  `droppedUnidentifiedCount`, `limit` — counts and one fixed class, nothing else. No Stash URL (its
+  userinfo can carry credentials), no dropped row's `id`/`uri` or text, and deliberately no
+  `endpoint`: the counts are taken after the keyword and semantic branches have been scoped, so an
+  endpoint key would attribute a drop to a route we do not distinguish here.
+
+  `all-own` writes NOTHING, the same rule RUFU-994 set for `ok`/`no-match`: a chat lane recalls every
+  turn, and routine traffic would bury the drops this event exists to make countable.
+
+  Declared in `@fusion/core` because the reader that emits it is core's memory layer (RUFU-259's
+  placement), NOT the engine's `DatabaseMutationType`. Deliberately OUTSIDE the curated
+  delivery-pipeline catalogue (RUFU-462's exclusion): a memory read diagnostic is not a
+  delivery-pipeline step, so `docs/run-audit.md` documents it in prose.
+  */
+  | "memory:stash-read-scope"
   | (string & {});
 
 /** Input for recording a run-audit event. */

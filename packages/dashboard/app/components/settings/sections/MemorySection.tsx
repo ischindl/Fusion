@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { MemoryBackendCapabilities, MemoryBackendStatus, MemoryFileInfo, MemoryRetrievalTestResult, } from "../../../api";
+import { MemoryStashScopeNotice } from "../../MemoryStashScopeNotice";
 import { FileEditor } from "../../FileEditor";
 import { SettingsToggleRow } from "../SettingsToggleRow";
 import { SettingsNumberRow } from "../SettingsNumberRow";
@@ -430,6 +431,15 @@ export function MemorySection({ form, setForm, memory }: MemorySectionProps) {
             </strong>
             <small>{t("settings.memory.qmd", " qmd ")}{memoryTestResult.qmdAvailable ? "available" : "missing"} · {memoryTestResult.usedFallback ? "local fallback used" : "qmd path used"}
             </small>
+            {/*
+            FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008):
+            "0 results" and "the server answered, but for another project" used to render identically.
+            A Stash account shared by several Fusion projects answers a query with every project's rows
+            (the route scopes by owner only), so this notice is what makes a filtered-away answer
+            visible to an operator looking at a memory that appears empty. The wording is the shared
+            `MemoryStashScopeNotice`, identical to the Memory view's by construction.
+            */}
+            <MemoryStashScopeNotice scope={memoryTestResult.stashReadScope} />
             {memoryTestResult.results.length > 0 ? (<ul>
                 {memoryTestResult.results.map((result, index) => (<li key={`${result.path}-${result.lineStart}-${index}`}>
                     <span>{result.path}:{result.lineStart}</span>

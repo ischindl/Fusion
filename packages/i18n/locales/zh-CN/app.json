@@ -7229,7 +7229,8 @@
     "saveInsights": "保存洞察",
     "categories": "分类",
     "retrievalTestComplete": "记忆检索测试完成",
-    "insightsMemoryLabel": "洞察记忆"
+    "insightsMemoryLabel": "洞察记忆",
+    "stashScopeDropped": ""
   },
   "app": {
     "sqliteMigration": {
