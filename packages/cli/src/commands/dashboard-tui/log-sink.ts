@@ -1,11 +1,22 @@
 import { redactSecrets } from "@fusion/core";
+import { setLogLevelMarkerCapture } from "@fusion/core/log-severity-markers";
 import { LogRingBuffer, type LogEntry } from "./log-ring-buffer.js";
 
 // ── formatConsoleArgs ─────────────────────────────────────────────────────────
 
+//
+// FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+// The producers (core/engine loggers) emit the NUL-delimited severity marker ONLY while this
+// sink declares a capture installed (setLogLevelMarkerCapture in captureConsole) or the process
+// opted in via FUSION_LOG_SEVERITY_MARKERS=1, so plain CLI stderr stays byte-clean for
+// grep/pipes/JSON consumers. Parsing marked lines here stays INTENTIONAL — opt-in streams,
+// legacy captured content, and defense-in-depth can all still deliver marker-prefixed args.
+// Lines emitted BEFORE captureConsole() runs carry no marker and fall back to `fallbackLevel`
+// (error→error, warn→warn, log→info) by design — already the behavior for foreign console output.
+//
 // The engine's createLogger() prefixes messages with a null-byte-delimited
-// severity marker so we can recover the original intent when routed via
-// console.error (which is the transport it uses).
+// severity marker (while capture is installed) so we can recover the original
+// intent when routed via console.error (which is the transport it uses).
 // eslint-disable-next-line no-control-regex -- marker is NUL-delimited by design
 const LOG_LEVEL_MARKER_REGEX = /^\u0000fnlvl=(info|warn|error)\u0000\s*/;
 
@@ -192,6 +203,14 @@ export class DashboardLogSink {
 
   captureConsole(): void {
     if (this.originalConsole) return;
+    /*
+    FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+    This patched console IS the severity-marker consumer, so the capture window — not every
+    process on the machine — owns marker emission. Flipping the gate here is what makes the
+    "logger.log via console.error classifies as info" invariant hold while capture is live;
+    releaseConsole() hands stderr back byte-clean.
+    */
+    setLogLevelMarkerCapture(true);
     this.originalConsole = {
       log: console.log,
       warn: console.warn,
@@ -217,6 +236,8 @@ export class DashboardLogSink {
     console.warn = this.originalConsole.warn;
     console.error = this.originalConsole.error;
     this.originalConsole = null;
+    // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): with the patched console restored, no marker consumer remains — stop leaking NULs onto the real stderr.
+    setLogLevelMarkerCapture(false);
   }
 
   private writeCapturedConsoleLog(level: LogEntry["level"], message: string, prefix?: string): void {

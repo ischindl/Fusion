@@ -101,6 +101,10 @@ export function createChildEnv(baseEnv, isolatedHome) {
     DATABASE_URL: undefined,
     FUSION_NO_EMBEDDED_PG: undefined,
     PORT: undefined,
+    // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): boot smoke asserts the DEFAULT stderr
+    // contract (zero NULs); an ambient severity-marker opt-in in the developer/CI shell would
+    // otherwise opt the child into markers and turn the NUL gate into a false red.
+    FUSION_LOG_SEVERITY_MARKERS: undefined,
   };
 }
 
@@ -112,6 +116,21 @@ export function classifyInitFailure(init, projectMarkerExists) {
   if (/Detected unsettled top-level await/.test(output)) return "unsettled-top-level-await";
   if (!projectMarkerExists) return "missing-project-marker";
   return null;
+}
+
+/*
+FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+The RUFU-666 symptom gate: the core/engine loggers wrapped every diagnostic line in
+`\u0000fnlvl=<level>\u0000` unconditionally, so a plain `fn` run's stderr was binary to grep/pipes
+(measured 32 NULs per `fn task list`) and agents deduced a false "board is empty". The producers
+are capture-gated now; this end-to-end assertion makes a regression that re-pollutes plain CLI
+stderr fail the existing boot gate instead of resurfacing as a misleading grep result.
+*/
+/** Return a fixed refusal reason when captured child stderr carries U+0000; null when byte-clean. */
+export function findNulInStderr(stderr) {
+  return typeof stderr === "string" && stderr.includes("\u0000")
+    ? "child stderr carries NUL bytes (severity-marker leak, RUFU-666)"
+    : null;
 }
 
 function parsePortList(raw) {
@@ -319,6 +338,9 @@ async function bootAndVerify(attempt, registerCleanup) {
   if (!/serve/i.test(help.stdout ?? "")) {
     fail("`fn --help` output does not mention the serve command", help.stderr ?? "");
   }
+  // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): a plain CLI run must leave no NULs on stderr.
+  const helpNul = findNulInStderr(help.stderr);
+  if (helpNul) fail(`\`fn --help\`: ${helpNul}`, help.stderr ?? "");
   console.log("boot-smoke: `fn --help` OK");
 
   const initOutput = `${init.stdout ?? ""}${init.stderr ?? ""}`;
@@ -329,6 +351,9 @@ async function bootAndVerify(attempt, registerCleanup) {
       : `\`fn init\` exited ${init.status ?? `signal ${init.signal ?? "timeout"}`}`;
     fail(message, `${init.error?.message ? `${init.error.message}\n` : ""}${initOutput}`);
   }
+  // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): a plain CLI run must leave no NULs on stderr.
+  const initNul = findNulInStderr(init.stderr);
+  if (initNul) fail(`\`fn init\`: ${initNul}`, initOutput);
   console.log("boot-smoke: `fn init` OK");
 
   const child = spawn(
@@ -388,6 +413,12 @@ async function bootAndVerify(attempt, registerCleanup) {
     fail(err.message, stderrBuf);
   }
   console.log(`boot-smoke: GET /api/health 200 on :${port}`);
+
+  // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): headless `fn serve` installs no console
+  // capture, so its whole stderr (child stderr AND piped stdout accumulate in stderrBuf) must be
+  // byte-clean; a NUL here means a producer re-learned to emit markers without a consumer.
+  const serveNul = findNulInStderr(stderrBuf);
+  if (serveNul) fail(`\`fn serve\`: ${serveNul}`, stderrBuf);
 
   // 3. Clean shutdown of OUR child only. The verdict requires BOTH that
   // SIGTERM was actually delivered (a server that died between the health

@@ -33,6 +33,8 @@ describe("ai-session-diagnostics", () => {
 
   afterEach(() => {
     resetDiagnosticsSink();
+    // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): the three marker cases below opt in explicitly; never leak the opt-in into sibling cases.
+    delete process.env.FUSION_LOG_SEVERITY_MARKERS;
   });
 
   describe("createSessionDiagnostics", () => {
@@ -534,6 +536,8 @@ describe("ai-session-diagnostics", () => {
     classifiable line on the right stream — instead of to the pre-logger call site.
     */
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): stderr is marker-free by default now; this case opts in to assert the marker shape itself.
+      process.env.FUSION_LOG_SEVERITY_MARKERS = "1";
       resetDiagnosticsSink(); // Ensure default sink is active
 
       const diagnostics = createSessionDiagnostics("planning");
@@ -550,6 +554,8 @@ describe("ai-session-diagnostics", () => {
 
     it("logs warn to console.warn with a severity-marked prefix", () => {
       const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): marker shape asserted under explicit opt-in (RUFU-666 default is marker-free).
+      process.env.FUSION_LOG_SEVERITY_MARKERS = "1";
       resetDiagnosticsSink();
 
       const diagnostics = createSessionDiagnostics("planning");
@@ -566,6 +572,8 @@ describe("ai-session-diagnostics", () => {
 
     it("logs error to console.error with a severity-marked prefix", () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): marker shape asserted under explicit opt-in (RUFU-666 default is marker-free).
+      process.env.FUSION_LOG_SEVERITY_MARKERS = "1";
       resetDiagnosticsSink();
 
       const diagnostics = createSessionDiagnostics("planning");
@@ -576,6 +584,25 @@ describe("ai-session-diagnostics", () => {
         expect.objectContaining({ _emittedAt: expect.any(String) })
       );
       expect(consoleErrorSpy.mock.calls[0]?.[0]).toContain("fnlvl=error");
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    /*
+    FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+    The RUFU-666 default: an info diagnostic still rides the stderr channel with its
+    [planning] tag, but its payload is byte-clean — no NUL bytes for pipes/grep to choke on.
+    */
+    it("emits the default-sink info line byte-clean while keeping it on the error channel", () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      resetDiagnosticsSink();
+
+      const diagnostics = createSessionDiagnostics("planning");
+      diagnostics.info("Test message");
+
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy.mock.calls[0]?.[0]).toContain("[planning] Test message");
+      expect(String(consoleErrorSpy.mock.calls[0]?.[0])).not.toContain("\u0000");
 
       consoleErrorSpy.mockRestore();
     });

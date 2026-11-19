@@ -4000,6 +4000,8 @@ export { promoteResearchFinding } from "./research/research-feature-promotion.js
 export type { ResearchFeaturePromotionInput } from "./research/research-feature-promotion.js";
 export { getTotalAgentActiveMs, startPlanningSegment, finalizePlanningSegment } from "./tasks/task-timing.js";
 export { createLogger, type Logger } from "./process/logger.js";
+// FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): Shared emission gate for the NUL severity markers; the barrel re-export keeps existing `@fusion/core` importers working, while capture owners import the zero-dependency leaf via `@fusion/core/log-severity-markers`.
+export { setLogLevelMarkerCapture, shouldEmitLogLevelMarkers } from "./process/log-severity-markers.js";
 export { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "./types.js";
 export * from "./task-document-concurrency.js";
 /*

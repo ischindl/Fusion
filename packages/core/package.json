@@ -49,6 +49,11 @@
       "source": "./src/agents/heartbeat-timer-liveness.ts",
       "import": "./dist/agents/heartbeat-timer-liveness.js"
     },
+    "./log-severity-markers": {
+      "types": "./src/process/log-severity-markers.ts",
+      "source": "./src/process/log-severity-markers.ts",
+      "import": "./dist/process/log-severity-markers.js"
+    },
     "./agent-cwd-policy": {
       "types": "./src/agent-cwd-policy.ts",
       "source": "./src/agent-cwd-policy.ts",

@@ -9,16 +9,35 @@ FNXC:EngineDiagnostics 2026-07-26-10:46:
 Core mirrors engine FUSION_DEBUG behavior; both implementations must preserve
 silent-by-default routine diagnostics and the TUI's info severity marker.
 */
+/*
+FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+Plain stderr is marker-free by default now (RUFU-666), so the marker half of the info-line
+assertion runs with the explicit FUSION_LOG_SEVERITY_MARKERS opt-in — the debug gating contract
+itself (which values emit at all) is asserted untouched below.
+*/
 describe("core logger debug gating", () => {
-  afterEach(() => { delete process.env.FUSION_DEBUG; vi.restoreAllMocks(); });
+  afterEach(() => {
+    delete process.env.FUSION_DEBUG;
+    delete process.env.FUSION_LOG_SEVERITY_MARKERS;
+    vi.restoreAllMocks();
+  });
 
   it.each(["1", "true", "all", "*", "core-test", "other,core-test"])
   ("emits an info-marked debug line when FUSION_DEBUG=%s", (value) => {
     process.env.FUSION_DEBUG = value;
+    process.env.FUSION_LOG_SEVERITY_MARKERS = "1";
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     createLogger("core-test").debug("routine");
     expect(spy).toHaveBeenCalledOnce();
     expect(String(spy.mock.calls[0]?.[0])).toContain("\0fnlvl=info\0[core-test] routine");
+  });
+
+  it("emits the debug line marker-free when no severity-marker consumer opted in", () => {
+    process.env.FUSION_DEBUG = "core-test";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    createLogger("core-test").debug("routine");
+    expect(spy).toHaveBeenCalledOnce();
+    expect(String(spy.mock.calls[0]?.[0])).toBe("[core-test] routine");
   });
 
   it("is silent when unset or its prefix is absent", () => {

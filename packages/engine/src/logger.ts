@@ -16,6 +16,8 @@
  * engine log output in the future.
  */
 
+import { shouldEmitLogLevelMarkers } from "@fusion/core/log-severity-markers";
+
 export interface Logger {
   log(message: string, ...args: unknown[]): void;
   /**
@@ -30,7 +32,16 @@ export interface Logger {
 const LOG_LEVEL_MARKER_PREFIX = "\u0000fnlvl=";
 const LOG_LEVEL_MARKER_SUFFIX = "\u0000";
 
+/*
+FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+Mirror of the core logger's write-side gate — both producers share the ONE predicate in
+@fusion/core/log-severity-markers and must keep the same shape. The marker is emitted ONLY
+while a severity-marker consumer is active (TUI capture installed via captureConsole(), or
+FUSION_LOG_SEVERITY_MARKERS=1); unconditionally it made plain engine/CLI stderr binary to
+grep/pipes/JSON consumers (false "board is empty" deductions, RUFU-666).
+*/
 function withSeverityMarker(level: "info" | "warn" | "error", payload: string): string {
+  if (!shouldEmitLogLevelMarkers()) return payload;
   return `${LOG_LEVEL_MARKER_PREFIX}${level}${LOG_LEVEL_MARKER_SUFFIX}${payload}`;
 }
 
@@ -59,13 +70,17 @@ function isDebugEnabled(prefix: string): boolean {
  *          receiving Fusion execution chatter.
  *
  *          The logger prepends an internal control-character severity marker
- *          so dashboard TUI console-capture can preserve info/warn/error
- *          semantics even when `log()` is transported via `console.error`.
+ *          ONLY when a severity-marker consumer is active (dashboard TUI
+ *          console-capture installed, or `FUSION_LOG_SEVERITY_MARKERS=1`), so
+ *          capture can preserve info/warn/error semantics even when `log()`
+ *          is transported via `console.error`, while plain stderr stays
+ *          NUL-free for pipes, `grep`, and JSON consumers (RUFU-666).
  *
  *          `debug()` is gated on `FUSION_DEBUG` and re-reads the env var per
  *          call so tests and long-lived processes can toggle it without
- *          re-creating loggers. When enabled it emits under the `info` marker,
- *          so TUI console-capture needs no new severity to render it.
+ *          re-creating loggers. When enabled it emits under the `info` marker
+ *          only while the marker gate is on, so TUI console-capture needs no
+ *          new severity to render it.
  */
 export function createLogger(prefix: string): Logger {
   const tag = `[${prefix}]`;

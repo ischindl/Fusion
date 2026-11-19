@@ -42,3 +42,9 @@ pnpm --filter @fusion/dashboard exec vitest run src/__tests__/chat-manager.test.
 ```
 
 The PostgreSQL test persists the reported full in-flight tool-result shape and reads it back; dashboard tests exercise both debounced and flush rejection paths with no unhandled rejection.
+
+## Producer-side status (2026-11-19, RUFU-666)
+
+<!-- FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): producer is capture-gated now; the sanitize seam stays because legacy persisted rows and opted-in/foreign streams still carry these bytes. -->
+
+The marker producer is now capture-gated: the core/engine loggers emit `\u0000fnlvl=<level>\u0000` only while the dashboard TUI console capture is installed or `FUSION_LOG_SEVERITY_MARKERS=1` is set (see `docs/diagnostics.md` → Severity markers on stderr), so plain tool reads of Fusion CLI output no longer pick these bytes up. This sanitization seam stays exactly where it is: PostgreSQL still refuses U+0000 in `text`/`jsonb`, previously persisted content and opted-in or foreign NUL-bearing streams still reach these bindings, and the literal-fixture tests above remain the proof. The producer gate reduces how often the seam sees markers; it does not weaken what the seam must survive.

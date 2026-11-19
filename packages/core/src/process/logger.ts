@@ -14,6 +14,8 @@
  * directly so diagnostics stay consistent and easy to suppress/match in tests.
  */
 
+import { shouldEmitLogLevelMarkers } from "./log-severity-markers.js";
+
 export interface Logger {
   log(message: string, ...args: unknown[]): void;
   /**
@@ -28,7 +30,16 @@ export interface Logger {
 const LOG_LEVEL_MARKER_PREFIX = "\u0000fnlvl=";
 const LOG_LEVEL_MARKER_SUFFIX = "\u0000";
 
+/*
+FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+The marker is emitted ONLY while a severity-marker consumer is active (`shouldEmitLogLevelMarkers`:
+TUI capture installed, or FUSION_LOG_SEVERITY_MARKERS=1). Unconditional NUL bytes made plain CLI
+stderr binary to grep/pipes/JSON consumers — `fn task list 2>&1 | grep -n 'Todo'` reported
+"binary file matches" with zero lines, producing false "board is empty" deductions. This is the
+write-side gate; the mirror lives in packages/engine/src/logger.ts (same shape by design).
+*/
 function withSeverityMarker(level: "info" | "warn" | "error", payload: string): string {
+  if (!shouldEmitLogLevelMarkers()) return payload;
   return `${LOG_LEVEL_MARKER_PREFIX}${level}${LOG_LEVEL_MARKER_SUFFIX}${payload}`;
 }
 
@@ -55,8 +66,11 @@ function isDebugEnabled(prefix: string): boolean {
  *          output consumers from receiving Fusion execution chatter.
  *
  *          The logger prepends an internal control-character severity marker
- *          so dashboard TUI console-capture can preserve info/warn/error
- *          semantics even when `log()` is transported via `console.error`.
+ *          ONLY when a severity-marker consumer is active (dashboard TUI
+ *          console-capture installed, or `FUSION_LOG_SEVERITY_MARKERS=1`), so
+ *          capture can preserve info/warn/error semantics even when `log()`
+ *          is transported via `console.error`, while plain CLI stderr stays
+ *          NUL-free for pipes, `grep`, and JSON consumers (RUFU-666).
  *
  *          `debug()` is gated on `FUSION_DEBUG` and re-reads the env var per
  *          call so long-lived processes can toggle without recreating loggers.

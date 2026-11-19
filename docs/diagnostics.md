@@ -47,13 +47,24 @@ FUSION_DEBUG=scheduler,merger # several
 FUSION_DEBUG=1                # everything (also: true, all, *)
 ```
 
-The variable is re-read per call, so it can be toggled on a long-lived process without recreating loggers. Debug lines emit under the `info` severity marker and render like any other info line.
+The variable is re-read per call, so it can be toggled on a long-lived process without recreating loggers. Debug lines emit under the `info` severity marker — like every severity marker, only while a marker consumer is active (see **Severity markers on stderr** below) — and render like any other info line.
 
 Currently debug-gated classes include local/default routing, capacity and re-entrancy skips, poll/sweep no-actions, per-step success/progress, optional integration probes, successful verification bookkeeping, per-session agent setup (`agent-session` runtime/fallback resolution, planning mode, stuck-detector track bookkeeping), per-skill selection chatter and intentional skill-exclusion notices (`[skills] info: … disabled by project execution settings`), expected-missing PROMPT.md seed reads (ENOENT), token-cache metrics JSON, duplicate runtime `Specifying …` echoes, zero-count recovery summaries, mission "no linked feature" skips, event-driven "triggering scheduling" echoes, auto-claim snapshot invalidation, assignment-trigger skip guards (ephemeral/disabled/active-run), runtime `Scheduled`/`Started executing` echoes of executor `Starting`, worktree warm-reuse, runtime-env injection counts, baseCommitSha capture, parse-steps reconcile diagnostics, graph node worktree re-acquire, ephemeral already-owned worker skip, embedded-postgres rejoin "already running", and `fn_run_verification` non-timeout command-fail detail (failed `done` lines stay at info). Each agent session instead emits one normal-level `[skills]` summary with the available count, resolved forced skills, and any unavailable forced requests. State-changing recovery and dispatch outcomes remain visible (`Starting`/`Specifying`/`Worktree created`/`Auto-merge merged`/column moves/slow hold-release).
 
 Dashboard server code uses the core logger only: `import { createLogger } from "@fusion/core";`. Do not import an engine logger, use a relative cross-package logger path, or add a dashboard-local logger implementation.
 
 `packages/engine/src/__tests__/log-severity-manifest.ts` and package contract tests pin individual demotions and the no-bare-console rule. This makes an accidental severity reversion a CI failure instead of an operator-visible log flood.
+
+## Severity markers on stderr (`FUSION_LOG_SEVERITY_MARKERS`)
+
+<!--
+FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+Documented at the operator-facing seam: the marker used to be emitted unconditionally and made
+plain CLI stderr binary to grep/pipes/JSON consumers (32 NUL bytes measured per `fn task list`,
+repeated false "board is empty" deductions).
+-->
+
+The core and engine loggers wrap each diagnostic line in a NUL-delimited `\u0000fnlvl=<level>\u0000` marker **only** while a severity-marker consumer is active: the `fn dashboard` TUI has its console capture installed (its log pane recovers info/warn/error semantics from the marker, because `log()` travels over `console.error`), or `FUSION_LOG_SEVERITY_MARKERS=1` (also `true`) is set explicitly. Outside those windows stderr is byte-clean, because two NUL bytes per line made pipes, `grep`, and JSON consumers treat ordinary CLI output as binary — `fn task list 2>&1 | grep -n 'Todo'` reported "binary file matches" with zero lines (RUFU-666). Like `FUSION_DEBUG`, the variable is re-read per call. `scripts/boot-smoke.mjs` fails the boot gate when captured `fn --help`, `fn init`, or `fn serve` stderr carries any NUL byte.
 
 ## Run-audit sink diagnostics (`GET /api/diagnostics/run-audit-sink`)
 

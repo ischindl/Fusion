@@ -8,6 +8,7 @@ import {
   classifyInitFailure,
   createBootSmokePhasePlan,
   createChildEnv,
+  findNulInStderr,
   runPreflightPhasePlan,
   removeTempDir,
 } from "../boot-smoke.mjs";
@@ -122,13 +123,31 @@ test("init liveness classification preserves every failing state", () => {
 });
 
 test("isolated child env strips inherited database and port controls", () => {
-  const env = createChildEnv({ DATABASE_URL: "postgres://ambient", FUSION_NO_EMBEDDED_PG: "1", PORT: "4040", KEEP: "yes" }, "/tmp/fusion-home");
+  const env = createChildEnv({ DATABASE_URL: "postgres://ambient", FUSION_NO_EMBEDDED_PG: "1", PORT: "4040", FUSION_LOG_SEVERITY_MARKERS: "1", KEEP: "yes" }, "/tmp/fusion-home");
   assert.equal(env.HOME, "/tmp/fusion-home");
   assert.equal(env.FUSION_SKIP_ONBOARDING, "1");
   assert.equal(env.DATABASE_URL, undefined);
   assert.equal(env.FUSION_NO_EMBEDDED_PG, undefined);
   assert.equal(env.PORT, undefined);
+  // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): the NUL gate proves the DEFAULT-mode
+  // contract, so the marker opt-in must not leak from the ambient shell into the child.
+  assert.equal(env.FUSION_LOG_SEVERITY_MARKERS, undefined);
   assert.equal(env.KEEP, "yes");
+});
+
+// FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): the end-to-end symptom gate — captured
+// child stderr carrying a NUL byte names RUFU-666 as the refusal; byte-clean or empty stays null.
+test("findNulInStderr refuses NUL-bearing child stderr with a named RUFU-666 reason", () => {
+  const marked = "\u0000fnlvl=info\u0000[startup-factory] postgres\n";
+  assert.equal(findNulInStderr(marked), "child stderr carries NUL bytes (severity-marker leak, RUFU-666)");
+});
+
+test("findNulInStderr returns null for clean stderr", () => {
+  assert.equal(findNulInStderr("boot-smoke: GET /api/health 200 on :4123\n"), null);
+});
+
+test("findNulInStderr returns null for empty stderr", () => {
+  assert.equal(findNulInStderr(""), null);
 });
 
 test("importing boot-smoke.mjs does not boot a server (main() guard holds)", async () => {

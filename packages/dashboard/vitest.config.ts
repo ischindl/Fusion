@@ -649,6 +649,11 @@ export default defineConfig({
       "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Route tests use the Node-only factory subpath; browser components remain on the pure descriptor barrel.
       "@fusion/core/mcp-builtin-servers": resolve(__dirname, "../core/src/config/mcp-builtin-servers.ts"),
+      /*
+      FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+      Server-lane tests reach the engine logger through the `@fusion/engine` source alias, and that logger imports the NUL-marker emission gate by subpath. Ordered before the broader `@fusion/core` alias, which Vite would otherwise apply by prefix and fail to resolve.
+      */
+      "@fusion/core/log-severity-markers": resolve(__dirname, "../core/src/process/log-severity-markers.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),
       "@fusion/engine": resolve(__dirname, "../engine/src/index.ts"),
       "@fusion/plugin-sdk": resolve(__dirname, "../plugin-sdk/src/index.ts"),

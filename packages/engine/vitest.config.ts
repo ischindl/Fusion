@@ -18,6 +18,8 @@ export default defineConfig({
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Preserve the Node-only factory subpath without leaking it through the browser-safe core barrel.
       "@fusion/core/mcp-builtin-servers": resolve(__dirname, "../core/src/config/mcp-builtin-servers.ts"),
+      // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): engine logger.ts imports the marker-emission gate by subpath; alias it to source (before the root alias, which Vite would apply by prefix and fail to resolve) so a source checkout without built core dist resolves.
+      "@fusion/core/log-severity-markers": resolve(__dirname, "../core/src/process/log-severity-markers.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),
       "@fusion/test-utils": resolve(__dirname, "../core/src/__test-utils__/workspace.ts"),
       "@fusion/engine": resolve(__dirname, "./src/index.ts"),
@@ -162,6 +164,8 @@ export default defineConfig({
           FN-7670's per-root design never could), and the closure rationale.
           */
           alias: {
+            // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): keep before the gate's root `@fusion/core` alias — the root key would prefix-rewrite this subpath into core.mjs/... and fail resolution for engine logger.ts's marker-gate import.
+            "@fusion/core/log-severity-markers": resolve(__dirname, "../core/src/process/log-severity-markers.ts"),
             "@fusion/core": resolve(__dirname, "../core/.gate-bundle/core.mjs"),
           },
         },

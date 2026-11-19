@@ -182,6 +182,8 @@ export default defineConfig({
       and keep it BEFORE the `@fusion/core` root alias so the subpath is not swallowed.
       */
       { find: /^@fusion\/core\/mcp-builtin-servers$/, replacement: resolve(__dirname, "../core/src/config/mcp-builtin-servers.ts") },
+      // FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666): log-sink.ts and engine logger.ts import the NUL-marker emission gate by subpath; alias to source (before the root alias) so CLI tests resolve it without built core dist.
+      { find: /^@fusion\/core\/log-severity-markers$/, replacement: resolve(__dirname, "../core/src/process/log-severity-markers.ts") },
       { find: /^@fusion\/core$/, replacement: resolve(__dirname, "../core/src/index.ts") },
       { find: /^@fusion\/dashboard\/planning$/, replacement: resolve(__dirname, "../dashboard/src/planning.ts") },
       { find: /^@fusion\/dashboard$/, replacement: resolve(__dirname, "../dashboard/src/index.ts") },

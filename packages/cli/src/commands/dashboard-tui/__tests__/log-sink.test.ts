@@ -201,6 +201,27 @@ describe("DashboardLogSink.captureConsole", () => {
     expect(console.error).toBe(originalError);
   });
 
+  /*
+  FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+  RUFU-666 half 2: with capture released, no marker consumer exists, so a structured logger
+  line reaching the RESTORED console.error must be byte-clean — this is the exact state a
+  post-dashboard shell or a piped CLI run is in, and NULs there made grep report binary input.
+  */
+  it("releaseConsole stops marker emission: logger output on the restored console is NUL-free", () => {
+    const sink = new DashboardLogSink();
+    sink.captureConsole();
+    sink.releaseConsole();
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      createLogger("executor").log("after release");
+      expect(errorSpy).toHaveBeenCalledWith("[executor] after release");
+      expect(errorSpy.mock.calls[0]?.[0]).not.toContain("\u0000");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("captureConsole is idempotent (calling twice does not double-wrap)", () => {
     const sink = new DashboardLogSink();
     sink.captureConsole();
@@ -295,6 +316,25 @@ describe("formatConsoleArgs", () => {
     expect(prefix).toBe("executor");
     expect(level).toBe("error");
     expect(message).toBe("task failed");
+  });
+
+  /*
+  FNXC:LogSeverityMarkers 2026-11-19-02:47 (RUFU-666):
+  Default-mode producers emit marker-free, so capture must still classify them: the console
+  channel is the only severity signal left (fallbackLevel). These two cases pin the marked vs
+  unmarked split that keeps the TUI log pane's info/warn/error rendering correct in both modes.
+  */
+  it("classifies a marker-free payload by the console channel fallback", () => {
+    const { message, prefix, level } = formatConsoleArgs(["[merger] merged cleanly"], "error");
+    expect(prefix).toBe("merger");
+    expect(level).toBe("error");
+    expect(message).toBe("merged cleanly");
+  });
+
+  it("classifies a marked payload over the channel fallback", () => {
+    const { message, level } = formatConsoleArgs(["\u0000fnlvl=info\u0000[executor] routine"], "error");
+    expect(level).toBe("info");
+    expect(message).toBe("routine");
   });
 
   it("stringifies objects via JSON", () => {
