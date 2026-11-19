@@ -21,6 +21,7 @@ import {
   buildBootSmokeStep,
   buildArtifactBootstrapStep,
   buildStaticCheckStep,
+  buildDistAssetContractStep,
   buildVerifyPlan,
   batchVerifySteps,
   runStep,
@@ -221,6 +222,29 @@ test("buildStaticCheckStep: invokes a canonical validator directly through Node"
   assert.equal(step.id, "static-check:check-changeset-format");
 });
 
+/*
+FNXC:SchemaAssetPairing 2026-11-17-16:28 (RUFU-548):
+The built-artifact migration-asset contract step runs the same `scripts/check-dist-migration-assets.mjs`
+entry point the gate test spawns. These pins hold its placement contract: it must run AFTER every
+build step (its subject is what the builds emitted) and BEFORE boot-smoke (a dist that cannot honor
+its own ceiling is not worth booting), and it must NOT be folded into the canonical pretest validators
+those run in a fresh worktree whose dist is absent, where the check would be vacuous.
+*/
+test("buildDistAssetContractStep: runs the built-artifact migration-asset check via node", () => {
+  const step = buildDistAssetContractStep("/repo/scripts/check-dist-migration-assets.mjs", NODE);
+  assert.equal(step.command, NODE);
+  assert.deepEqual(step.args, ["/repo/scripts/check-dist-migration-assets.mjs"]);
+  assert.equal(step.kind, "dist-migration-assets");
+  assert.equal(step.id, "dist-migration-assets");
+});
+
+test("the built-artifact migration-asset check is NOT a canonical pretest validator", () => {
+  // It reads built dist, so pretest (fresh worktrees) would run it vacuously; it belongs in the
+  // post-build verify:fast plan instead. Pinning the absence stops a future edit from quietly
+  // adding it to the pretest set and reintroducing the false-green the whole card removes.
+  assert.ok(!PRETEST_STATIC_CHECK_SCRIPTS.includes("scripts/check-dist-migration-assets.mjs"));
+});
+
 // ---------------------------------------------------------------------------
 // buildVerifyPlan
 // ---------------------------------------------------------------------------
@@ -232,6 +256,7 @@ test("buildVerifyPlan: defaults to every canonical pretest validator before esta
     ...STATIC_STEP_IDS,
     "bootstrap-artifacts",
     "build:@runfusion/fusion",
+    "dist-migration-assets",
     "boot-smoke",
   ]);
 
@@ -278,7 +303,7 @@ test("documented pretest validator guard rejects missing, stale, reordered, and 
 
 test("buildVerifyPlan: no packages -> CLI prerequisite build then boot smoke", () => {
   const plan = buildVerifyPlan({ packages: [], staticCheckScripts: [], bootSmokeScriptPath: SMOKE, nodeBin: NODE });
-  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "build:@runfusion/fusion", "boot-smoke"]);
+  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "build:@runfusion/fusion", "dist-migration-assets", "boot-smoke"]);
   assert.deepEqual(plan.eligiblePackages, []);
   assert.deepEqual(plan.requiredBootBuildPackages, ["@runfusion/fusion"]);
 });
@@ -296,6 +321,7 @@ test("buildVerifyPlan: typecheck for all eligible, then builds, then boot smoke 
     "build:@fusion/engine",
     "build:@fusion/core",
     "build:@runfusion/fusion",
+    "dist-migration-assets",
     "boot-smoke",
   ]);
 });
@@ -312,6 +338,7 @@ test("buildVerifyPlan: a package without a build script gets a typecheck step bu
     "typecheck:@fusion/test-only",
     "build:@fusion/engine",
     "build:@runfusion/fusion",
+    "dist-migration-assets",
     "boot-smoke",
   ]);
   // The test-only package's typecheck uses the tsc fallback (no typecheck script).
@@ -329,6 +356,7 @@ test("buildVerifyPlan: skips synthetic typecheck for JavaScript alias packages w
     "bootstrap-artifacts",
     "typecheck:@runfusion/fusion",
     "build:@runfusion/fusion",
+    "dist-migration-assets",
     "boot-smoke",
   ]);
 });
@@ -348,7 +376,7 @@ test("buildVerifyPlan: desktop/mobile are excluded from scoped steps but boot sm
   });
   assert.deepEqual(plan.eligiblePackages, ["@fusion/engine"]);
   assert.deepEqual(plan.excludedPackages.sort(), ["@fusion/desktop", "@fusion/mobile"]);
-  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "typecheck:@fusion/engine", "build:@fusion/engine", "build:@runfusion/fusion", "boot-smoke"]);
+  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "typecheck:@fusion/engine", "build:@fusion/engine", "build:@runfusion/fusion", "dist-migration-assets", "boot-smoke"]);
 });
 
 test("VERIFY_EXCLUDED_PACKAGES mirrors the root build/typecheck exclusions", () => {
@@ -408,7 +436,7 @@ test("buildVerifyPlan: scopes to exactly the packages resolveAffectedPackages se
 
   const packageMeta = new Map([["@fusion/engine", { hasTypecheck: true, hasBuild: true }]]);
   const plan = buildVerifyPlan({ packages: affected, packageMeta, staticCheckScripts: [], bootSmokeScriptPath: SMOKE, nodeBin: NODE });
-  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "typecheck:@fusion/engine", "build:@fusion/engine", "build:@runfusion/fusion", "boot-smoke"]);
+  assert.deepEqual(stepIds(plan), ["bootstrap-artifacts", "typecheck:@fusion/engine", "build:@fusion/engine", "build:@runfusion/fusion", "dist-migration-assets", "boot-smoke"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -444,6 +472,7 @@ test("batchVerifySteps groups consecutive parallel steps and isolates serial one
       [null, ["build:@fusion/engine"]],
       [null, ["build:@fusion/dashboard"]],
       [null, ["build:@runfusion/fusion"]],
+      [null, ["dist-migration-assets"]],
       [null, ["boot-smoke"]],
     ],
   );

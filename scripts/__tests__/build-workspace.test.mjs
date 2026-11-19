@@ -35,7 +35,10 @@ function createWorkspace() {
   writeFileSync(path.join(root, "scripts", "lib", "content-hash.mjs"), "export {};\n");
   writePackage(root, "packages/core", {
     name: "@fusion/core",
-    scripts: { build: "tsc" },
+    // RUFU-548: the real core build is no longer bare `tsc` — it stages its migration SQL.
+    // Keep the fixture faithful so a future build-script-sensitive rule is exercised on the
+    // script this repository actually ships.
+    scripts: { build: "tsc && node ../../scripts/lib/stage-postgres-migrations.mjs --dest=packages/core/dist/postgres/migrations" },
   });
   mkdirSync(path.join(root, "packages/core", "src"), { recursive: true });
   writeFileSync(path.join(root, "packages/core", "src", "index.ts"), "export const core = 1;\n");
@@ -82,6 +85,21 @@ function writePluginDist(root, dir = "plugins/fusion-plugin-alpha") {
   writeFileSync(path.join(root, dir, "dist", "index.js"), "export const alpha = 1;\n");
 }
 
+/*
+FNXC:SchemaAssetPairing 2026-11-17-16:23 (RUFU-548):
+A FRESH @fusion/core dist is no longer just the tsc JS mirror: the build stages its migration
+SQL and dist/postgres/migrations/0000_initial.sql is a registered required output, so a warm
+skip may rest on that staged half being present. Tests that expect a warm skip must fabricate
+the FULL required set and thereby state the staged asset exists; a fixture emitting only
+dist/*.js now (correctly) forces a `missing-output` rebuild — that refusal is the drift class
+this card removes, so the fixtures must not silently re-encode the pre-staging shape.
+*/
+function writeCoreDist(root) {
+  mkdirSync(path.join(root, "packages/core", "dist", "postgres", "migrations"), { recursive: true });
+  writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+  writeFileSync(path.join(root, "packages/core", "dist", "postgres", "migrations", "0000_initial.sql"), "-- baseline\n");
+}
+
 test("discovers workspace packages and classifies plugin directories", () => {
   withWorkspace((root) => {
     const packages = discoverWorkspacePackages(root);
@@ -102,9 +120,9 @@ test("discovers workspace packages and classifies plugin directories", () => {
 test("unchanged packages with outputs and cache are skipped (plugins and non-plugins)", () => {
   withWorkspace((root) => {
     writePluginDist(root);
-    // Core required outputs from src/index.ts → packages/core/dist/index.js
-    mkdirSync(path.join(root, "packages/core", "dist"), { recursive: true });
-    writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+    // Core required outputs from src/index.ts → packages/core/dist/index.js, plus the
+    // staged migration asset RUFU-548 registered as required.
+    writeCoreDist(root);
     initGit(root);
     const packages = discoverWorkspacePackages(root);
     const plugin = packageByName(packages, "@fusion-plugin-examples/alpha");
@@ -133,8 +151,7 @@ test("unchanged packages with outputs and cache are skipped (plugins and non-plu
 test("force rebuilds packages even when cache matches", () => {
   withWorkspace((root) => {
     writePluginDist(root);
-    mkdirSync(path.join(root, "packages/core", "dist"), { recursive: true });
-    writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+    writeCoreDist(root);
     initGit(root);
     const packages = discoverWorkspacePackages(root);
     const plugin = packageByName(packages, "@fusion-plugin-examples/alpha");
@@ -354,8 +371,7 @@ function writeBuildCache(root, entries) {
 test("an unusable git scan builds with a named reason instead of reporting unchanged", () => {
   withWorkspace((root) => {
     writePluginDist(root);
-    mkdirSync(path.join(root, "packages/core", "dist"), { recursive: true });
-    writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+    writeCoreDist(root);
     initGit(root);
     const packages = discoverWorkspacePackages(root);
     const core = packageByName(packages, "@fusion/core");
@@ -383,8 +399,7 @@ test("an unusable git scan builds with a named reason instead of reporting uncha
 test("a poisoned cache entry is outlived by the first working scan", () => {
   withWorkspace((root) => {
     writePluginDist(root);
-    mkdirSync(path.join(root, "packages/core", "dist"), { recursive: true });
-    writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+    writeCoreDist(root);
     initGit(root);
     const packages = discoverWorkspacePackages(root);
     const core = packageByName(packages, "@fusion/core");
@@ -422,8 +437,7 @@ test("detectPoisonedSkipHash fires only on the shared zero-file digest", () => {
 test("main refuses exit 0 when every skip rests on the zero-file digest", () => {
   withWorkspace((root) => {
     writePluginDist(root);
-    mkdirSync(path.join(root, "packages/core", "dist"), { recursive: true });
-    writeFileSync(path.join(root, "packages/core", "dist", "index.js"), "export const core = 1;\n");
+    writeCoreDist(root);
     const digest = emptyScanDigest(root);
     writeBuildCache(root, {
       "@fusion/core": { sourceHash: digest },

@@ -555,6 +555,17 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
               reports no thinking capability, and pre-filling from heuristics is forbidden
               (the operator sets the format explicitly).
               */
+              /*
+              FNXC:CustomProviderImageSupport 2026-11-18-22:58 (RUFU-548):
+              `ModelRow.supportsImages` is a required field (the checkbox below reads it
+              unguarded), and the probe reports no image capability — the same fact this block
+              already states about thinking flags, which is why the rule here is a blank start
+              and an explicit operator opt-in, never a heuristic pre-fill. `false` is the value
+              both sibling constructors already agree on: `emptyModelRow()` and
+              `modelRowFromModel()` (which maps presence with `=== true`). Omitting it is not a
+              stylistic choice — it is TS2741, and it red-gated `pnpm verify:fast` and the CI
+              Typecheck job for every card.
+              */
               const row: ModelRow = {
                 id: discoveredId,
                 name: discovered.name ?? discoveredId,
@@ -565,6 +576,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                 timeoutSeconds: "",
                 thinkingFormat: "",
                 noThinkingParams: false,
+                supportsImages: false,
               };
               rows.push(row);
               indexById.set(discoveredId, rows.length - 1);

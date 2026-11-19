@@ -23,7 +23,10 @@ a live database belongs in the PostgreSQL suite instead.
 */
 
 import { describe, it, expect } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { SCHEMA_BASELINE_VERSION } from "../postgres/schema-applier.js";
@@ -256,6 +259,124 @@ describe("schema-applier: drift probes stay analysis-safe on absent relations", 
     // A stale allowlist is how the next writer re-adds a reference nobody reviewed.
     for (const approved of approvedRangeRefs) {
       expect(observed).toContain(approved);
+    }
+  });
+});
+
+/*
+FNXC:SchemaAssetPairing 2026-11-17-16:28 (RUFU-548):
+The BUILT-ARTIFACT half of the migration integrity invariant, added to THIS file rather than
+forked into a new one — the header above records why: this file is DB-free, fixture-free, and
+runs in `test:unit-gate`, and the ceiling drift it guards broke every Fusion startup twice
+(0064, then 0065). Those episodes guarded the SRC half (ceiling vs `src/postgres/migrations`).
+RUFU-548 measured the mirror-image blind spot: `packages/core/dist/postgres/schema-applier.js`
+declaring `SCHEMA_BASELINE_VERSION = "0089"` while its own `dist/postgres/migrations` stopped at
+0087 (and, in the primary checkout, 0087 over assets ending at 0073) — invisible to every lane,
+because bare `tsc` never copied `.sql` and no check read the EMITTED artifact. The runtime reads
+exactly that artifact (`join(__dirname, "migrations", ...)`), so the src half alone cannot keep
+the field failure away.
+
+These tests spawn the REAL validator (`scripts/check-dist-migration-assets.mjs`, the same
+entry point `pnpm verify:fast` runs) against SYNTHETIC trees under os.tmpdir() — never against
+this checkout's dist, which may legitimately be absent or pre-build in a fresh worktree (that
+is also why the validator is not a pretest validator). The fixture pairs are the symptom's own
+shape: ceiling above the highest staged asset must exit non-zero naming the package directory
+and the missing versions; a matching tree must exit zero. Value-agnostic by construction: the
+fixture's ceiling is a fixture-local string, and no assertion here can rot when
+SCHEMA_BASELINE_VERSION advances. Determinism stays gate-grade: no DB, no network, no timers,
+no fixture larger than 4 files, and each spawn is a plain short-lived node process.
+*/
+describe("schema-applier: built dist must honor its emitted ceiling (RUFU-548)", () => {
+  const validatorPath = fileURLToPath(
+    new URL("../../../../scripts/check-dist-migration-assets.mjs", import.meta.url),
+  );
+  readFileSync(validatorPath, "utf8"); // premise: the gate runs the SAME script verify:fast runs.
+
+  const R3 = ["0000_initial.sql", "0001_alpha.sql", "0002_beta.sql"];
+  const claim = (ceiling: string, registry: string[]): string =>
+    [
+      `export const SCHEMA_BASELINE_VERSION = "${ceiling}";`,
+      ...registry.map((b, i) => `const MIG_${i}_PATH = join(MIGRATIONS_DIR, "${b}");`),
+    ].join("\n");
+
+  /** Minimal synthetic tree: only the core pair is built; the validator skips the absent CLI pair. */
+  function buildFixtureRoot(registry: string[], assets: string[], ceiling: string): string {
+    const root = mkdtempSync(join(tmpdir(), "fusion-gate-dist-assets-"));
+    const dist = join(root, "packages", "core", "dist", "postgres");
+    mkdirSync(join(dist, "migrations"), { recursive: true });
+    writeFileSync(join(dist, "schema-applier.js"), claim(ceiling, registry), "utf8");
+    for (const asset of assets) writeFileSync(join(dist, "migrations", asset), "-- sql\n", "utf8");
+    return root;
+  }
+
+  function runValidator(root: string): { status: number | null; stderr: string } {
+    const result = spawnSync(process.execPath, [validatorPath, "--root", root], {
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    return { status: result.status, stderr: result.stderr };
+  }
+
+  it("refuses the measured RUFU-548 shape: emitted ceiling above the highest staged asset", () => {
+    // The symptom itself: the emitted registry references 0000-0002 and the ceiling reads 0002,
+    // while the staged assets stop at 0001 (the 0089-over-0087 / 0087-over-0073 drift,
+    // fixture-scaled). The runtime would boot, find no 0002 asset, and every store open would
+    // die in assertBinaryNotOlderThanDatabase.
+    const root = buildFixtureRoot(R3, R3.slice(0, 2), "0002");
+    try {
+      const { status, stderr } = runValidator(root);
+      expect(status).not.toBe(0);
+      expect(stderr).toContain("@fusion/core");
+      expect(stderr).toContain("0002_beta.sql"); // names the missing migration version
+      expect(stderr).toContain("0002"); // names the ceiling it cannot honor
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes a correctly built tree and evaluates it (a green run proves it looked)", () => {
+    const root = buildFixtureRoot(R3, R3, "0002");
+    try {
+      const { status, stderr } = runValidator(root);
+      expect(status).toBe(0);
+      expect(stderr).not.toContain("FAIL");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /*
+  FNXC:SchemaAssetPairing 2026-11-18-22:48 (RUFU-548):
+  Per-package attribution, asserted in the gate lane and not only in the validator's own suite.
+  The migration registry is materialized per build output, so the two built packages are two
+  separate contracts: a healthy `@fusion/core` dist must never appear to vouch for a sick
+  `@runfusion/fusion` dist in the same tree. Measured 2026-10-04 the opposite confusion was the
+  incident itself — two same-named core dists in sibling worktrees carried different ceilings,
+  and nothing on any lane could say which tree had been checked. This is the cheapest assertion
+  that the guard attributes a failure to the package directory it actually evaluated.
+  */
+  it("attributes the failure to the sick package only: a healthy core never vouches for a broken CLI dist", () => {
+    const root = mkdtempSync(join(tmpdir(), "fusion-gate-dist-assets-two-pkg-"));
+    try {
+      // Healthy pair: emitted ceiling 0002, every referenced asset present.
+      const coreDist = join(root, "packages", "core", "dist", "postgres");
+      mkdirSync(join(coreDist, "migrations"), { recursive: true });
+      writeFileSync(join(coreDist, "schema-applier.js"), claim("0002", R3), "utf8");
+      for (const asset of R3) writeFileSync(join(coreDist, "migrations", asset), "-- sql\n", "utf8");
+
+      // Sick pair: the top-level bundle claims 0002 but its own dist/migrations stops at 0001.
+      const cliDist = join(root, "packages", "cli", "dist");
+      mkdirSync(join(cliDist, "migrations"), { recursive: true });
+      writeFileSync(join(cliDist, "bin.js"), claim("0002", R3), "utf8");
+      for (const asset of R3.slice(0, 2)) writeFileSync(join(cliDist, "migrations", asset), "-- sql\n", "utf8");
+
+      const { status, stderr } = runValidator(root);
+      expect(status).not.toBe(0);
+      expect(stderr).toContain("@runfusion/fusion");
+      expect(stderr).toContain("0002_beta.sql");
+      expect(stderr).not.toContain("FAIL @fusion/core");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

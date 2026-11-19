@@ -11,31 +11,33 @@
  *
  * Requires packages/core to be built (`pnpm --filter @fusion/core build`).
  */
-import { cpSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { stagePostgresMigrations } from "./stage-postgres-migrations.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
  * Stage the PostgreSQL migration SQL into core's dist. `tsc` emits
- * only JS, so dist lacks src/postgres/migrations/*.sql; the schema applier
- * resolves them relative to the compiled file (__dirname/migrations). The CLI
- * bundle does the same staging in packages/cli/tsup.config.ts.
+ * only JS, so a bare build used to leave dist without src/postgres/migrations/*.sql;
+ * the schema applier resolves them relative to the compiled file (__dirname/migrations).
+ *
+ * FNXC:SchemaAssetPairing 2026-11-17-16:23 (RUFU-548): now delegates to the shared
+ * staging helper so every writer produces the SAME remove-before-copy mirror — the
+ * previous additive copy here could never purge a stale basename left behind when a
+ * migration file is renamed, which is the same drift class the new
+ * scripts/check-dist-migration-assets.mjs validator refuses. src-missing keeps the
+ * historical no-op (an import of an already-built dist must not fail on tree shape).
+ * The FNXC:AutomationIsolation 2026-07-13-22:37 requirement — stage EVERY versioned
+ * migration, not merely the initial baseline — is carried by the helper's whole-directory
+ * mirror.
  */
 function ensureMigrationsStaged() {
-  const src = resolve(repoRoot, "packages/core/src/postgres/migrations");
-  const dest = resolve(repoRoot, "packages/core/dist/postgres/migrations");
-  /*
-   * FNXC:AutomationIsolation 2026-07-13-22:37:
-   * Operational scripts must stage every versioned PostgreSQL migration, not merely the initial baseline, so an already-initialized database receives the automation project-isolation upgrade before scripts open it.
-   */
-  const requiredMigrations = existsSync(src)
-    ? readdirSync(src).filter((file) => file.endsWith(".sql"))
-    : [];
-  if (existsSync(src) && requiredMigrations.some((file) => !existsSync(resolve(dest, file)))) {
-    cpSync(src, dest, { recursive: true });
-  }
+  stagePostgresMigrations({
+    repoRoot,
+    destDir: resolve(repoRoot, "packages/core/dist/postgres/migrations"),
+  });
 }
 
 /* FNXC:OperatorScriptLaneAssumptions 2026-07-31-02:10: exported so operator scripts can reach core

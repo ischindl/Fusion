@@ -79,7 +79,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ../../scripts/lib/stage-postgres-migrations.mjs --dest=packages/core/dist/postgres/migrations",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --silent=passed-only --reporter=dot",
     "test:embedded-postgres": "vitest run src/__tests__/postgres/embedded-lifecycle.test.ts --silent=passed-only --reporter=dot",

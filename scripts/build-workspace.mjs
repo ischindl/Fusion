@@ -312,6 +312,20 @@ export function requiredPluginOutputs(rootDir, dir, manifest) {
     outputs.add("dist/bin.js");
     outputs.add("dist/extension.js");
   }
+  /*
+  FNXC:SchemaAssetPairing 2026-11-17-16:23 (RUFU-548):
+  Core's build now stages its migration SQL (bare `tsc` never copied `.sql`, which is how a
+  built `@fusion/core` could declare a SCHEMA_BASELINE_VERSION its dist assets could not
+  honor). Registering the baseline asset as a required output closes the warm-skip hole: a
+  dist whose JavaScript predates staging (or whose migrations were deleted) still presents
+  every tsc-mapped `.js` and a matching source hash, so without this line the skip cache
+  would call a migration-less dist fresh and never run the new staging step.
+  `0000_initial.sql` is the baseline filename, not a ceiling version — it never changes as
+  migrations land, keeping the guard value-agnostic like the validator.
+  */
+  if (manifest.name === "@fusion/core") {
+    outputs.add("dist/postgres/migrations/0000_initial.sql");
+  }
   if (outputs.size === 0) outputs.add("dist/index.js");
   return [...outputs].sort((a, b) => a.localeCompare(b)).map((output) => path.posix.join(dir, output));
 }

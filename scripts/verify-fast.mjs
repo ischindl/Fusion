@@ -52,6 +52,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const bootSmokeScriptPath = path.join(scriptDir, "boot-smoke.mjs");
 const artifactBootstrapScriptPath = path.join(scriptDir, "ensure-test-artifacts.mjs");
+const distAssetCheckScriptPath = path.join(scriptDir, "check-dist-migration-assets.mjs");
 const packageManifestPath = path.join(repoRoot, "package.json");
 
 /*
@@ -170,6 +171,33 @@ export function buildBootSmokeStep(smokeScriptPath, nodeBin = process.execPath) 
   };
 }
 
+/*
+FNXC:SchemaAssetPairing 2026-11-17-16:28 (RUFU-548):
+One check of the built-artifact schema-ceiling contract (`scripts/check-dist-migration-assets.mjs`),
+placed in the plan AFTER every build step and BEFORE boot-smoke: it reads exactly what the just-
+completed builds emitted, so a build whose `SCHEMA_BASELINE_VERSION` claim its `dist/postgres/
+migrations` (core) or `dist/migrations` (CLI) cannot honor fails `verify:fast` at the seam that
+ships the build — the field symptom was every store boot refusing to start.
+
+It is deliberately NOT one of PRETEST_STATIC_CHECK_SCRIPTS: those run in `pnpm test`'s pretest in
+fresh worktrees whose `dist` is absent, and this check's subject IS the built artifact — as a
+pretest validator it would either skip vacuously (claiming coverage it did not measure) or refuse
+legitimate pre-build trees. Standing after the builds makes every verdict about real bytes; a
+not-built pair is a named SKIP, never a silent pass, and the DB-free gate half pins the refusal
+shape itself (packages/core/src/__tests__/migration-wiring-integrity.test.ts).
+*/
+export function buildDistAssetContractStep(checkScriptPath = distAssetCheckScriptPath, nodeBin = process.execPath) {
+  return {
+    id: "dist-migration-assets",
+    kind: "dist-migration-assets",
+    pkg: null,
+    label: "built dist migration assets honor their emitted schema ceiling",
+    command: nodeBin,
+    args: [checkScriptPath],
+    klass: "changed",
+  };
+}
+
 /**
  * Build the prerequisite artifact bootstrap step. It is intentionally first so
  * fresh worktrees have the bundled plugin/runtime dist outputs before scoped
@@ -219,7 +247,8 @@ export function buildStaticCheckStep(checkScript, root = repoRoot, nodeBin = pro
  * Pure planner: turn canonical static checks and the affected package set into
  * an ordered step list. Static checks → bootstrap missing/stale dist artifacts
  * → typecheck (all eligible) → build (eligible with a build script) → required
- * boot-smoke build prerequisites → boot smoke. With no eligible packages this
+ * boot-smoke build prerequisites → built-artifact migration-asset contract → boot smoke.
+ * With no eligible packages this
  * still builds the source-checkout CLI before the smoke so fresh worktrees have
  * `packages/cli/dist/bin.js`.
  *
@@ -230,10 +259,11 @@ export function buildStaticCheckStep(checkScript, root = repoRoot, nodeBin = pro
  * @param {string} [opts.staticCheckRoot]
  * @param {string} opts.bootSmokeScriptPath
  * @param {string} [opts.artifactBootstrapScriptPath]
+ * @param {string} [opts.distAssetCheckScriptPath]
  * @param {string} [opts.nodeBin]
  * @returns {{ eligiblePackages: string[], excludedPackages: string[], requiredBootBuildPackages: string[], steps: object[] }}
  */
-export function buildVerifyPlan({ packages = [], packageMeta = new Map(), staticCheckScripts = PRETEST_STATIC_CHECK_SCRIPTS, staticCheckRoot = repoRoot, bootSmokeScriptPath: smokeScriptPath, artifactBootstrapScriptPath: bootstrapScriptPath = artifactBootstrapScriptPath, nodeBin = process.execPath } = {}) {
+export function buildVerifyPlan({ packages = [], packageMeta = new Map(), staticCheckScripts = PRETEST_STATIC_CHECK_SCRIPTS, staticCheckRoot = repoRoot, bootSmokeScriptPath: smokeScriptPath, artifactBootstrapScriptPath: bootstrapScriptPath = artifactBootstrapScriptPath, distAssetCheckScriptPath: distAssetCheckPath = distAssetCheckScriptPath, nodeBin = process.execPath } = {}) {
   const eligiblePackages = packages.filter((pkg) => !VERIFY_EXCLUDED_PACKAGES.has(pkg));
   const excludedPackages = packages.filter((pkg) => VERIFY_EXCLUDED_PACKAGES.has(pkg));
 
@@ -269,6 +299,14 @@ export function buildVerifyPlan({ packages = [], packageMeta = new Map(), static
     steps.push(buildBuildStep(pkg));
     builtPackages.add(pkg);
   }
+
+  /*
+  FNXC:SchemaAssetPairing 2026-11-17-16:28 (RUFU-548): the built-artifact contract runs after
+  every build (its subject is what the builds just emitted) and before boot-smoke (a dist that
+  cannot honor its own ceiling is not worth booting). See buildDistAssetContractStep for why it
+  is not a pretest validator.
+  */
+  steps.push(buildDistAssetContractStep(distAssetCheckPath, nodeBin));
 
   steps.push(buildBootSmokeStep(smokeScriptPath, nodeBin));
   return { eligiblePackages, excludedPackages, requiredBootBuildPackages, steps };
