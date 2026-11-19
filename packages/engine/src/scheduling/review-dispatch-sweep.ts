@@ -29,6 +29,10 @@ import type {
 } from "@fusion/core";
 import type { HeartbeatMonitor } from "../agent-heartbeat.js";
 import { createLogger } from "../logger.js";
+import {
+  clearReviewDispatchDeclineSignature,
+  recordReviewDispatchDecline,
+} from "./review-dispatch-decline-audit.js";
 
 /*
 FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205):
@@ -429,6 +433,11 @@ export class ReviewDispatchSweep {
   private lastLoggedBucket = new Map<string, ReviewDispatchClass>();
   /** Prefix naming the owning project on every line; empty only when the store has no project id. */
   private readonly projectTag: string;
+  /**
+   * The same project identity `projectTag` renders, kept raw because the durable decline record needs a
+   * `target`, not a log prefix. Resolved once: the store's project binding never changes for a runtime.
+   */
+  private readonly projectId: string | null;
   private readonly now: () => number;
   private readonly e4LogCooldownMs: number;
   private lastE4LogAt = 0;
@@ -442,6 +451,7 @@ export class ReviewDispatchSweep {
 
   public constructor(private readonly options: ReviewDispatchSweepOptions) {
     const projectId = options.projectId ?? options.store.getProjectId?.() ?? null;
+    this.projectId = projectId;
     this.projectTag = projectId ? `[${projectId}] ` : "";
     this.now = options.now ?? Date.now;
     this.e4LogCooldownMs = options.e4LogCooldownMs ?? DEFAULT_E4_LOG_COOLDOWN_MS;
@@ -526,6 +536,43 @@ export class ReviewDispatchSweep {
     what the old single-reviewer rule was really protecting.
     */
     const pool = await this.resolveReviewerPool();
+    /*
+    FNXC:ReviewLaneDeclineAttribution 2026-11-19-22:55 (RUFU-478):
+    An empty pool is a configuration gap that until now existed only as a warn line, so "which projects can
+    nobody review?" was unanswerable after log rotation and a 24-project host read as one dead engine. The
+    durable row is written HERE, at the one place the decline is decided, for two reasons the warn inside
+    `resolveReviewerPool()` cannot serve:
+
+    1. It reads the SAME `pool` array the warn was derived from, so the row and the line cannot disagree,
+       and `waitingCount` is a measured queue depth rather than an estimate.
+    2. Reachability here proves a card is waiting: the `candidates.length === 0` return above means an idle
+       lane never reaches this line at all, so the row is never noise.
+
+    WHY THE WARN STAYS: it is the human-facing surface with its own 5-minute cooldown, while this row is the
+    durable surface deduped per project episode. Two different cadences for two different readers, not one
+    authority duplicated. And why the record is AWAITED while the neighbouring `dispatch-latency` recorder
+    hands off: post-RUFU-453 the void lane's accepted emit is not yet a row, and this record's whole value is
+    being queryable after the fact — see the module header of `review-dispatch-decline-audit.ts`.
+
+    An honest infrastructure failure must never look like a configuration gap: `runPass()` has no try/catch
+    around `resolveReviewerPool()`, so a rejected `listAgents()` leaves `tick()` before this line runs.
+    */
+    if (pool.length === 0) {
+      await recordReviewDispatchDecline({
+        host: this.options.store,
+        projectId: this.projectId,
+        reasonCode: "no-enabled-reviewer",
+        enabledReviewerCount: 0,
+        waitingCount: candidates.length,
+        // Already sorted oldest-review-entry-first by the candidate scan, so the cap keeps the most
+        // starved cards rather than an arbitrary 20.
+        candidateTaskIds: candidates.map((candidate) => candidate.task.id),
+      });
+    } else {
+      // Recovery re-arm: a project that gets a reviewer and later loses one must produce a fresh row
+      // instead of staying suppressed by its own first episode. Uses the pool already in hand.
+      clearReviewDispatchDeclineSignature(this.projectId);
+    }
     const busyRunByReviewer = new Map<string, AgentHeartbeatRun | null>();
     const policyByReviewer = new Map<string, string>();
     /*

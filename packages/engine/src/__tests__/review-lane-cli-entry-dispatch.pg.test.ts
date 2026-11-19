@@ -152,6 +152,19 @@ pgTest("a CLI-shaped move into the review lane gets reviewer work from one sweep
   }
 
   /*
+  FNXC:ReviewLaneDeclineAttribution 2026-11-19-22:55 (RUFU-478):
+  The durable record of "this project has no enabled reviewer, and N cards are waiting". Found by `target`
+  (the project id), never by `task_id`: the episode is project-scoped, so `task_id` is NULL by design and a
+  query keyed on the card would answer a different question. Selected through the harness's admin connection
+  for the same reason as `auditRows` above — drizzle is not a dependency of this package.
+  */
+  function reviewDeclineRows(projectId: string): Promise<Array<{ metadata: unknown; target: string; task_id: string | null }>> {
+    return h!.adminSql`
+      select metadata, target, task_id from project.run_audit_events
+      where mutation_type = 'task:review-dispatch-declined' and target = ${projectId}`;
+  }
+
+  /*
   `board_id` is read here because the reviewer-run row type does not carry it, and it is the column
   this file caught broken: the sweep's first-ever INSERT into `task_reviewer_runs` passed `null` into
   a NOT NULL column, so EVERY dispatch would have failed at the ledger write in production. A unit
@@ -408,6 +421,52 @@ pgTest("a CLI-shaped move into the review lane gets reviewer work from one sweep
     expect(calls).toEqual([]);
     // Surfaced, not silently skipped: the entry event still exists for the operator to find.
     expect(await lifecycleRowCount(taskId)).toBe(1);
+    /*
+    FNXC:ReviewLaneDeclineAttribution 2026-11-19-22:55 (RUFU-478):
+    The E4 state was previously a `log.warn` and nothing else, which is why 214 identical warn lines could not
+    be attributed to a project without reading the code. The row is the durable half. It is durable on return
+    because the recorder awaits the OUTCOME seam (a direct write), not the void lane whose accepted emit is
+    only queued into the sink drain — so no `flushRunAuditSink()` is needed here, and adding one would prove
+    nothing about the lane actually used. Switching the emitter to the buffered lane therefore REQUIRES
+    draining before this query, or the assertion below starts racing a 25 ms window.
+    */
+    const declines = await reviewDeclineRows("proj-cli_entry_no_reviewer");
+    expect(declines).toHaveLength(1);
+    expect(declines[0]!.task_id).toBeNull();
+    expect(declines[0]!.target).toBe("proj-cli_entry_no_reviewer");
+    const decline = declines[0]!.metadata as Record<string, unknown>;
+    expect(decline.reasonCode).toBe("no-enabled-reviewer");
+    expect(decline.enabledReviewerCount).toBe(0);
+    expect(decline.waitingCount).toBe(1);
+    expect(decline.candidateTaskIds).toEqual([taskId]);
+  });
+
+  /*
+  FNXC:ReviewLaneDeclineAttribution 2026-11-19-22:55 (RUFU-478):
+  Positive control. Without it the decline row would be evidence that "a tick happened" rather than evidence
+  of the decline, and the original report — a review lane that looked dead everywhere — is precisely the
+  misreading that a tick-ran row would keep making possible.
+  */
+  it("a project WITH an enabled reviewer writes no review-dispatch decline (PostgreSQL)", async () => {
+    const key = "cli_entry_decline_control";
+    const { store, boardId } = await seedBoard(DEFAULT_VOCAB, key);
+    const taskId = await cardInWip(store, boardId, "decline positive control", DEFAULT_VOCAB);
+
+    await moveLikeTheCli(store, taskId, DEFAULT_VOCAB.review);
+
+    const calls: Array<{ agentId: string; taskId?: string }> = [];
+    const sweep = new ReviewDispatchSweep({
+      store,
+      agentStore: fakeAgentStore([reviewer()]),
+      heartbeatMonitor: fakeHeartbeatMonitor(calls),
+      graceMs: 0,
+    });
+    const result = await sweep.tick(tickAfterEntry());
+
+    // The lane is alive: work was dispatched, so there is nothing to decline.
+    expect(calls).toHaveLength(1);
+    expect(result.dispatched).toContain(taskId);
+    expect(await reviewDeclineRows(`proj-${key}`)).toHaveLength(0);
   });
 
   /*

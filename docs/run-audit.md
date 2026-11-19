@@ -433,6 +433,72 @@ access can read is exactly the leakage rule this event honors. Like RUFU-279's `
 `runtime:heap-ceiling`, the event is declared in the engine's `DatabaseMutationType` but deliberately outside the
 curated delivery-pipeline catalogue table above, which `run-audit-catalogue.test.ts` locks table-for-table.
 
+## Review-lane decline attribution (RUFU-478)
+
+`task:review-dispatch-declined` records the one review-lane state an operator could previously read only in a
+log file: a project whose review lane has cards waiting and **no enabled reviewer to hand them to**.
+`ReviewDispatchSweep` already said it out loud — `E4: no enabled reviewer agent exists; review-lane cards stay
+undispatched by design.` — on a 5-minute cooldown, and wrote nothing durable. Measured on a deployed node: 214
+identical warn lines across ~7 hours, none naming a project, while 12 of 24 projects genuinely have no enabled
+reviewer agent. That made an operator's *configuration* state indistinguishable from a dead engine, and after
+log rotation the evidence was gone entirely.
+
+The row is written once per project episode, from `runPass()` immediately after the reviewer pool resolves,
+and deduped on `(projectId, reasonCode)` — a lane that stays unconfigured for a week costs one row, not one
+per 15 s tick. When the same sweep later resolves a NON-empty pool the episode is cleared, so a project whose
+reviewer was enabled and then removed produces a NEW row instead of being suppressed by its own first episode.
+
+`target` is the **project id** and `task_id` is **NULL by design**: the decline belongs to a project, not a
+card, and a card-scoped row would make "which projects" a scan over every waiting card. A host whose store
+cannot name a project falls back to the stable literal `unknown-project` rather than an empty string, which
+would satisfy the NOT NULL column and still be unattributable. Metadata is ids, counts and one fixed reason
+code: `reasonCode` (the only live value is `no-enabled-reviewer`), `enabledReviewerCount`, `waitingCount`, and
+`candidateTaskIds` capped at 20 in the sweep's own oldest-waiting-first order. **No reviewer names, roster
+contents, warn sentences, or error text are ever recorded** — configuration prose in a store anything with
+query access can read is the same boundary every other row here honors.
+
+Two absences make the row trustworthy rather than decorative. A decline always means a waiting card: the pass
+returns before the pool is ever resolved when the candidate list is empty, so `waitingCount` is a measured
+queue depth and an idle lane writes nothing. And a broken roster read is never reported as a configuration
+gap: the pass has no try/catch around the pool resolution, so a rejecting `listAgents()` leaves the tick before
+this row can be written (`review-dispatch-decline-attribution.test.ts` pins both).
+
+**Which seam writes it, and why that is not an implementation detail.** The recorder awaits
+`emitBoundedRunAuditWithOutcome`, the *outcome* lane, whose write is direct and settles before the tick
+returns. The `dispatch-latency.ts` recorder one file away deliberately takes the *void* lane instead, because
+its whole contract is "never delay the lane it measures" — and since RUFU-453 that lane hands the row to the
+sink drain, so an accepted emit is **not yet a durable row**. Here the record's entire value is being queryable
+after the fact, which is the same reason the `store:open` provenance row chose the awaited variant. The await is
+bounded at 2 s and deduped to one write per episode, so it adds no per-tick latency, and the sweep never
+branches on the result — telemetry still cannot change a dispatch.
+
+The operator queries, both directions:
+
+```sql
+-- Which projects' review lanes cannot run, and since when?
+select target, min(timestamp), max(timestamp), count(*)
+  from project.run_audit_events
+ where mutation_type = 'task:review-dispatch-declined'
+ group by target
+ order by max(timestamp) desc;
+
+-- Is THIS card sitting behind a decline, and which project owns it?
+select target, timestamp
+  from project.run_audit_events
+ where mutation_type = 'task:review-dispatch-declined'
+   and metadata->'candidateTaskIds' @> '["RUFU-0000"]'::jsonb;
+```
+
+Read the row as **diagnosis, not repair**. The fix is an operator action in Agents — create or enable a
+reviewer for that project — and the engine deliberately does not paper over the gap by inventing a reviewer or
+routing the review elsewhere. A project with two or more enabled reviewers dispatches (since RUFU-530 every
+enabled reviewer is a slot), so it writes no decline row; `multiple-enabled-reviewers` was never emitted and is
+retired, so it is not a "missing" arm waiting to be re-added. Like `task:review-verdict-recorded`, RUFU-279's
+`memory:*` trio and RUFU-462's `runtime:heap-ceiling`, this event is declared in the engine's
+`DatabaseMutationType` but deliberately **outside** the curated delivery-pipeline catalogue table above, which
+`run-audit-catalogue.test.ts` locks table-for-table — that is why it is documented here as prose and not as a
+table row.
+
 ## Suspended-run diagnostics
 
 `task:workflow-run-suspended` is emitted by the executor whenever a graph run ends in the `suspended`

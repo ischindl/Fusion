@@ -713,6 +713,27 @@ export type DatabaseMutationType =
   | "task:review-verdict-recorded"
   | "task:review-arbitration"
   | "task:review-convergence-human-escalation"
+  /*
+  FNXC:ReviewLaneDeclineAttribution 2026-11-19-22:55 (RUFU-478):
+  One row per project episode in which `ReviewDispatchSweep` had review-lane cards waiting and NO enabled
+  reviewer to hand them to. The decline itself was already honest — `E4: no enabled reviewer agent exists` —
+  but it existed only as a cooldown-limited `log.warn`, so after log rotation the question that started this
+  card ("which of my projects can nobody review, and for how long?") had no answer and a configuration state
+  was filed as a host-wide engine failure. Measured: 12 of 24 projects on the deployed node have no enabled
+  reviewer, and 214 identical warn lines over ~7 hours carried no project id.
+
+  Metadata is ids, counts and one fixed reason code: { reasonCode, enabledReviewerCount, waitingCount,
+  candidateTaskIds } (ids capped at 20). `reasonCode` has exactly ONE live value, `no-enabled-reviewer` —
+  `multiple-enabled-reviewers` was never emitted and is retired by RUFU-530's pool routing, which dispatches
+  to every enabled reviewer, so a reader must not re-add it as a missing arm. Reviewer names, roster
+  contents, warn sentences and error text never enter this row.
+
+  Declared OUTSIDE the curated delivery-pipeline catalogue (the placement RUFU-531's
+  `task:review-verdict-recorded`, RUFU-279's `memory:*` trio and RUFU-462's `runtime:heap-ceiling` also use);
+  documented as prose in `docs/run-audit.md`, because the catalogue's parity test requires a docs TABLE row
+  per catalogued event and this event is not delivery-pipeline telemetry.
+  */
+  | "task:review-dispatch-declined"
   /**
    * Planning admission was withheld because no top-level slot was reservable.
    * Metadata: { blockedBy, maxConcurrent, claimed, projectRoom, eligibleCount, eligibleTaskIds,
