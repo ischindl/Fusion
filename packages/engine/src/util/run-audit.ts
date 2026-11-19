@@ -1006,6 +1006,34 @@ export type DatabaseMutationType =
   Metadata: { taskId, repo, worktreePath, success, reason, lane, worktreeOutcome, pruned, branch,
   branchOutcome, attempt }. Values are ids/counts/fixed outcomes only; branch cleanup is auditable
   without recording repository prose.
+
+  FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+  One row per examined entry. The fixed `reason` vocabulary is the whole point of the row, because the
+  production shape of this event contradicted itself: an entry whose path was gone, whose branch was
+  proven absent and whose prune succeeded was written as `success:false, reason:"git-teardown-failed"`,
+  and because that non-verdict never settled, the same entry was re-examined with real git and DB work on
+  every maintenance pass (measured ~56 rows in 30 idle minutes across six cards).
+  - `reason: "settled"` - goal reached AND this pass removed something (worktree removed or branch deleted).
+  - `reason: "already-clean"` - goal reached with nothing left to remove (path already gone, branch proven
+    absent or not deletable, prune succeeded). `success:true`, and the entry's disposable `worktreePath` is
+    blanked durably, which is what stops any later pass from examining it again.
+  - `reason: "retained-unsettled"` - the pass did its git work but the entry deliberately stays
+    addressable (a duplicate branch claim, or a path that outlived a successful remove). Not a failure.
+  - `reason: "git-teardown-failed"` - the worktree list/remove/prune phase threw.
+  - `reason: "branch-evidence-failed"` - the worktree phase succeeded and the branch land-proof chain threw.
+  - `reason: "branch-evidence-unknown"` - the `show-ref` presence probe could not be answered.
+  - `reason: "task-directory"` - see below.
+  `success` is exactly "the entry settled", so every failure class and every deliberate retention reports
+  false, and `attempt` grows only on a real failure (a bounded MAX_STARVATION_DROPS budget).
+  `branchOutcome` is the closed enum `not-evaluated` | `absent` | `deleted` | `retained-unlanded` |
+  `retained-non-canonical` | `retained-duplicate-claim` | `evidence-unknown` | `evidence-failed`. Presence
+  comes only from the canonical tri-state probe, so `not-evaluated` (no branch recorded) and
+  `evidence-unknown` (git could not be asked) are never readable as `absent`, and neither settles an entry.
+  The second row of a candidate carries `repo:"task-directory"` plus `taskDirectoryOutcome`, and is now
+  emitted only for an actionable disposition the entry rows do not already explain: `removed`, `retained`
+  (a non-empty leftover this sweep refused to delete), or `retained-legacy-layout`. `not-applicable` and
+  `retained-unsettled-entry` emit nothing, and a repeated identical disposition is recorded once per
+  process, so an idle already-clean workspace board costs this sweep no git calls and no audit rows.
   */
   | "task:reconcile-orphaned-workspace-worktree"
   /**

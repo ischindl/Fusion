@@ -874,6 +874,84 @@ comments, which is where the census looks.
 function isLegacyCompleteColumnForWorkspaceTeardown(column: string): boolean {
   return column === "done";
 }
+/*
+FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+Fixed vocabularies for `task:reconcile-orphaned-workspace-worktree`. They are declared as closed unions
+because the row is the ONLY surface an operator has for this sweep — a stringly-typed extra value would
+be a claim nothing can read. `not-evaluated` and `evidence-unknown` exist so that "we did not ask" and
+"git could not answer" are never spelled as `absent`, which is the absence-of-evidence-as-proof class this
+sweep must not join.
+*/
+/** What the branch phase established. Absence appears only from a proven `show-ref` exit 1. */
+export type WorkspaceBranchTeardownOutcome =
+  | "not-evaluated"
+  | "absent"
+  | "deleted"
+  | "retained-unlanded"
+  | "retained-non-canonical"
+  | "retained-duplicate-claim"
+  | "evidence-unknown"
+  | "evidence-failed";
+/** Which phase failed, or null when no command threw. Decides the failure reason code. */
+type WorkspaceTeardownFailurePhase = "worktree" | "branch-land-proof" | "branch-presence-unknown";
+/** Operator-facing reason for an entry row. */
+type WorkspaceTeardownReason =
+  | "settled"
+  | "already-clean"
+  | "retained-unsettled"
+  | "git-teardown-failed"
+  | "branch-evidence-failed"
+  | "branch-evidence-unknown"
+  | "task-directory";
+/*
+FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+The branch outcomes at which a worktree teardown is DONE. `evidence-unknown`, `evidence-failed`, and
+`not-evaluated` are excluded on purpose: each states that the sweep did not establish the branch's
+disposition, and settling on any of them would blank a disposable path on a non-proof. A declared
+constant rather than an inline literal so the audit contract and the settlement rule cannot drift.
+*/
+const WORKSPACE_TEARDOWN_SETTLED_BRANCH_OUTCOMES: readonly WorkspaceBranchTeardownOutcome[] = [
+  "deleted",
+  "absent",
+  "retained-unlanded",
+  "retained-non-canonical",
+];
+/*
+FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+Disposition of the per-task workspace directory, reported on the `repo:"task-directory"` row. The values
+split the old single `"retained"` because one word hid two different things: a directory whose entries are
+still being torn down (already explained by that entry's own row) and a directory this sweep actually
+refused to remove (explained NOWHERE else). Only the latter two plus a removal are worth a row.
+*/
+export type WorkspaceTaskDirectoryOutcome =
+  | "removed"
+  | "retained"
+  | "retained-legacy-layout"
+  | "retained-unsettled-entry"
+  | "not-applicable";
+/** Dispositions that carry information no entry row already carries. `not-applicable` never emits. */
+const WORKSPACE_TASK_DIRECTORY_REPORTED_OUTCOMES: readonly WorkspaceTaskDirectoryOutcome[] = [
+  "removed",
+  "retained",
+  "retained-legacy-layout",
+];
+/*
+FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+Does this workspace card hold ANYTHING this sweep can reclaim? Settlement retires an entry by blanking its
+`worktreePath` durably, so a card with every path blank and no per-task directory left is addressable by
+nothing here — yet it stayed a candidate forever, costing two merge-queue reads, git work, and an audit row
+on every pass. Exported for the regression test; the caller resolves `taskDir` from the settings it already
+loaded so this filter adds no store round-trip.
+*/
+export function hasWorkspaceTeardownWork(
+  task: { workspaceWorktrees?: Record<string, { worktreePath?: string }> },
+  taskDir: string,
+): boolean {
+  for (const entry of Object.values(task.workspaceWorktrees ?? {})) {
+    if (entry?.worktreePath) return true;
+  }
+  return existsSync(taskDir);
+}
 const worktreeMetadataReconcileLog = createLogger("worktree-metadata-reconcile");
 /*
 FNXC:EngineDiagnostics 2026-07-26-10:25:
@@ -2057,6 +2135,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   records that safe half of teardown until the claim index becomes unambiguous or the entry settles.
   */
   private prunedWorkspaceWorktreeTeardowns = new Set<string>();
+  /*
+  FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+  A per-task directory that can never be removed (non-empty leftover, legacy layout) is a stable fact, so
+  it is recorded once per process rather than once per pass. Keyed `${taskId}::${outcome}`, mirroring how
+  `settledWorkspaceWorktreeTeardowns` suppresses repeat work: the durable blanking is what bounds entry
+  rows across restarts, and this set is the in-memory bound for the directory row.
+  */
+  private workspaceTaskDirectoryNoticed = new Set<string>();
   private finalizeUnprovenWarned = new Set<string>();
   /*
    * FNXC:Lifecycle 2026-07-16-10:30:
@@ -21457,7 +21543,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   root / readdir the temp tree (AGENTS.md forbids unbounded temp walks) — the sweep is bounded by
   construction. Each removal is GUARDED by `activeSessionRegistry.isPathActive(path)` (skip if
   active, mirroring the temp-dir sweep at the AI-merge worktree guard) so a still-live path is never
-  yanked. Emit `task:reconcile-orphaned-workspace-worktree` per removed path.
+  yanked. Emit `task:reconcile-orphaned-workspace-worktree` once per examined entry, stating which phase
+  did what: `already-clean` is a terminal success that settles the entry durably, and each real failure
+  keeps its own reason code (RUFU-476). An entry with nothing reclaimable is never examined at all.
   */
   /*
   FNXC:Workspace 2026-08-15-05:39:
@@ -21487,6 +21575,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       const candidates: Candidate[] = [];
       for (const task of allRows) {
         if (!isWorkspaceTask(task)) continue;
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        The zero-work filter runs BEFORE every per-candidate guard, so a fully retired card never reaches
+        the async veto chain at all. It only REMOVES cards that hold nothing — the guard order below is
+        untouched for any card that does hold work, because a pause, a live session, or queued merge work
+        must still veto destructive teardown in the same sequence that proved it safe.
+        */
+        if (!hasWorkspaceTeardownWork(task, resolveWorkspaceTaskWorktreeDir(this.options.rootDir, settings, task.id))) continue;
         /*
         FNXC:Workspace 2026-08-15-06:11:
         Complete-lane placement proves no retry floor is needed, not that ownership has ended. Every
@@ -21565,9 +21661,36 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         // already removed worktree. Re-evaluate the cheap in-memory claim index next tick instead.
         if (pruneCompleted && branchClaimCount > 1) continue;
         let failed = false;
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        WHICH phase failed is part of the reported fact, not an implementation detail. The worktree
+        phase (list/remove/prune) and the branch land-proof chain have different remedies — the first
+        needs a healthy working tree, the second a readable ref — so a throw in one must never be
+        labelled as the other. Measured production symptom: an entry whose path was already gone and
+        whose branch was already deleted reported `reason:"git-teardown-failed"` because the land-proof
+        `git rev-list <base>..<branch>` exits 128 on a deleted ref, while `worktreeOutcome:"gone"` and
+        `pruned:true` in the same row said the teardown had finished.
+        */
+        let failurePhase: WorkspaceTeardownFailurePhase | null = null;
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        What THIS pass actually did, recorded at the site where the git command succeeded. Without it,
+        a pass that removed nothing and a pass that deleted a worktree and a branch both reported
+        `reason:"settled"`, so an operator could not tell new work from an entry that had already been
+        reclaimed by an earlier pass (or by a human).
+        */
+        let worktreeRemoved = false;
+        let branchDeleted = false;
         let worktreeGone = pruneCompleted || !existsSync(worktreePath);
         let pruned = pruneCompleted;
-        let branchOutcome = "absent";
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        The initializer used to be `"absent"`, which made an unexamined field readable as proof that a
+        branch does not exist — absence that no git command ever established. `"not-evaluated"` is a
+        non-proof sentinel: it is absent from the settlement list, so an entry whose branch was never
+        examined cannot settle.
+        */
+        let branchOutcome: WorkspaceBranchTeardownOutcome = "not-evaluated";
         try {
           if (!worktreeGone) {
             const listing = await this.execWorkspaceTeardownGit("git worktree list --porcelain", { cwd: repoRootDir, timeout: 120_000 });
@@ -21575,6 +21698,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             /* FNXC:Workspace 2026-08-15-05:33: Only the attributed sub-repo may prove a directory removable. */
             if (!owned) continue;
             await this.execWorkspaceTeardownGit(`git worktree remove --force ${shellQuote(worktreePath)}`, { cwd: repoRootDir, timeout: 120_000 });
+            worktreeRemoved = true;
             worktreeGone = !existsSync(worktreePath);
           }
           // Prune is required even for an already-gone path; git otherwise retains .git/worktrees metadata.
@@ -21592,56 +21716,112 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             if (branchClaimCount > 1) branchOutcome = "retained-duplicate-claim";
             else {
               /*
-              FNXC:Workspace 2026-08-15-06:11:
-              A failed row's recorded landed SHA is evidence to verify, never an operator discard
-              instruction. Use the canonical landed predicate against this sub-repo's integration
-              branch; only soft deletion authorizes discard without land proof.
+              FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+              PROBE BEFORE CONSUME. Presence is asked with the canonical tri-state `show-ref` probe
+              (`probeRepoBranch`, whose contract is "unknown is never absence") BEFORE the branch name
+              is handed to any other git command. Land-proof commands consume the ref as an argument,
+              so on a deleted ref `git rev-list <base>..<branch>` throws exit 128 and an already-finished
+              teardown was reported as a failure that then got re-run every maintenance pass. An
+              absent-proven branch has nothing to delete and therefore nothing to prove, so the whole
+              land-proof chain is skipped; an unknown answer deletes nothing and settles nothing.
+              The former `git branch --list <branch>` double-check is gone with this reordering: it
+              asked the same presence question with a weaker two-state answer and could not survive the
+              ordering it was built for. Land-proof behavior for a PRESENT branch is unchanged.
               */
-              let safe = Boolean(task.deletedAt);
-              if (!safe && entry.landedSha) {
-                const baseResolution = await resolveWorkspaceRepoBaseBranch({
-                  mode: "recorded",
-                  repoRootDir,
-                  repoRelPath: repoRel,
-                  task,
-                  settings,
-                  recordedBaseBranch: entry.baseBranch,
-                });
-                await recordWorkspaceBaseBranchDecision({
-                  store: this.store,
-                  audit: createRunAuditor(this.store, {
-                    runId: generateSyntheticRunId("workspace-repo-base-branch", task.id),
-                    agentId: "system:self-healing",
-                    phase: "workspace-repo-base-branch",
-                  }),
-                  task,
-                  repoRelPath: repoRel,
-                  repoAbsPath: repoRootDir,
-                  resolution: baseResolution,
-                  stage: "self-heal",
-                });
-                safe = await isRepoLanded(repoRootDir, baseResolution.branch, entry.landedSha, task.id, branch, entry.revertBoundarySha, task.createdAt);
-              }
-              if (!safe && entry.baseCommitSha) {
-                const count = await this.execWorkspaceTeardownGit(`git rev-list --count ${shellQuote(entry.baseCommitSha)}..${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
-                safe = count.stdout.trim() === "0";
-              }
-              if (safe) {
-                /* FNXC:Workspace 2026-08-15-05:33: An absent ref is already a completed teardown, not retryable failure. */
-                const listed = await this.execWorkspaceTeardownGit(`git branch --list ${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
-                if (!listed.stdout.trim()) branchOutcome = "absent";
-                else {
-                  await this.execWorkspaceTeardownGit(`git branch -D ${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
-                  branchOutcome = "deleted";
+              const presence = await this.probeRepoBranch(repoRootDir, branch);
+              if (presence === "unknown") {
+                branchOutcome = "evidence-unknown";
+                // Unreadable ref evidence is a real failure to reach the goal, so it burns the same
+                // bounded retry budget as a throwing command rather than streaming a row forever.
+                failed = true;
+                failurePhase = "branch-presence-unknown";
+              } else if (presence === "absent") {
+                /* An absence-proven ref is a completed teardown, not a retryable failure. */
+                branchOutcome = "absent";
+              } else {
+                try {
+                  /*
+                  FNXC:Workspace 2026-08-15-06:11:
+                  A failed row's recorded landed SHA is evidence to verify, never an operator discard
+                  instruction. Use the canonical landed predicate against this sub-repo's integration
+                  branch; only soft deletion authorizes discard without land proof.
+                  */
+                  let safe = Boolean(task.deletedAt);
+                  if (!safe && entry.landedSha) {
+                    const baseResolution = await resolveWorkspaceRepoBaseBranch({
+                      mode: "recorded",
+                      repoRootDir,
+                      repoRelPath: repoRel,
+                      task,
+                      settings,
+                      recordedBaseBranch: entry.baseBranch,
+                    });
+                    await recordWorkspaceBaseBranchDecision({
+                      store: this.store,
+                      audit: createRunAuditor(this.store, {
+                        runId: generateSyntheticRunId("workspace-repo-base-branch", task.id),
+                        agentId: "system:self-healing",
+                        phase: "workspace-repo-base-branch",
+                      }),
+                      task,
+                      repoRelPath: repoRel,
+                      repoAbsPath: repoRootDir,
+                      resolution: baseResolution,
+                      stage: "self-heal",
+                    });
+                    safe = await isRepoLanded(repoRootDir, baseResolution.branch, entry.landedSha, task.id, branch, entry.revertBoundarySha, task.createdAt);
+                  }
+                  if (!safe && entry.baseCommitSha) {
+                    const count = await this.execWorkspaceTeardownGit(`git rev-list --count ${shellQuote(entry.baseCommitSha)}..${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
+                    safe = count.stdout.trim() === "0";
+                  }
+                  if (safe) {
+                    await this.execWorkspaceTeardownGit(`git branch -D ${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
+                    branchDeleted = true;
+                    branchOutcome = "deleted";
+                  } else branchOutcome = "retained-unlanded";
+                } catch (err: unknown) {
+                  /*
+                  FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+                  The worktree phase already succeeded here, so this throw is branch evidence, not
+                  worktree teardown. Naming the phase keeps the operator remedy correct.
+                  */
+                  failed = true;
+                  failurePhase = "branch-land-proof";
+                  branchOutcome = "evidence-failed";
+                  log.warn(`reconcileOrphanedWorkspaceWorktrees: branch land-proof failed for ${task.id}/${repoRel} ${branch}: ${err instanceof Error ? err.message : String(err)}`);
                 }
-              } else branchOutcome = "retained-unlanded";
+              }
             }
           } else if (branch) branchOutcome = "retained-non-canonical";
-        } catch (err: unknown) { failed = true; log.warn(`reconcileOrphanedWorkspaceWorktrees: git teardown failed for ${worktreePath}: ${err instanceof Error ? err.message : String(err)}`); }
+        } catch (err: unknown) {
+          failed = true;
+          failurePhase = "worktree";
+          log.warn(`reconcileOrphanedWorkspaceWorktrees: git teardown failed for ${worktreePath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        const teardownReason: WorkspaceTeardownReason =
+          failurePhase === "worktree" ? "git-teardown-failed"
+            : failurePhase === "branch-land-proof" ? "branch-evidence-failed"
+              : failurePhase === "branch-presence-unknown" ? "branch-evidence-unknown"
+                : "settled";
         const attempt = failed ? (this.orphanWorktreeRemovalFailures.get(entryKey) ?? 0) + 1 : this.orphanWorktreeRemovalFailures.get(entryKey) ?? 0;
         if (failed) this.orphanWorktreeRemovalFailures.set(entryKey, attempt);
         /* FNXC:Workspace 2026-08-15-05:33: A duplicate branch claim remains eligible after ambiguity clears. */
-        const settled = !failed && worktreeGone && pruned && ["deleted", "absent", "retained-unlanded", "retained-non-canonical"].includes(branchOutcome);
+        const settled = !failed && worktreeGone && pruned && WORKSPACE_TEARDOWN_SETTLED_BRANCH_OUTCOMES.includes(branchOutcome);
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        A goal reached with nothing left to remove is a TERMINAL CLEAN outcome, not a failure. The row
+        said `success:false, reason:"git-teardown-failed"` for exactly this shape in production, and
+        because `settled` requires `!failed` the entry never reached the durable settlement that blanks
+        its path, so every maintenance pass re-ran `git worktree prune` plus the merge-queue reads for
+        it — measured at ~56 rows in 30 idle minutes. `already-clean` therefore reports success and
+        settles, which is what makes the entry unaddressable on the next pass. A pass that retained a
+        branch it deliberately could not delete is stated as `retained-unsettled` rather than borrowing
+        `"settled"` while the entry stays addressable.
+        */
+        const entryReason: WorkspaceTeardownReason = settled
+          ? (worktreeRemoved || branchDeleted ? "settled" : "already-clean")
+          : (teardownReason === "settled" ? "retained-unsettled" : teardownReason);
         if (settled) {
           this.orphanWorktreeRemovalFailures.delete(entryKey); this.settledWorkspaceWorktreeTeardowns.add(entryKey); cleaned++;
           try {
@@ -21665,13 +21845,22 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             );
           } catch { /* soft-deleted rows may reject best-effort settlement */ }
         }
-        try { await createRunAuditor(this.store, { runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id), agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId, phase: "reconcile-orphaned-workspace-worktree" }).database({ type: "task:reconcile-orphaned-workspace-worktree", target: task.id, metadata: { taskId: task.id, repo: repoRel, worktreePath, success: settled, reason: failed ? "git-teardown-failed" : "settled", lane, worktreeOutcome: worktreeGone ? "gone" : "present", pruned, branch: entry.branch, branchOutcome, attempt } }); } catch { /* audit best-effort */ }
+        try { await createRunAuditor(this.store, { runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id), agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId, phase: "reconcile-orphaned-workspace-worktree" }).database({ type: "task:reconcile-orphaned-workspace-worktree", target: task.id, metadata: { taskId: task.id, repo: repoRel, worktreePath, success: settled, reason: entryReason, lane, worktreeOutcome: worktreeGone ? "gone" : "present", pruned, branch: entry.branch, branchOutcome, attempt } }); } catch { /* audit best-effort */ }
       }
 
       for (const { task, lane } of candidates) {
         const taskDir = resolveWorkspaceTaskWorktreeDir(this.options.rootDir, settings, task.id);
-        let taskDirectoryOutcome: "removed" | "retained" | "not-applicable" = "not-applicable";
-        if (!isLegacyWorkspaceWorktreeLayout(task, taskDir)) {
+        let taskDirectoryOutcome: WorkspaceTaskDirectoryOutcome = "not-applicable";
+        /*
+        FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+        The legacy-layout short-circuit behaves exactly as before — this sweep never removes a
+        pre-single-root directory — but it stops being reported as nothing. `not-applicable` used to be
+        emitted for every candidate on every pass, which is one unconditional audit row per terminal
+        workspace card per maintenance cycle even when the sweep took no decision at all.
+        */
+        if (isLegacyWorkspaceWorktreeLayout(task, taskDir)) {
+          taskDirectoryOutcome = "retained-legacy-layout";
+        } else {
           const entries = Object.entries(task.workspaceWorktrees ?? {});
           const everyEntrySettled = entries.every(([repoRel, entry]) => {
             if (!entry.worktreePath) return true;
@@ -21679,7 +21868,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             return this.settledWorkspaceWorktreeTeardowns.has(entryKey);
           });
           if (!everyEntrySettled) {
-            taskDirectoryOutcome = "retained";
+            // The unsettled entry already emitted its own honest row; a second row saying "retained" adds nothing.
+            taskDirectoryOutcome = "retained-unsettled-entry";
           } else if (existsSync(taskDir)) {
             taskDirectoryOutcome = removeEmptyWorkspaceTaskDirectory(
               taskDir,
@@ -21687,6 +21877,10 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             ) ? "removed" : "retained";
           }
         }
+        if (!WORKSPACE_TASK_DIRECTORY_REPORTED_OUTCOMES.includes(taskDirectoryOutcome)) continue;
+        const directoryNoticeKey = `${task.id}::${taskDirectoryOutcome}`;
+        if (this.workspaceTaskDirectoryNoticed.has(directoryNoticeKey)) continue;
+        this.workspaceTaskDirectoryNoticed.add(directoryNoticeKey);
         try {
           await createRunAuditor(this.store, {
             runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id),
@@ -21700,7 +21894,15 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             metadata: {
               taskId: task.id,
               repo: "task-directory",
-              success: taskDirectoryOutcome !== "retained",
+              /*
+              FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+              This row states a disposition the sweep reached, not the outcome of a removal attempt, so a
+              retention is not a failure: `success` is true for every row that is written, and
+              `taskDirectoryOutcome` carries what actually happened. The previous `!== "retained"` read
+              recorded a deliberate refusal as an error, which is the same self-contradicting shape the
+              entry row had.
+              */
+              success: true,
               reason: "task-directory",
               lane,
               taskDirectoryOutcome,

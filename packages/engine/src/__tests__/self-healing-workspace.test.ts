@@ -174,6 +174,60 @@ class PruneFailureWorkspaceTeardownManager extends SelfHealingManager {
   }
 }
 
+/*
+FNXC:WorkspaceTeardownEvidence 2026-11-18-01:22 (RUFU-476):
+Counts every git command the workspace teardown sweep issues on BOTH seams - the teardown runner that carries
+the worktree and land-proof commands, and the `show-ref` presence read below the classifier - without
+replacing either one. RUFU-476's contract is partly a COST contract (a fully retired card costs zero git
+commands and zero audit rows), and only a counter can state that: substituting the seams would make "no git
+work" tautological. `probeFailure` injects an evidence-unavailable shape THROUGH the real classifier, so
+`unknown` is produced by production code rather than by an overridden return value - an injected `unknown`
+return would have let the defect that motivated this suite pass while still reading absence as a default.
+*/
+class TeardownGitCountingManager extends SelfHealingManager {
+  readonly gitCommands: string[] = [];
+  branchProbeCalls = 0;
+  /** When set, every branch-presence read fails THROUGH the real classifier (unknown evidence). */
+  probeFailure?: Error;
+
+  protected override async execWorkspaceTeardownGit(command: string, options: { cwd: string; timeout: number }): Promise<{ stdout: string }> {
+    this.gitCommands.push(command);
+    return super.execWorkspaceTeardownGit(command, options);
+  }
+
+  protected override async execBranchProbe(repoRootDir: string, branch: string): Promise<void> {
+    this.branchProbeCalls++;
+    if (this.probeFailure) throw this.probeFailure;
+    return super.execBranchProbe(repoRootDir, branch);
+  }
+
+  /** True when the pass issued a command containing `fragment`, e.g. a branch-consuming command it must not run. */
+  issued(fragment: string): boolean {
+    return this.gitCommands.some((command) => command.includes(fragment));
+  }
+}
+
+/**
+ * Reads only this sweep's rows out of the fake store's audit recorder. The filter is by event type and never
+ * by "every row", because the same store receives `store:open` and unrelated lifecycle rows; the discriminator
+ * field is `mutationType` (the shape `createRunAuditor().database()` hands the store), not `type`. `repo` then
+ * splits the per-entry verdict from the per-task-directory disposition record.
+ */
+function teardownRows(store: ReturnType<typeof createStore>): Array<Record<string, unknown>> {
+  return (store.recordRunAuditEvent.mock.calls as Array<[Record<string, unknown>]>)
+    .map(([row]) => row)
+    .filter((row) => row?.mutationType === "task:reconcile-orphaned-workspace-worktree")
+    .map((row) => (row.metadata ?? {}) as Record<string, unknown>);
+}
+
+function entryTeardownRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.filter((row) => row.repo !== "task-directory");
+}
+
+function directoryTeardownRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.filter((row) => row.repo === "task-directory");
+}
+
 class WorkspaceLandIntentManager extends SelfHealingManager {
   constructor(
     store: TaskStore,
@@ -1495,6 +1549,274 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const settled = makeManager(store, fx.rootDir);
     expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
     expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — SYMPTOM VERIFICATION:
+  Original symptom: `success:false, reason:"git-teardown-failed"` for a workspace repository whose worktree
+  directory was already gone and whose branch was already absent, re-examined with real git and database work
+  on every maintenance pass. Exact reproduction (real git, below): a complete-lane workspace card whose
+  recorded worktree path and canonical `fusion/<id>` branch have both been deleted, then two sweep passes.
+  Assertion that it is gone: the entry settles honestly as `already-clean` / `success:true` with
+  `branchOutcome:"absent"` reached through the presence probe, the disposable path is blanked durably, and a
+  SECOND manager over the same store reports zero cleaned entries, zero audit rows, zero branch probes, and
+  zero git commands — a green suite that never ran this could not tell a terminal-clean verdict apart from
+  the self-contradicting one this card shipped with.
+  */
+  it("records an already-reclaimed entry as terminal-clean once and never examines it again", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const taskDir = path.join(fx.rootDir, ".fusion", "worktrees", TASK_ID.toLowerCase());
+    const worktreePath = path.join(taskDir, "repo-a");
+    mkdirSync(taskDir, { recursive: true });
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const baseCommitSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    rmSync(worktreePath, { recursive: true, force: true });
+    fx.git("repo-a", "git worktree prune");
+    fx.git("repo-a", `git branch -D ${BRANCH}`);
+
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, baseCommitSha } }, { column: "done" });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+
+    const rows = entryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      taskId: TASK_ID,
+      repo: "repo-a",
+      success: true,
+      reason: "already-clean",
+      lane: "complete",
+      worktreeOutcome: "gone",
+      pruned: true,
+      branchOutcome: "absent",
+      attempt: 0,
+    });
+    // Presence was PROBED, and an absent-proven branch never reached the land-proof chain that rejected it.
+    expect(manager.branchProbeCalls).toBe(1);
+    expect(manager.issued("rev-list")).toBe(false);
+    expect(manager.issued("git branch")).toBe(false);
+    // The durable retirement is what makes the entry unaddressable to every later pass and every node.
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledWith(TASK_ID, "repo-a", { worktreePath: "" }, { requireExistingEntry: true });
+    expect(store.tasks.get(TASK_ID)!.workspaceWorktrees!["repo-a"].worktreePath).toBe("");
+
+    // A FRESH manager over the same store proves the DURABLE bound, not an in-memory dedupe set.
+    const nextNode = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+    const rowsBefore = teardownRows(store).length;
+    expect(await nextNode.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(teardownRows(store).length - rowsBefore).toBe(0);
+    expect(nextNode.gitCommands).toHaveLength(0);
+    expect(nextNode.branchProbeCalls).toBe(0);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — no-default-as-proof:
+  The defect was a `"absent"` initializer standing in for an unexamined field, which then satisfied the
+  settlement set and blanked a path the sweep had never proven reclaimable. An entry with no recorded branch
+  must report `not-evaluated`, stay unsettled, and run nothing branch-shaped: no probe, no land proof, no delete.
+  */
+  it("reports not-evaluated and settles nothing for an entry with no recorded branch", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-no-branch");
+    fx.git("repo-a", `git worktree add ${worktreePath} HEAD`);
+
+    const task = workspaceTask({ "repo-a": { worktreePath } }, { column: "done" });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    const rows = entryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ success: false, reason: "retained-unsettled", branchOutcome: "not-evaluated" });
+    expect(manager.branchProbeCalls).toBe(0);
+    expect(manager.issued("rev-list")).toBe(false);
+    expect(manager.issued("git branch")).toBe(false);
+    expect(store.mergeWorkspaceWorktreeEntry).not.toHaveBeenCalled();
+    expect(store.tasks.get(TASK_ID)!.workspaceWorktrees!["repo-a"].worktreePath).toBe(worktreePath);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — unknown is never absence:
+  Injected through the real classifier rather than by overriding a return value, because the defect covered
+  here is exactly a code path that turned a missing answer into a settlement proof. `unknown` deletes no
+  branch, does NOT settle the entry, and grows the starvation attempt.
+  */
+  it("never reads unknown branch evidence as absence and deletes no branch", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-unknown");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    rmSync(worktreePath, { recursive: true, force: true });
+
+    const task = workspaceTask(
+      { "repo-a": { worktreePath, branch: BRANCH, baseCommitSha: fx.git("repo-a", "git rev-parse HEAD").trim() } },
+      { column: "done" },
+    );
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+    manager.probeFailure = Object.assign(new Error("Command failed: git show-ref"), { killed: true, signal: "SIGTERM", code: null });
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    const rows = entryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      success: false,
+      reason: "branch-evidence-unknown",
+      branchOutcome: "evidence-unknown",
+      worktreeOutcome: "gone",
+      pruned: true,
+      attempt: 1,
+    });
+    expect(manager.issued("git branch")).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+    expect(store.mergeWorkspaceWorktreeEntry).not.toHaveBeenCalled();
+    expect(store.tasks.get(TASK_ID)!.workspaceWorktrees!["repo-a"].worktreePath).toBe(worktreePath);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — phase honesty:
+  A land-proof that THROWS is a refusal to conclude, not a worktree teardown failure. Before this split the
+  entry reported `git-teardown-failed` although the worktree phase had succeeded, naming a dead branch when
+  the real gap was merge evidence.
+  */
+  it("labels a throwing land-proof as branch evidence, never as worktree teardown failure", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-landproof");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    rmSync(worktreePath, { recursive: true, force: true });
+
+    // An unusable base sha makes the land-proof chain itself throw: no injection, no mock-the-world shell.
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, baseCommitSha: "not-a-real-sha" } }, { column: "done" });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    const rows = entryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ success: false, reason: "branch-evidence-failed", branchOutcome: "evidence-failed", attempt: 1 });
+    expect(rows[0]!.reason).not.toBe("git-teardown-failed");
+    expect(manager.issued("git branch")).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+    expect(store.mergeWorkspaceWorktreeEntry).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — work-performed case:
+  A pass that actually removed the worktree and deleted the branch must not collapse into the same label as a
+  pass that removed nothing, or the two operator questions ("did it clean up?" vs "did it do work?") stop
+  having different answers. The empty modern-layout task directory is reported as removed, once.
+  */
+  it("reports settled plus a deleted branch and a removed task directory when the pass did the work", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const taskDir = path.join(fx.rootDir, ".fusion", "worktrees", TASK_ID.toLowerCase());
+    const worktreePath = path.join(taskDir, "repo-a");
+    mkdirSync(taskDir, { recursive: true });
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+
+    const deletedAt = new Date(Date.now() - 30 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { deletedAt });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    const rows = entryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      success: true,
+      reason: "settled",
+      branchOutcome: "deleted",
+      lane: "soft-deleted",
+      worktreeOutcome: "gone",
+      pruned: true,
+      attempt: 0,
+    });
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toBe("");
+    const directoryRows = directoryTeardownRows(teardownRows(store));
+    expect(directoryRows).toHaveLength(1);
+    expect(directoryRows[0]).toMatchObject({ success: true, taskDirectoryOutcome: "removed" });
+    expect(existsSync(taskDir)).toBe(false);
+
+    const nextNode = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+    const rowsBefore = teardownRows(store).length;
+    expect(await nextNode.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(teardownRows(store).length - rowsBefore).toBe(0);
+    expect(nextNode.gitCommands).toHaveLength(0);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — cost of a retired card:
+  The pre-fix sweep queried the merge queue and wrote audit rows for cards holding nothing reclaimable. A card
+  whose recorded paths are all blank and whose per-task directory never existed must cost this sweep no git call,
+  no merge-queue query, and no audit row at all.
+  */
+  it("costs a fully retired workspace card no audit row, no git command, and no merge-queue query", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const task = workspaceTask({ "repo-a": { worktreePath: "", branch: BRANCH } }, { column: "done" });
+    const store = createStore([task]);
+    const isMergePending = vi.fn().mockReturnValue(false);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir, { isMergePending }) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(teardownRows(store)).toHaveLength(0);
+    expect(isMergePending).not.toHaveBeenCalled();
+    expect(manager.gitCommands).toHaveLength(0);
+    expect(manager.branchProbeCalls).toBe(0);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — actionable disposition only:
+  A leftover directory this sweep refused to delete IS actionable and is reported - but once, because a
+  repeated identical disposition is recorded once per process. The residue itself is never deleted: parked-
+  card content is RUFU-403's lane, not this sweep's.
+  */
+  it("reports a non-removable leftover task directory once across two passes", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const taskDir = path.join(fx.rootDir, ".fusion", "worktrees", TASK_ID.toLowerCase());
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(path.join(taskDir, "leftover.txt"), "not mine to delete\n", "utf-8");
+
+    const task = workspaceTask({ "repo-a": { worktreePath: "", branch: BRANCH } }, { column: "done" });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+
+    const rows = directoryTeardownRows(teardownRows(store));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ success: true, repo: "task-directory", taskDirectoryOutcome: "retained", lane: "complete" });
+    expect(existsSync(path.join(taskDir, "leftover.txt"))).toBe(true);
+  });
+
+  /*
+  FNXC:WorkspaceSelfHealing 2026-11-18-01:22 (RUFU-476) — legacy vs modern layout:
+  A legacy-layout directory (the recorded path sits outside the per-task directory) is never removed, so its
+  refusal is reported once; blanking the settled entry durably also settles the layout question, so the next
+  pass has nothing left to say at all.
+  */
+  it("records a legacy-layout refusal once and stays silent afterwards", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-legacy-layout");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    rmSync(worktreePath, { recursive: true, force: true });
+    fx.git("repo-a", "git worktree prune");
+    fx.git("repo-a", `git branch -D ${BRANCH}`);
+
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { column: "done" });
+    const store = createStore([task]);
+    const manager = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(entryTeardownRows(teardownRows(store))[0]).toMatchObject({ success: true, reason: "already-clean", branchOutcome: "absent" });
+    const directoryRows = directoryTeardownRows(teardownRows(store));
+    expect(directoryRows).toHaveLength(1);
+    expect(directoryRows[0]).toMatchObject({ success: true, taskDirectoryOutcome: "retained-legacy-layout" });
+
+    const nextNode = new TeardownGitCountingManager(store, managerOptions(store, fx.rootDir) as never);
+    const rowsBefore = teardownRows(store).length;
+    expect(await nextNode.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(teardownRows(store).length - rowsBefore).toBe(0);
+    expect(nextNode.gitCommands).toHaveLength(0);
   });
 
   it.each(["globalPause", "enginePaused"])("short-circuits all workspace teardown for %s", async (pauseFlag) => {

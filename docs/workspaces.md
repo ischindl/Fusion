@@ -125,6 +125,21 @@ the stall classifiers, or an operator's manual move to the completion lane.
 
 Additional sweeps emit `task:reconcile-orphaned-workspace-worktree` when they remove a recorded dead member worktree and `task:reclaim-phantom-workspace-land-lease` when they reclaim a leaked member landing lease. Acquisition exclusivity is decided by a renewable durable lease; owner deletion or an execution-lane exit releases its acquire claim, while `task:reclaim-phantom-workspace-acquire-lease` and `worktree:workspace-repo-acquire-reclaimed` diagnose defensive leaked-entry recovery. Search run-audit records for these event IDs and `task:reconcile-workspace-partial-land` when diagnosing recovery.
 
+The worktree-reclaim sweep reports exactly what it did, and an already-reclaimed entry is terminal. An entry
+whose recorded directory is gone, whose canonical `fusion/<id>` branch is proven absent, and whose
+`git worktree prune` succeeded is recorded once as `reason: "already-clean"` with `success: true`, and its
+disposable `worktreePath` is blanked durably — so no later pass re-examines it, spends git work on it, or
+writes another row for it. Branch presence is probed with `git show-ref` *before* the branch name is handed
+to any land-proof command, which is why an already-deleted branch reads as absent instead of failing the
+command that consumed it; an unreadable answer is recorded as `evidence-unknown` and deletes nothing, because
+missing evidence is never proof of absence. A genuine failure keeps its own reason code so it stays
+distinguishable from a clean entry: `git-teardown-failed` for the worktree list/remove/prune phase,
+`branch-evidence-failed` for the land-proof phase, and `branch-evidence-unknown` for unreadable ref evidence.
+A card whose every recorded path is blank and whose per-task directory is gone holds nothing reclaimable and
+is skipped outright, with no git call, no merge-queue query, and no audit row. The full field-by-field
+contract lives with the `task:reconcile-orphaned-workspace-worktree` declaration in
+`packages/engine/src/util/run-audit.ts`.
+
 ## A card that owes no commit
 
 A card whose plan changes no tracked file — a memory-only card, an investigation card, a documentation card whose
