@@ -2733,6 +2733,7 @@
       "trailer": " trailer. Default: Fusion.",
       "and2": " and ",
       "legacyAutoMergeStamp": " legacy auto-merge stamp",
+      "scanNow": "Scan now",
       "githubNativeAutoMergeHelp": "GitHub waits for its full ruleset before merging. The repository must allow auto-merge; Fusion fails closed if it is unavailable. Default: disabled.",
       "noreplyRunfusionAi": "noreply@runfusion.ai",
       "enableTestMode": " Enable test mode ",

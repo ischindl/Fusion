@@ -4839,15 +4839,15 @@
       "headlineUnspecified": "작업 중 슬롯을 대기 중입니다",
       "description": "이 카드는 계획이 완료되어 대기 중이지만, 작업 중 열로 이동이 계속 거부되어 슬롯이나 릴리스가 해제될 때까지 현재 위치에 남아 있습니다.",
       "suggestedAction": "작업 중 열을 무엇이 점유하는지와 한도를 확인하거나, 직접 카드를 이동하세요.",
-      "descriptionWithFacts": "",
+      "descriptionWithFacts": "{{facts}} 이 카드는 계획이 완료되어 대기 중이므로 슬롯이 해제될 때까지 현재 위치에 남아 있습니다.",
       "facts": {
-        "noLimit": "",
-        "limitOnly": "",
-        "fill": "",
-        "holdersUnrecorded": "",
-        "holdersEmpty": "",
-        "holdersWithAge": "",
-        "holders": ""
+        "noLimit": "이 대기에서는 용량 풀을 조회하지 않았습니다.",
+        "limitOnly": "{{pool}} 한도 {{limit}}이 모두 찼습니다.",
+        "fill": "{{pool}} 한도 {{limit}}이 모두 찼습니다({{used}} 사용 중).",
+        "holdersUnrecorded": "점유자가 기록되지 않았습니다.",
+        "holdersEmpty": "슬롯을 점유하는 카드로 기록된 항목이 없습니다.",
+        "holdersWithAge": "{{holders}} 점유 중(최장 {{age}}).",
+        "holders": "{{holders}} 점유 중."
       }
     },
     "plan-admission-throttled": {
@@ -11762,6 +11762,7 @@
       "gitRemoteToPushToEGOrigin": "",
       "theCanonicalBranchFusionMergesTasksIntoAnd": "",
       "legacyAutoMergeStamp": "",
+      "scanNow": "지금 스캔",
       "blockStrict": "",
       "gitLabAuthTokenHint": "",
       "retriesTheAIAgentRatherThanAutoPicking": "",

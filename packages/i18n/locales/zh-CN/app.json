@@ -4839,15 +4839,15 @@
       "headlineUnspecified": "等待进行中的槽位",
       "description": "此卡片已计划且空闲，但进入“进行中”的转换持续被拒绝，因此在有槽位或放行释放它之前会停留在当前位置。",
       "suggestedAction": "检查“进行中”列被什么占用及其上限，或自行移动该卡片。",
-      "descriptionWithFacts": "",
+      "descriptionWithFacts": "{{facts}} 此卡片已计划且空闲，因此在有槽位释放之前会停留在当前位置。",
       "facts": {
-        "noLimit": "",
-        "limitOnly": "",
-        "fill": "",
-        "holdersUnrecorded": "",
-        "holdersEmpty": "",
-        "holdersWithAge": "",
-        "holders": ""
+        "noLimit": "此次等待未查询任何容量池。",
+        "limitOnly": "{{pool}} 的上限 {{limit}} 已满。",
+        "fill": "{{pool}} 的上限 {{limit}} 已满（已使用 {{used}}）。",
+        "holdersUnrecorded": "未记录持有者。",
+        "holdersEmpty": "没有卡片被记录为占用槽位。",
+        "holdersWithAge": "由 {{holders}} 占用（最长 {{age}}）。",
+        "holders": "由 {{holders}} 占用。"
       }
     },
     "plan-admission-throttled": {
@@ -11762,6 +11762,7 @@
       "gitRemoteToPushToEGOrigin": "",
       "theCanonicalBranchFusionMergesTasksIntoAnd": "",
       "legacyAutoMergeStamp": "",
+      "scanNow": "立即扫描",
       "blockStrict": "",
       "gitLabAuthTokenHint": "",
       "retriesTheAIAgentRatherThanAutoPicking": "",

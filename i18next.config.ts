@@ -36,6 +36,13 @@ export default defineConfig({
       "packages/cli/src/**/*.{ts,tsx}",
       "!**/__tests__/**",
       "!**/*.test.*",
+      /*
+      FNXC:i18n-ExtractScope 2026-11-19-16:06:
+      e2e fixtures are excluded by file shape, never by a `packages/dashboard/app/` path, because the gate-coverage test
+      forbids any ignore entry naming a dashboard path. `app/test/boardViewReturnFixture.tsx` therefore became
+      `board-view-return-fixture.tsx` to match this pattern instead of the exclusion growing a path exception.
+      */
+      "!**/*-fixture.tsx",
     ],
     output: "packages/i18n/locales/{{language}}/{{namespace}}.json",
     primaryLanguage: "en",
@@ -125,8 +132,25 @@ export default defineConfig({
      * i18n lint must scan the same shipping surfaces as extract so it remains a trusted user-facing-copy guardrail.
      * Tests and stories are excluded because they are non-shipping fixtures and extract already excludes test files.
      * Keyboard-key glyphs inside <kbd> are technical tokens, not translated prose.
+     *
+     * FNXC:i18n-LintBaseline 2026-11-19-16:06:
+     * The line above says test fixtures are excluded; two files were not, because they sit outside `__tests__`: one named
+     * `*-fixture.tsx` at the app root (`mobile-keyboard-e2e-fixture.tsx`) and one under `app/test/` with a camelCase name.
+     * Their literals are invented on purpose — the keyboard fixture types French so IME composition is measured against
+     * real accented text — so lint reported them as hardcoded copy and the baseline test could never go green.
+     * The exclusion is a file shape — the `-fixture.tsx` suffix — never a dashboard path, because gate-coverage asserts no ignore
+     * entry may name a `packages/dashboard/app/` prefix; the camelCase fixture was renamed to match the suffix rather than
+     * widening that invariant. (The glob itself is written only in the array below: inside a block comment the two-star glob
+     * prefix closes the comment, because `**` followed by a slash is a comment terminator.) Consequence to keep: a new e2e fixture must be named `*-fixture.tsx`, and a fixture that ships copy
+     * meant for users would slip through this pattern — the rename is a naming contract, not a guarantee.
      */
-    ignore: ["**/__tests__/**", "**/*.test.*", "**/*.stories.*", ...DEFERRED_I18N_LINT_FILES],
+    ignore: [
+      "**/__tests__/**",
+      "**/*.test.*",
+      "**/*.stories.*",
+      "**/*-fixture.tsx",
+      ...DEFERRED_I18N_LINT_FILES,
+    ],
     ignoredTags: ["kbd"],
     acceptedTags: recommendedAcceptedTags,
     acceptedAttributes: recommendedAcceptedAttributes,

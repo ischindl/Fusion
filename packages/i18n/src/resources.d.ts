@@ -7904,6 +7904,7 @@ export default interface Resources {
         "retriesTheAIAgentRatherThanAutoPicking": " retries the AI agent rather than auto-picking a side. ",
         "reuseTaskWorktreeDefault": "Reuse task worktree (default)",
         "sameAsIntegrationBranchDefault": "(same as integration branch — default)",
+        "scanNow": "Scan now",
         "skipsTheAuditEntirelySwitchingToOffIs": " skips the audit entirely. Switching to Off is recommended only if you trust your branches don&apos;t silently drop edits. ",
         "smart": "Smart",
         "smartConflictResolution": " Smart conflict resolution ",

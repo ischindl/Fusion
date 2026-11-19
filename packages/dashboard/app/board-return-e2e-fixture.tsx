@@ -13,7 +13,7 @@ import {
   BOARD_RETURN_TASKS,
   BOARD_RETURN_WORKFLOW,
   BoardViewReturnHarness,
-} from "./test/boardViewReturnFixture";
+} from "./test/board-view-return-fixture";
 /*
 FNXC:BoardNavigation 2026-09-18-02:12:
 Ordre d'injection identique à `main.tsx` : feuilles de composants (via les imports ci-dessus) AVANT `styles.css`,

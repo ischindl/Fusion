@@ -16,7 +16,17 @@ type Locale = (typeof SUPPORTED_LOCALES)[number];
 type Namespace = (typeof namespaces.all)[number];
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-const expectedNonShippingLintIgnores = ["**/__tests__/**", "**/*.test.*", "**/*.stories.*"];
+/*
+FNXC:i18n-GateRegression 2026-11-19-16:06:
+The `-fixture.tsx` suffix joins the non-shipping shapes. Two e2e fixtures sat outside `__tests__` and lint has always
+reported their invented copy; the shape is excluded because this test's own rule below forbids any ignore entry naming a
+`packages/dashboard/app/` prefix — so the camelCase fixture under app/test was renamed to carry the suffix rather than the
+path rule being loosened. The force of this test is unchanged: a dashboard component path still may not appear in
+`lint.ignore`, and a new fixture is excluded only by carrying that suffix. Note for future edits: the two-star glob form
+must not be written inside a block comment — the star-slash pair closes it, which esbuild reports only as a failed file
+while every test in it appears to pass.
+*/
+const expectedNonShippingLintIgnores = ["**/__tests__/**", "**/*.test.*", "**/*.stories.*", "**/*-fixture.tsx"];
 
 const representativeDashboardFiles = {
   plugin: "packages/dashboard/app/components/PiExtensionsManager.tsx",

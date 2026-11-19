@@ -11762,6 +11762,7 @@
       "gitRemoteToPushToEGOrigin": "",
       "theCanonicalBranchFusionMergesTasksIntoAnd": " Sem padrão — não definida (detecção automática). A branch canônica em que o Fusion faz merge das tarefas e que usa como referência para todos os cálculos de ahead/behind, sobreposição e pré-rebase. Deixe em ",
       "legacyAutoMergeStamp": " marcação legada de merge automático",
+      "scanNow": "Escanear agora",
       "blockStrict": "Bloquear (estrito)",
       "gitLabAuthTokenHint": "Operações somente leitura do GitLab precisam de read_api ou api. Futuras ações de escrita, como comentários e fechamento automático, precisam de api. Tokens de projeto e de grupo ficam limitados ao recurso associado e à função atribuída. Sem padrão — não definido.",
       "retriesTheAIAgentRatherThanAutoPicking": " tenta novamente com o agente de IA em vez de escolher um lado automaticamente. ",

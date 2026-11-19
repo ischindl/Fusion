@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { KeepAliveView } from "../../KeepAliveView";
-import { BoardViewReturnHarness } from "../../../test/boardViewReturnFixture";
+import { BoardViewReturnHarness } from "../../../test/board-view-return-fixture";
 
 /*
 FNXC:BoardNavigation 2026-09-18-02:12:
