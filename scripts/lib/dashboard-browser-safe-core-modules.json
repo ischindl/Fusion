@@ -84,6 +84,11 @@
       "module": "heartbeat-timer-liveness",
       "reason": "2026-11-18: RUFU-716 delivery-skip reader for the health pill and fleet verdict; the leaf imports nothing at all (structural input types only).",
       "verifiedAt": "2026-11-18"
+    },
+    {
+      "module": "agents/agent-pause-reasons",
+      "reason": "2026-11-19: RUFU-247 pause-reason vocabulary shared by the stall resolver and every agent read surface; the leaf imports nothing at all (structural input types only) and is re-exported through the types.ts browser leaf.",
+      "verifiedAt": "2026-11-19"
     }
   ]
 }

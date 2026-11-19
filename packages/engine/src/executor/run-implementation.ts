@@ -2571,7 +2571,7 @@ export async function runImplementation(
         ...reflectionTools,
         // Agent delegation tools — discover and delegate work to other agents.
         ...(deps.options.agentStore ? [
-          createListAgentsTool(deps.options.agentStore),
+          createListAgentsTool(deps.options.agentStore, deps.store),
           // FN-125: execution sessions never receive delegation tools.
           createTaskAssignTool(deps.options.agentStore, deps.store),
           ...(assignedAgentId ? [

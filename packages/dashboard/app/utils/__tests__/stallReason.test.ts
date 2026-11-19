@@ -6,7 +6,10 @@ import type {
   StalledReviewSignal,
   TaskExternalBlock,
 } from "@fusion/core";
-import { WIP_ADMISSION_STALL_METADATA_KEY } from "@fusion/core";
+import {
+  PAUSE_REASON_LABELS as CORE_PAUSE_REASON_LABELS,
+  WIP_ADMISSION_STALL_METADATA_KEY,
+} from "@fusion/core";
 
 import {
   PAUSE_REASON_LABELS,
@@ -317,6 +320,19 @@ describe("resolveStallReason — pause family (byte-identity via (key, default))
     ]) {
       expect(PAUSE_REASON_LABELS[code], `label for ${code}`).toBeTruthy();
     }
+  });
+
+  /*
+  FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+  The table moved to `@fusion/core/agents/agent-pause-reasons` and `stallReason.ts` re-exports it, so
+  `fn agent show`/`fn agent list` and the agent tools quote the same words this resolver quotes. The
+  identity assertion (not a deep-equal) is the drift guard: two frozen copies with the same words would
+  satisfy `toEqual` and still diverge the first time one gains a code, which is how the pill, the chip,
+  and the CLI would start telling three versions of one pause.
+  */
+  it("re-exports the CORE table itself rather than a dashboard copy of it", () => {
+    expect(PAUSE_REASON_LABELS).toBe(CORE_PAUSE_REASON_LABELS);
+    expect(Object.isFrozen(PAUSE_REASON_LABELS)).toBe(true);
   });
 });
 

@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp, formatAgentDiagnosticLines, withAgentPendingApprovalCounts } from "@fusion/core";
+import type { AgentApprovalCountStore } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 /*
 FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531): the heartbeat reviewer lane's verdict seam.
@@ -6651,7 +6652,7 @@ export function createUpdateIdentityTool(agentStore: AgentStore, agentId: string
   };
 }
 
-export function createListAgentsTool(agentStore: AgentStore): ToolDefinition {
+export function createListAgentsTool(agentStore: AgentStore, taskStore?: AgentApprovalCountStore): ToolDefinition {
   return {
     name: "fn_list_agents",
     label: "List Agents",
@@ -6685,7 +6686,21 @@ export function createListAgentsTool(agentStore: AgentStore): ToolDefinition {
         };
       }
 
-      const lines = await Promise.all(agents.map(async (agent) => {
+      /*
+      FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+      This roster used to print `State: paused` and stop there — no `Pause Reason`, no `Last Error` — so
+      an agent whose lane had stalled read exactly like one that was merely idle, from inside the very
+      session that might have been waiting on it. The lines now come from the shared core projection the
+      CLI verbs and the Pi tools use, including the `unknown` code for a lane that recorded no reason.
+      Approvals are one batched read for the whole roster (never one per agent) and optional: a caller
+      without a TaskStore gets the same zero answer the projection gives everywhere else. `details` is
+      deliberately the raw roster, so a structured consumer of this tool sees no shape change.
+      */
+      const agentsWithApprovals = await withAgentPendingApprovalCounts(
+        agents,
+        taskStore ?? { getAsyncLayer: () => null },
+      );
+      const lines = await Promise.all(agentsWithApprovals.map(async (agent) => {
         const parts: string[] = [
           `ID: ${agent.id}`,
           `Name: ${agent.name}`,
@@ -6694,6 +6709,8 @@ export function createListAgentsTool(agentStore: AgentStore): ToolDefinition {
         ];
 
         if (agent.title) parts.push(`Title: ${agent.title}`);
+        parts.push(...formatAgentDiagnosticLines(agent, { compact: true }));
+        parts.push(`Pending Approvals: ${agent.pendingApprovalCount}`);
         if (agent.soul) parts.push(`Soul: ${agent.soul.slice(0, 200)}`);
         if (agent.instructionsText) {
           const snippet = agent.instructionsText.slice(0, 100);

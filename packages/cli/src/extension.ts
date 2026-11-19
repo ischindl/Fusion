@@ -53,9 +53,12 @@ import {
   resolveWorkflowIrForTaskWithProvenance,
   resolveWorkflowIrForTask,
   resolveReviewColumns,
-  describeHeartbeatThrottle,
   formatAgentTimestamp,
   summarizeErrorForOperator,
+  formatAgentDiagnosticLines,
+  withAgentPendingApprovalCounts,
+  collectAgentAssignedCards,
+  formatAgentAssignedCardLines,
 } from "@fusion/core";
 import {
   getGhErrorMessage,
@@ -116,79 +119,19 @@ type TaskListFormatter = (
   opts?: { maxChars?: number; clamp?: TaskListClamp },
 ) => string;
 
-type AgentDiagnosticLineInput = {
-  state?: string;
-  lastError?: string;
-  pauseReason?: string;
-  metadata?: Record<string, unknown> | null;
-};
-
-function truncateAgentDiagnosticText(value: string, maxChars: number): string {
-  return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
-}
-
-/**
- * RUFU-286: takes the agent record (not just `metadata`) so the throttle clause can come from the
- * one shared reader. `describeHeartbeatThrottle` is what decides whether a re-probe is pending at
- * all; re-deriving `cooldownUntilAt > now` here would be a second authority whose expiry could
- * drift from the two engine lanes that read it.
- */
-function formatAgentErrorRecoveryLine(agent: AgentDiagnosticLineInput): string | null {
-  const metadata = agent.metadata;
-  const heartbeatRaw = metadata?.heartbeatErrorRecovery;
-  const heartbeat = heartbeatRaw && typeof heartbeatRaw === "object" ? heartbeatRaw as Record<string, unknown> : null;
-  const heartbeatAttempts = typeof heartbeat?.consecutiveAttempts === "number" && Number.isFinite(heartbeat.consecutiveAttempts)
-    ? Math.max(0, Math.floor(heartbeat.consecutiveAttempts))
-    : undefined;
-
-  const durableRaw = metadata?.durableErrorRecovery;
-  const durable = durableRaw && typeof durableRaw === "object" ? durableRaw as Record<string, unknown> : null;
-  const durableAttempts = typeof durable?.attempts === "number" && Number.isFinite(durable.attempts)
-    ? Math.max(0, Math.floor(durable.attempts))
-    : undefined;
-  const attempts = Math.max(heartbeatAttempts ?? 0, durableAttempts ?? 0);
-  const hasRecoveryMetadata = heartbeatAttempts !== undefined || durableAttempts !== undefined;
-  if (!hasRecoveryMetadata) {
-    return null;
-  }
-
-  const details: string[] = [`attempts ${attempts}`];
-  if (durable?.exhausted === true) details.push("exhausted");
-  if (typeof durable?.nextRetryAt === "string") details.push(`next ${durable.nextRetryAt}`);
-  /*
-  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
-  A provider throttle is transient back-off with an armed re-probe, so a reader must be able to
-  tell "waiting on the provider until <ISO>" from an exhausted park that needs a restart. The
-  streak is the pressure signal: attempts 1, throttle 4 in a row is a sustained provider limit,
-  not a blip, and that distinction is what `fn agent errors` was built to answer.
-  */
-  const throttle = describeHeartbeatThrottle(agent);
-  if (throttle?.kind === "throttle-cooldown") {
-    details.push(`throttle cooldown until ${throttle.retryingAt} (streak ${throttle.throttleStreak})`);
-  } else if (throttle?.kind === "throttle-exhausted") {
-    details.push(`throttle retries exhausted (streak ${throttle.throttleStreak})`);
-  }
-  return `Error Recovery: ${details.join(", ")}`;
-}
-
-function appendAgentDiagnosticLines(parts: string[], agent: AgentDiagnosticLineInput, options: { compact: boolean }): void {
-  const shouldShowStateDetails = !options.compact || agent.state === "error" || agent.state === "paused";
-  if (!shouldShowStateDetails) {
-    return;
-  }
-
-  if (agent.lastError) {
-    const maxChars = options.compact ? 180 : 500;
-    parts.push(`Last Error: ${truncateAgentDiagnosticText(agent.lastError, maxChars)}`);
-  }
-  if (agent.pauseReason) {
-    parts.push(`Pause Reason: ${truncateAgentDiagnosticText(agent.pauseReason, 180)}`);
-  }
-  const recoveryLine = formatAgentErrorRecoveryLine(agent);
-  if (recoveryLine) {
-    parts.push(recoveryLine);
-  }
-}
+/*
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+The Last Error / Pause Reason / Error Recovery block used to be a local copy here, and the copy had two
+gaps the product could not see: it printed the raw pause code with no words, and a lane that recorded NO
+pause reason printed NOTHING — a `paused` owner with a null reason looked healthy in `fn_list_agents` and
+`fn_agent_show`. A third vocabulary also lived in the engine's own fn_list_agents tool, so an agent's
+condition could be described three ways at once. Both Pi tools now push `formatAgentDiagnosticLines` from
+@fusion/core, which is the single formatter behind the new `fn agent show` / `fn agent list` CLI verbs:
+the three honest stall cases (an operator-actionable park, a retry-budget exhaustion, and `unknown` when
+nothing was recorded) print identically wherever a lane is read. RUFU-286's throttle clause and the
+compact/full truncation budgets (180 / 500 chars) came along with it — they are asserted byte-for-byte in
+the core contract tests, so a future trim cannot silently drop the throttle sentence from the Pi surface.
+*/
 
 export function inlineTaskListFallback(
   lines: string[],
@@ -7112,7 +7055,15 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const lines = await Promise.all(agents.map(async (agent) => {
+      /*
+      FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+      One batched approvals read for the whole list, never one per agent: an approval-blocked lane is a
+      different stall than a paused one, and "nobody answered the approval prompt" was unanswerable from
+      any agent surface. The enriched rows go out in `details` too, so a structured reader sees the same
+      number the text line prints.
+      */
+      const agentsWithApprovals = await withAgentPendingApprovalCounts(agents, store);
+      const lines = await Promise.all(agentsWithApprovals.map(async (agent) => {
         const parts: string[] = [
           `ID: ${agent.id}`,
           `Name: ${agent.name}`,
@@ -7125,7 +7076,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         FNXC:AgentHeartbeat 2026-07-12-18:20:
         FN-7859 requires list output to explain error/paused durable agents without DB inspection, while keeping healthy-agent rows compact.
         */
-        appendAgentDiagnosticLines(parts, agent, { compact: true });
+        parts.push(...formatAgentDiagnosticLines(agent, { compact: true }));
+        parts.push(`Pending Approvals: ${agent.pendingApprovalCount}`);
         if (agent.soul) parts.push(`Soul: ${agent.soul.slice(0, 200)}`);
         if (agent.instructionsText) {
           const snippet = agent.instructionsText.slice(0, 100);
@@ -7150,7 +7102,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text" as const, text: `Available agents (${agents.length}):\n\n${lines.join("\n\n")}` }],
-        details: { agents, count: agents.length },
+        details: { agents: agentsWithApprovals, count: agents.length },
       };
     },
   });
@@ -7556,7 +7508,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       FNXC:AgentHeartbeat 2026-07-12-18:20:
       FN-7859 requires fn_agent_show to surface why an agent is in error/paused so operators can classify recovery state without engine logs.
       */
-      appendAgentDiagnosticLines(parts, agent, { compact: false });
+      parts.push(...formatAgentDiagnosticLines(agent, { compact: false }));
 
       if (agent.reportsTo) {
         const manager = await agentStore.getAgent(agent.reportsTo);
@@ -7585,6 +7537,28 @@ export default function kbExtension(pi: ExtensionAPI) {
         parts.push(formatCurrentTaskLine(agent.taskId, linkedTask));
       }
 
+      /*
+      FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+      The two facts that turn "this agent is paused" into a decision: whether it is waiting on an
+      approval nobody answered, and WHICH cards it is holding while stopped. Both come from the shared
+      projection the CLI verbs use, and the card read fails soft — an unreadable workflow costs that
+      card's terminal-column filter, never the whole inventory.
+      */
+      const [agentWithApprovals] = await withAgentPendingApprovalCounts([agent], store);
+      const pendingApprovalCount = agentWithApprovals?.pendingApprovalCount ?? 0;
+      parts.push(`Pending Approvals: ${pendingApprovalCount}`);
+      const assigned = await collectAgentAssignedCards(agent.id, {
+        store,
+        boundTaskId: agent.taskId ?? null,
+      });
+      const assignedLines = formatAgentAssignedCardLines(assigned);
+      if (assignedLines.length === 0) {
+        parts.push("Assigned Cards: none open");
+      } else {
+        parts.push(`Assigned Cards: ${assigned.totalOpen} open`);
+        parts.push(...assignedLines.map((line) => `  ${line}`));
+      }
+
       if (agent.instructionsText) {
         const snippet = agent.instructionsText.slice(0, 100);
         parts.push(`Custom Instructions: ${snippet}${agent.instructionsText.length > 100 ? "…" : ""}`);
@@ -7603,6 +7577,9 @@ export default function kbExtension(pi: ExtensionAPI) {
         content: [{ type: "text" as const, text: parts.join("\n") }],
         details: {
           agent,
+          pendingApprovalCount,
+          assignedCards: assigned.cards,
+          assignedCardsTruncated: assigned.truncated,
           directReports: directReports.map((r) => ({ id: r.id, name: r.name, role: r.role })),
         },
       };

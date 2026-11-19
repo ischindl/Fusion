@@ -1163,6 +1163,8 @@ Notes:
 Agent runtime operations.
 
 ```bash
+fn agent list
+fn agent show AGENT-001
 fn agent stop AGENT-001
 fn agent start AGENT-001
 fn agent mailbox AGENT-001
@@ -1170,7 +1172,57 @@ fn agent import <source> [--dry-run] [--skip-existing]
 fn agent export ./output-dir --company-name "My Company" --company-slug my-company
 ```
 
-Subcommands: `stop`, `start`, `mailbox`, `import`, `export`.
+Subcommands: `list`, `show`, `stop`, `start`, `mailbox`, `import`, `export`.
+
+### `fn agent list`
+
+List the project's agents with the stall facts that explain why a lane is not moving cards.
+
+**Options:**
+| Option | Description |
+|---|---|
+| `--project <name>`, `-P <name>` | List agents of a specific registered project. |
+| `--json` | Emit a machine-parseable projection instead of one line per agent. |
+| `--all` | Include ephemeral/runtime agents (excluded by default). |
+
+**Behavior notes:**
+- Usage: `fn agent list [--json] [--all]`.
+- Each row carries: id, name, roles, state, the stall code with its plain-language label, pending approvals, open assigned cards, and a truncated last error.
+- A stall code is printed only for a lane that actually stalled (`paused` or `error`). A `paused` agent whose `pauseReason` was never recorded prints as `unknown — no pause reason recorded (inspect agent logs/runlog)`, never as a blank — a silent owner agent is the failure this verb exists to catch.
+- A finished footer names the project and counts how many agents are stopped: `N agent(s) in project "<name>"; M stopped.`
+- Pending approval counts read the approval store once for the whole roster and report `0` when no store layer is reachable; the count never blocks the read.
+
+**Examples:**
+```bash
+fn agent list
+fn agent list --project my-project
+fn agent list --json | jq '.agents[] | select(.stallCode != null)'
+```
+
+### `fn agent show`
+
+Show one agent's stall state, the project that owns it, and the cards it is holding.
+
+**Options:**
+| Option | Description |
+|---|---|
+| `--project <name>`, `-P <name>` | Search a specific registered project. |
+| `--json` | Emit the same projection as structured JSON. |
+
+**Behavior notes:**
+- Usage: `fn agent show <id> [--json]`.
+- Prints identity (id, roles, state, reports-to), ownership (`Project: <name> (<id>)`), the bound card with its lane, then the stall block: `Last Error`, `Pause Reason`, `Error Recovery`, `Pending approvals`, and `Assigned cards` (id + column + title, with operator/engine parked counts).
+- The three honest stall cases read differently because they need different actions: `error-unrecoverable` is operator-actionable (credentials/OAuth/model access/billing), `error-retry-exhausted` means the automatic retry budget ran out, and a stop with no recorded reason prints as `unknown`. Words come from one shared vocabulary, so the dashboard board chips, the Pi tools, and the CLI cannot drift apart.
+- A miss names the project actually searched — `Agent <id> not found in project "<name>" (<id>).` plus a note that the lookup covered one project — so a cross-project id does not read as a deleted agent. Exits `1`.
+- Nothing here pauses, resumes, or restarts an agent; it is a read. Use `fn agent start <id>` to resume.
+- Like the other `fn agent` verbs it closes both store connections and exits promptly on every path (success, not-found, invalid state).
+
+**Examples:**
+```bash
+fn agent show AGENT-001
+fn agent show AGENT-001 --project my-project
+fn agent show AGENT-001 --json | jq '.assigned.totalOpen'
+```
 
 ### `fn agent stop`
 

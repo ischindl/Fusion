@@ -151,7 +151,7 @@ async function loadCommandHandlers() {
   } = await import("./commands/cloud.js");
   const { runInit } = await import("./commands/init.js");
   const { runOnboard } = await import("./commands/onboard.js");
-  const { runAgentStop, runAgentStart } = await import("./commands/agent.js");
+  const { runAgentStop, runAgentStart, runAgentShow, runAgentList } = await import("./commands/agent.js");
   const { runAgentImport } = await import("./commands/agent-import.js");
   const { runAgentExport } = await import("./commands/agent-export.js");
   const { runOrgExport } = await import("./commands/org-export.js");
@@ -277,6 +277,8 @@ async function loadCommandHandlers() {
     runOnboard,
     runAgentStop,
     runAgentStart,
+    runAgentShow,
+    runAgentList,
     runAgentImport,
     runAgentExport,
     runOrgExport,
@@ -458,6 +460,9 @@ PR:
                              Abandon a group (best-effort closes the managed PR)
   fn agent stop <id>                Stop a running agent (pause execution)
   fn agent start <id>               Start a stopped agent (resume execution)
+  fn agent list [--json] [--all]    List agents: state, stall reason, last error, approvals, cards held
+  fn agent show <id> [--json]       Why this agent stopped and which cards it is holding
+                                    (--all also includes ephemeral agents)
   fn agent import <path> [--dry-run] [--skip-existing]
                                       Import agents from an Agent Companies package (directory, archive, or AGENTS.md file)
   fn agent export <dir> [--company-name <name>] [--company-slug <slug>]
@@ -940,6 +945,8 @@ export async function main() {
     runOnboard,
     runAgentStop,
     runAgentStart,
+    runAgentShow,
+    runAgentList,
     runAgentImport,
     runAgentExport,
     runOrgExport,
@@ -2188,6 +2195,28 @@ export async function main() {
             await runAgentStart(id, projectName);
             break;
           }
+          /*
+          FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+          The two read verbs an operator needs BEFORE reaching for stop/start: what state is this lane
+          in, why did it stop, and which cards is it holding. --json exists because a recovery watcher
+          parses it; list --all opts into ephemeral agents.
+          */
+          case "show": {
+            const id = args[2];
+            if (!id || id.startsWith("--")) {
+              console.error("Usage: fn agent show <id> [--json]");
+              process.exit(1);
+            }
+            await runAgentShow(id, projectName, { json: args.includes("--json") });
+            break;
+          }
+          case "list": {
+            await runAgentList(projectName, {
+              json: args.includes("--json"),
+              includeEphemeral: args.includes("--all"),
+            });
+            break;
+          }
           case "mailbox": {
             const id = args[2];
             if (!id) { console.error("Usage: fn agent mailbox <id>"); process.exit(1); }
@@ -2218,7 +2247,7 @@ export async function main() {
           }
           default:
             console.error(`Unknown subcommand: agent ${subcommand || ""}`);
-            console.log("Try: fn agent stop <id> | fn agent start <id> | fn agent mailbox <id> | fn agent import <path> | fn agent export <dir>");
+            console.log("Try: fn agent list | fn agent show <id> | fn agent stop <id> | fn agent start <id> | fn agent mailbox <id> | fn agent import <path> | fn agent export <dir>");
             process.exit(1);
         }
         break;

@@ -1,6 +1,16 @@
 import type { TFunction } from "i18next";
 import type { Task, TaskExternalBlock, TaskStallReason } from "@fusion/core";
-import { formatTaskExternalBlockReason, formatWipAdmissionStallWait, isTaskExternallyBlocked, readWipAdmissionStallEpisode } from "@fusion/core";
+/*
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247): `PAUSE_REASON_LABELS` joins the value import as
+the relocated table (see the note at its re-export below).
+*/
+import {
+  formatTaskExternalBlockReason,
+  formatWipAdmissionStallWait,
+  isTaskExternallyBlocked,
+  PAUSE_REASON_LABELS,
+  readWipAdmissionStallEpisode,
+} from "@fusion/core";
 import { elapsedSinceMs } from "./dataFreshness";
 /*
 FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
@@ -267,25 +277,23 @@ export interface StallContext {
 
 /*
 FNXC:StallReason 2026-09-01-17:48 (RUFU-175):
-Shared t-free table of human pause-reason words. Exported here as the single source so the agent-health
-pill (which has no `t`) and the resolver (whose localized `stall.pausedReason.<code>.*` defaults
-reuse these exact strings) cannot drift. The values double as the English defaults for the resolver's
-enumerated keys AND as the interpolated `{{reason}}` word for unenumerated codes, so an unknown code
-still shows its raw string rather than an empty label — the same honest fallback on both surfaces.
+Shared t-free table of human pause-reason words — the single source so the agent-health pill (which has
+no `t`) and the resolver (whose localized `stall.pausedReason.<code>.*` defaults reuse these exact
+strings) cannot drift. The values double as the English defaults for the resolver's enumerated keys AND
+as the interpolated `{{reason}}` word for unenumerated codes, so an unknown code still shows its raw
+string rather than an empty label — the same honest fallback on both surfaces.
+
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+The table itself now lives in `@fusion/core` (`agents/agent-pause-reasons.ts`) because `fn agent show`,
+`fn agent list` and the agent tools must quote the same words this resolver quotes — one definition, not
+two tables that can disagree. It is RE-EXPORTED rather than merely imported because the agent-health
+pill and the resolver's own tests reach it through this module path. The dashboard alias
+(`vite.config.ts` maps `@fusion/core` to `packages/core/src/types.ts`) carries the symbol, which is why
+the leaf is declared there and registered in
+`scripts/lib/dashboard-browser-safe-core-modules.json` — the leaf imports nothing, so it stays
+browser-safe.
 */
-export const PAUSE_REASON_LABELS: Readonly<Record<string, string>> = Object.freeze({
-  "error-unrecoverable": "Paused with an unrecoverable error",
-  "error-retry-exhausted": "Automatic retries exhausted",
-  "awaiting-approval": "Awaiting approval",
-  "heartbeat-model-unavailable": "Heartbeat model unavailable",
-  "heartbeat-unresponsive": "Heartbeat unresponsive",
-  "budget-exhausted": "Output budget exhausted",
-  "migrated-from-terminated": "Recovered from a terminated runtime",
-  manual: "Paused by an operator",
-  "user-requested": "Paused at your request",
-  testing: "Paused for testing",
-  "duplicate-decision-required": "Awaiting a duplicate decision",
-});
+export { PAUSE_REASON_LABELS };
 
 /** Pause-family codes whose badge reuses the caller's existing pause keys (byte-identity). */
 const PAUSED_FAMILY_CODES: ReadonlySet<StallReasonCode> = new Set<StallReasonCode>([

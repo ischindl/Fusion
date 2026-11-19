@@ -4580,7 +4580,7 @@ export class HeartbeatMonitor {
           heartbeatTools.push(createArtifactRetractTool(taskStore, agentId));
 
           // Agent delegation tools
-          heartbeatTools.push(createListAgentsTool(this.store));
+          heartbeatTools.push(createListAgentsTool(this.store, taskStore));
           heartbeatTools.push(createDelegateTaskTool(this.store, taskStore, {
             rootDir: this.rootDir,
             sourceAgentId: agentId,
@@ -6749,7 +6749,7 @@ export class HeartbeatMonitor {
     */
     tools.push(createArtifactRetractTool(taskStore, agentId));
     // Agent delegation tools — discover and delegate work to other agents
-    tools.push(createListAgentsTool(this.store));
+    tools.push(createListAgentsTool(this.store, taskStore));
     tools.push(createDelegateTaskTool(this.store, taskStore, { rootDir: this.rootDir, sourceTaskId: taskId, sourceAgentId: agentId }));
     tools.push(createTaskAssignTool(this.store, taskStore));
     tools.push(createGetAgentConfigTool(this.store, agentId));

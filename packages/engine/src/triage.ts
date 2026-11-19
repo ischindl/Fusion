@@ -4144,7 +4144,7 @@ export class TriageProcessor {
           createWebFetchTool(),
           // Agent delegation tools — discover and delegate work to other agents.
           ...(this.options.agentStore ? [
-            createListAgentsTool(this.options.agentStore),
+            createListAgentsTool(this.options.agentStore, this.store),
             createDelegateTaskTool(this.options.agentStore, this.store, { rootDir: this.rootDir, sourceTaskId: task.id, sourceAgentId: assignedAgent?.id }),
             createTaskAssignTool(this.options.agentStore, this.store),
           ] : []),

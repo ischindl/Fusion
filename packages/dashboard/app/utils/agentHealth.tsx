@@ -18,11 +18,10 @@ imported as a value from `@fusion/core` — which the browser build aliases to t
 a root-barrel value that lives only in the Node index resolves to `undefined` in the shipped bundle with
 no build error (RUFU-220). The module imports nothing, so it is legal in that leaf.
 */
-import { resolveHeartbeatSilenceBudgetMs } from "@fusion/core";
+import { PAUSE_REASON_LABELS, resolveHeartbeatSilenceBudgetMs } from "@fusion/core";
 import type { Agent } from "../api";
 import { resolveHeartbeatIntervalMs } from "./heartbeatIntervals";
 import { elapsedSinceMs } from "./dataFreshness";
-import { PAUSE_REASON_LABELS } from "./stallReason";
 
 // Heartbeat scheduling depends on both state and `runtimeConfig.enabled`.
 // Durable agents with heartbeat disabled should render distinctly from healthy

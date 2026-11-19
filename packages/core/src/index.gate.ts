@@ -209,6 +209,43 @@ export type {
   RankedAssignedTaskLine,
   RankAssignedTasksForWakeDeltaResult,
 } from "./agents/assigned-task-ranking.js";
+/*
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+Mirror of the `index.ts` exports above. Load-bearing, not cosmetic: the `engine-core` merge-gate vitest
+project aliases `@fusion/core` to the gate bundle, and `agent-tools.ts` reads the agent-tool surface
+through it, so a gate-barrel omission resolves `formatAgentDiagnosticLines` as `undefined` in that lane
+while every ordinary run stays green. Same both-barrels rule RUFU-204 pins for `assertAgentLogTaskId`.
+*/
+export {
+  AGENT_STALL_REASON_UNKNOWN,
+  AGENT_STALL_REASON_UNKNOWN_LABEL,
+  AGENT_STOPPED_STATES,
+  PAUSE_REASON_LABELS,
+  agentPauseReasonLabel,
+  classifyAgentStall,
+  isAgentStateStopped,
+  isOperatorActionablePauseReason,
+} from "./agents/agent-pause-reasons.js";
+export type { AgentPauseReasonRecord } from "./agents/agent-pause-reasons.js";
+export {
+  collectAgentAssignedCards,
+  formatAgentAssignedCardLines,
+  formatAgentAssignedCardsCompact,
+  formatAgentDiagnosticLines,
+  formatAgentErrorRecoveryLine,
+  formatProjectAttributionLine,
+  loadAgentPendingApprovalCounts,
+  truncateAgentDiagnosticText,
+  withAgentPendingApprovalCounts,
+} from "./agents/agent-diagnostic-projection.js";
+export type {
+  AgentApprovalCountStore,
+  AgentAssignedCardRow,
+  AgentAssignedCardsResult,
+  AgentAssignedCardStore,
+  AgentDiagnosticProjectionInput,
+  ProjectAttribution,
+} from "./agents/agent-diagnostic-projection.js";
 export { MAX_TASK_LIST_TEXT_CHARS, clampTaskListText, formatTaskListText } from "./tasks/task-list-format.js";
 export { TASK_BOARD_READ_CAVEAT } from "./agent-tool-descriptions.js";
 export { collectTaskCommentEntries, renderTaskCommentSection, resolveAdvertisedCommentIds, MAX_COMMENT_LOOKUP_IDS } from "./tasks/task-comment-read.js";

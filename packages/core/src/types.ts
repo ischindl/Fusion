@@ -29,6 +29,28 @@ TaskForm needs the same browser-safe validator as the task store so operator fee
 */
 export { isValidTaskBranchName } from "./branch/branch-assignment.js";
 
+/*
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+A durable agent that goes `paused` stops every card assigned to it, and the human words for WHY were
+born in the dashboard's `stallReason.ts`. Moving them to a core leaf is only usable by the dashboard if
+THIS file re-exports them: the browser bundle aliases `@fusion/core` to types.ts (see
+`packages/dashboard/vite.config.ts`), so a symbol added to `index.ts` alone builds green under vitest
+(whose root alias points at the real index) and resolves `undefined` in `vite build` — the RUFU-220 trap
+recorded beside that alias. The Node-side half (`agent-diagnostic-projection.ts`, which needs a store)
+is deliberately NOT here.
+*/
+export {
+  AGENT_STALL_REASON_UNKNOWN,
+  AGENT_STALL_REASON_UNKNOWN_LABEL,
+  AGENT_STOPPED_STATES,
+  PAUSE_REASON_LABELS,
+  agentPauseReasonLabel,
+  classifyAgentStall,
+  isAgentStateStopped,
+  isOperatorActionablePauseReason,
+} from "./agents/agent-pause-reasons.js";
+export type { AgentPauseReasonRecord } from "./agents/agent-pause-reasons.js";
+
 export {
   computeCapacityRisk,
   DEFAULT_CAPACITY_RISK_TODO_THRESHOLD,

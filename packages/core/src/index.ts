@@ -313,6 +313,43 @@ export type {
   RankedAssignedTaskLine,
   RankAssignedTasksForWakeDeltaResult,
 } from "./agents/assigned-task-ranking.js";
+/*
+FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+A `paused` durable owner idles every card assigned to it, and no read surface could say why — the
+pause-reason vocabulary lived dashboard-only, so the CLI and the agent tools each printed the raw code
+or nothing at all. The vocabulary leaf and the Node-side projection are exported once from here so all
+five surfaces (CLI show/list, both Pi tools, the engine tool) project one shape.
+*/
+export {
+  AGENT_STALL_REASON_UNKNOWN,
+  AGENT_STALL_REASON_UNKNOWN_LABEL,
+  AGENT_STOPPED_STATES,
+  PAUSE_REASON_LABELS,
+  agentPauseReasonLabel,
+  classifyAgentStall,
+  isAgentStateStopped,
+  isOperatorActionablePauseReason,
+} from "./agents/agent-pause-reasons.js";
+export type { AgentPauseReasonRecord } from "./agents/agent-pause-reasons.js";
+export {
+  collectAgentAssignedCards,
+  formatAgentAssignedCardLines,
+  formatAgentAssignedCardsCompact,
+  formatAgentDiagnosticLines,
+  formatAgentErrorRecoveryLine,
+  formatProjectAttributionLine,
+  loadAgentPendingApprovalCounts,
+  truncateAgentDiagnosticText,
+  withAgentPendingApprovalCounts,
+} from "./agents/agent-diagnostic-projection.js";
+export type {
+  AgentApprovalCountStore,
+  AgentAssignedCardRow,
+  AgentAssignedCardsResult,
+  AgentAssignedCardStore,
+  AgentDiagnosticProjectionInput,
+  ProjectAttribution,
+} from "./agents/agent-diagnostic-projection.js";
 export { MOCK_PROVIDER_ID } from "./ai/mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./ai/mock-provider-constants.js";
 export { ZAI_PROVIDER_ID } from "./ai/zai-provider.js";

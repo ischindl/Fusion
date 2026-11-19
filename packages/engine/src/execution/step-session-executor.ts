@@ -1756,7 +1756,7 @@ export class StepSessionExecutor {
           */
           const delegationTools = this.options.agentStore
             ? [
-                createListAgentsTool(this.options.agentStore),
+                createListAgentsTool(this.options.agentStore, this.options.store!),
                 // FN-125: delegation creates board tasks and is unavailable in this lane.
                 createTaskAssignTool(this.options.agentStore, this.options.store!),
               ]

@@ -562,7 +562,15 @@ export async function getStore(
  */
 export async function resolveAgentStoreBase(
   projectName?: string,
-): Promise<{ rootDir: string; asyncLayer: AsyncDataLayer; cleanup: () => Promise<void> }> {
+): Promise<{
+  rootDir: string;
+  asyncLayer: AsyncDataLayer;
+  /** The resolved project's TaskStore — the read surface the stall projection needs. */
+  store: TaskStore;
+  /** Owning project identity, so a read surface can name WHERE it looked (RUFU-247). */
+  project: { projectId: string; projectName: string };
+  cleanup: () => Promise<void>;
+}> {
   /* FNXC:PostgresCliLifecycle 2026-07-14-19:10: Agent, message, and chat commands must surface project/PostgreSQL resolution failures and borrow a non-null layer only while retaining an explicit asynchronous owner cleanup. */
   const context = await resolveProject(projectName);
   const asyncLayer = context.store.getAsyncLayer();
@@ -573,6 +581,16 @@ export async function resolveAgentStoreBase(
   return {
     rootDir: context.projectPath,
     asyncLayer,
+    /*
+    FNXC:AgentStallDiagnostics 2026-11-19-06:23 (RUFU-247):
+    `fn agent show`/`fn agent list` answer "why did this lane stop and what is sitting on it", which
+    needs the TaskStore (assigned cards, workflow lane traits, pending approvals) plus the project's
+    identity — a cross-project miss that does not name the project it searched is a false "does not
+    exist". Both fields are ADDITIVE: the existing stop/start/import callers destructure only what they
+    used before, and `cleanup` still closes this same store, so the FN-7704 no-leak contract holds.
+    */
+    store: context.store,
+    project: { projectId: context.projectId, projectName: context.projectName },
     cleanup: () => closeProjectStore(context),
   };
 }
