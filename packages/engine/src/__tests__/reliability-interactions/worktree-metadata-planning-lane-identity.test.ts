@@ -15,7 +15,7 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../../self-healing.js";
-import * as worktreePoolModule from "../../worktree/worktree-pool.js";
+import type { WorktreeRegistryRead } from "../../worktree/worktree-pointer-state.js";
 import { withBranchWriteProvenance } from "../branch-write-provenance-store-stub.js";
 
 const { existsSyncMock } = vi.hoisted(() => ({ existsSyncMock: vi.fn<[string], boolean>() }));
@@ -84,8 +84,17 @@ class StatedProbesManager extends SelfHealingManager {
     private readonly verdicts: ProbeVerdicts,
     private readonly harness: HarnessOptions,
     private readonly calls: string[],
+    /*
+    FNXC:WorktreePointerState 2026-11-19-11:50 (RUFU-1054 merge resolution):
+    The pass now asks the registry through the three-valued seam and abstains entirely on `unreadable`, so
+    every harness states the registry the sweep is allowed to see. Leaving the bare `{ rootDir }` here would
+    shell out to git at a fake `/repo`, read `unreadable`, and end the pass before the candidate loop — the
+    same intent the removed `getRegisteredWorktreeBranchMap` spy carried, now said through the seam
+    production consults.
+    */
+    readWorktreeRegistry: (rootDir: string) => Promise<WorktreeRegistryRead>,
   ) {
-    super(store, { rootDir });
+    super(store, { rootDir, readWorktreeRegistry });
   }
 
   protected override async resolvePlanningLaneIdentityColumns(): Promise<ReadonlySet<string> | null> {
@@ -154,11 +163,22 @@ function harness(
       : {}),
   }) as unknown as TaskStore & EventEmitter;
 
-  vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(registered);
+  /*
+  FNXC:WorktreePointerState 2026-11-19-11:50 (RUFU-1054 merge resolution):
+  The `registered` map is the case's stated inventory, expressed as the honest `ok` answer of the reader the
+  sweep actually consults (`entries` = the live trees git registers, `prunable` = records whose directory git
+  says is gone). The default is `ok` with NOTHING registered — the readable-empty answer the old mocked map
+  could not distinguish from a git that refused to answer.
+  */
+  const readWorktreeRegistry = async (): Promise<WorktreeRegistryRead> => ({
+    status: "ok",
+    entries: [...registered].map(([branch, worktreePath]) => ({ branch, worktreePath })),
+    prunable: [],
+  });
   existsSyncMock.mockReset();
   existsSyncMock.mockImplementation(options.exists ?? (() => false));
 
-  const manager = new StatedProbesManager(store, ROOT_DIR, verdicts, options, probeCalls);
+  const manager = new StatedProbesManager(store, ROOT_DIR, verdicts, options, probeCalls, readWorktreeRegistry);
   return {
     store,
     manager,

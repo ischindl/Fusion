@@ -1140,6 +1140,26 @@ export type DatabaseMutationType =
    */
   | "task:reconcile-planning-lane-worktree-identity-no-action"
   /*
+  FNXC:WorktreePointerState 2026-11-18-03:32 (RUFU-1054):
+  One row per card whose recorded working directory was proven gone — the directory absent, git registering
+  nothing at that path and nothing for this branch — and whose `worktree` pointer was therefore cleared
+  while `branch` was kept. Metadata is a closed set of ids, counts and fixed enums:
+  { taskId, column, state, outcome, passCount }, where `state` is the classifier verdict that decided the
+  pass and `outcome` is `repaired`. The dead path, the branch name, the tip sha and any error sentence are
+  deliberately absent: this field's whole history is lanes that trusted a stored string about a path, so the
+  row that reports the repair must not carry one. Deliberately outside the curated delivery-pipeline
+  catalogue, documented as prose in `docs/run-audit.md`.
+  */
+  | "task:reconcile-worktree-pointer"
+  /**
+   * Deduped per (card, verdict) companion row for a candidate this pass examined and deliberately did not
+   * repair. Same five keys; `state` is the classifier's refusal code, one of its three positive states, or
+   * a `gate-*` token naming the candidate gate that refused, and `outcome` is `no-action`,
+   * `owned-elsewhere` (an `unclaimed-live-tree` row, whose adopted path the metadata reconcile's rebind arm
+   * is the only writer of) or `write-refused` (the live row drifted under the fenced write).
+   */
+  | "task:reconcile-worktree-pointer-no-action"
+  /*
   FNXC:LegacyAdoption 2026-07-19-04:30 (U9b / R10 / KTD-8):
   Startup legacy-row adoption through the KTD-8 adoption table. Metadata is
   ids/counts/outcomes-only: { taskId, action, priorStatus, column, backfilledStepCount,

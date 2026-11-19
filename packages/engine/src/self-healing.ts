@@ -405,6 +405,19 @@ import {
   type AcquisitionConflictSweepCode,
 } from "./worktree/acquisition-conflict-revalidation.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
+/*
+FNXC:WorktreePointerState 2026-11-18-03:20 (RUFU-1054):
+The pointer sweep and the metadata reconcile it follows share ONE classifier and ONE registry read, so
+the two owners of `project.tasks.worktree` cannot disagree about what "stale" means. Imported from the
+leaf, not the `worktree-pool` barrel: a classifier bound across a mocked barrel silently vanishes in the
+lane that mocked it, which is the reason `worktreeCheckoutIsReleased` stays off that barrel too.
+*/
+import {
+  classifyTaskWorktreeState,
+  createWorktreePointerFactsCollector,
+  type WorktreePointerFacts,
+  type WorktreeRegistryRead,
+} from "./worktree/worktree-pointer-state.js";
 import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "./worktree/workspace-base-branch.js";
 /*
 FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
@@ -1261,6 +1274,15 @@ export interface SelfHealingOptions {
    * preserves the prior behavior. The path passed is the absolute worktree dir.
    */
   isWorktreeResumeReserved?: (worktreePath: string) => boolean;
+  /*
+  FNXC:WorktreePointerState 2026-11-18-03:50 (RUFU-1054):
+  Injectable seam for the three-valued registry read, used by BOTH owners of `project.tasks.worktree`.
+  Production leaves it unset and gets `readWorktreeRegistrations`; tests pass an `ok` fact fixture so a
+  case that means "git answered and nothing is registered" says so out loud instead of reaching an
+  accidental empty map through a mocked helper — the shape that hid this card's defect for its whole life.
+  A reader that throws is still an unreadable registry, never an empty list.
+  */
+  readWorktreeRegistry?: (rootDir: string) => Promise<WorktreeRegistryRead>;
 }
 
 const APPROVED_TRIAGE_RECOVERY_GRACE_MS = 60_000;
@@ -2060,6 +2082,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   once instead of once per sweep pass forever, while a NEW code on the same card is still announced.
   */
   private planningLaneIdentityRefusalAudited = new Set<string>();
+  /*
+   * FNXC:WorktreePointerState 2026-11-18-03:20 (RUFU-1054):
+   * `taskId:state` memo for `task:reconcile-worktree-pointer-no-action`, the RUFU-356 shape. A candidate
+   * that stays un-repairable (a workspace card, a card whose branch is ambiguous) is reported once per
+   * reason for the life of the engine rather than once per hourly pass, while a card that starts
+   * refusing for a NEW reason still announces itself.
+   */
+  private worktreePointerNoActionAudited = new Set<string>();
   /*
    * FNXC:StrandedHoldContinuation 2026-07-26-14:15:
    * FN-8592 no-action findings are candidate-only but can persist across
@@ -3442,6 +3472,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "reclaim-self-owned-branch-conflicts", fn: () => this.reclaimSelfOwnedBranchConflicts().then(() => undefined) },
       // FN-4962 ordering invariant: metadata reconcile must run before stale-active reclaim.
       { name: "reconcile-task-worktree-metadata", fn: () => this.reconcileTaskWorktreeMetadata().then(() => undefined) },
+      /*
+      FNXC:WorktreePointerState 2026-11-18-03:30 (RUFU-1054):
+      The FN-5256 residual owner, immediately after the lane that REFUSES the class: the rebind owner gets
+      first refusal on any row both could act on, so what reaches this pass is provably a row with no live
+      checkout to rebind to. Startup runs it unconditionally like its neighbours; maintenance gates it on
+      the hourly git-churn window because classification needs one `git worktree list` per pass.
+      */
+      { name: "reconcile-worktree-pointers", fn: () => this.reconcileWorktreePointers().then(() => undefined) },
       { name: "reconcile-in-review-branch-rebind", fn: () => this.reconcileInReviewBranchRebind().then(() => undefined) },
       { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches().then(() => undefined) },
       { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls().then(() => undefined) },
@@ -4857,6 +4895,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reclaim-self-owned-branch-conflicts", fn: () => this.reclaimSelfOwnedBranchConflicts() },
           // FN-4962 ordering invariant: metadata reconcile must run before stale-active reclaim.
           { name: "reconcile-task-worktree-metadata", fn: () => this.reconcileTaskWorktreeMetadata() },
+          /*
+          FNXC:WorktreePointerState 2026-11-18-03:30 (RUFU-1054):
+          Churn-gated on the cycle's PRE-CAPTURED flag — `runMaintenance()` advances `lastGitWorktreeChurnAt`
+          before batch 1 executes, so a step that re-queried `isGitWorktreeChurnDue()` here would read false
+          on every pass and never run (RUFU-356 documents the same trap). The cadence is also the retry
+          bound: a pointer this pass refused to clear is re-probed hourly, not every maintenance tick.
+          */
+          { name: "reconcile-worktree-pointers", fn: () => (maintenancePaused || !gitWorktreeChurnDue ? Promise.resolve(0) : this.reconcileWorktreePointers()) },
           { name: "reconcile-in-review-branch-rebind", fn: () => this.reconcileInReviewBranchRebind().then(() => undefined) },
           { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches() },
           { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls() },
@@ -9037,7 +9083,44 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
 
       const allTasks = await this.store.listTasks({ slim: true, includeArchived: false, excludeLog: true });
-      const branchMap = await getRegisteredWorktreeBranchMap(this.options.rootDir);
+      /*
+      FNXC:WorktreePointerState 2026-11-18-03:50 (RUFU-1054):
+      ONE registry read for the whole pass, through the same three-valued reader the pointer sweep uses, so
+      the two owners of `worktree` cannot disagree about what is registered.
+
+      Two behaviors changed here and nothing else did — the four arms, their writes, the realpath comparison
+      and all three `task:auto-recover-worktree-metadata-*` events are byte-identical.
+
+      1. An unreadable read ends the pass before the candidate loop. `getRegisteredWorktreeBranchMap` has no
+         failure arm at all: it swallows the error into an empty map, which is how "git would not answer"
+         became "no worktree is registered anywhere", and a card whose checkout existed and was registered
+         for its own branch read as stale. Measured pre-fix on a real repository, that cleared `worktree`,
+         `branch` and `sessionFile` on a healthy `todo` card and logged a recovery (pin 3).
+      2. Entries git marks `prunable` no longer count as a live tree, because git says the directory behind
+         them is gone — the `rm -rf` shape this card is about, where the `.git/worktrees/<name>` record
+         survives and the old map kept handing back the deleted path as a rebind target. Pre-fix that made
+         the sweep "rebind" a card onto the path that had just been deleted, writing the same string back
+         and stamping `...-rebounded` (pin 1): the defect was invisible because the audit row read as a
+         success. Those entries are kept as the `prunableBranches` witness below, which is what stops the
+         narrowing from newly exposing a card to the fall-through arm's `branch` clear — a branch git still
+         holds is not a card's metadata to erase.
+      */
+      const collector = createWorktreePointerFactsCollector(this.options.rootDir, this.options.readWorktreeRegistry);
+      const { registry } = await collector.facts();
+      if (registry.status !== "ok") {
+        worktreeMetadataReconcileLog.warn(
+          `skipping the pass: the registered-worktree listing could not be read at ${this.options.rootDir}; absence is never inferred from a failed git command`,
+        );
+        return 0;
+      }
+      const branchMap = new Map<string, string>();
+      const prunableBranches = new Set<string>();
+      for (const entry of registry.entries) {
+        branchMap.set(entry.branch, canonicalizePath(entry.worktreePath));
+      }
+      for (const entry of registry.prunable ?? []) {
+        prunableBranches.add(entry.branch);
+      }
       // FN-5256: macOS git surfaces realpath-normalized worktree paths (/private/var/...)
       // while task.worktree may be persisted as the symlinked path. Compare on realpath
       // to avoid false-stale flagging that yanks a live worktree.
@@ -9185,6 +9268,31 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           continue;
         }
 
+        /*
+        FNXC:WorktreePointerState 2026-11-18-03:52 (RUFU-1054):
+        git holds an administrative record for this branch but marks the tree behind it unbacked, so the
+        pointer is wrong while the branch is real. Refuse, and say so through the same refusal the FN-5256
+        guard already emits: the fall-through arm below clears `branch` as well as `worktree`, and nulling
+        the branch of a ref git still holds would strand the card's own commits with no owner. Repairing the
+        pointer for a card in a WIP or review lane belongs to `reconcileWorktreePointers`, which clears
+        `worktree` alone; for any other lane the next acquisition overwrites the pointer, because
+        `prepare-graph-node-execution` already strips a gone pointer before `step-execute` acquires.
+        */
+        if (normalizedBranch && prunableBranches.has(normalizedBranch)) {
+          await this.emitWorktreeMetadataAuditEvent({
+            taskId: task.id,
+            mutationType: "task:auto-recover-worktree-metadata-skipped-active",
+            previousWorktree,
+            newWorktree: previousWorktree,
+            previousBranch,
+            newBranch: previousBranch,
+          });
+          worktreeMetadataReconcileLog.warn(
+            `[RUFU-1054] skipped clearing worktree metadata for ${task.id}: git registers ${normalizedBranch} as prunable, so the path is gone but the branch is not: ${previousWorktree}`,
+          );
+          continue;
+        }
+
         const scopeOverrideMergeActiveSafe =
           !branchOnlyPointer
           && task.scopeOverride === true
@@ -9329,6 +9437,284 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       worktreeMetadataReconcileLog.error(`reconcileTaskWorktreeMetadata failed: ${errorMessage}`);
       return 0;
     }
+  }
+
+  /*
+  FNXC:WorktreePointerState 2026-11-18-03:25 (RUFU-1054):
+  THE FN-5256 RESIDUAL OWNER. `reconcileTaskWorktreeMetadata` refuses to clear worktree metadata for a card
+  in a WIP or review lane — FN-5256's guard, earned when a live card's pointer was yanked out from under a
+  running shell — and nothing else picked that class up. A card that lost its directory while sitting in
+  WIP therefore kept pointing at it: measured on the live install 2026-11-15, 73 cards named a path with
+  nothing behind it, and the remedy was a person running `UPDATE project.tasks SET worktree = NULL`, which
+  is not a recovery lane.
+
+  Three things make this sweep safe where its neighbour is not:
+  - it acts on exactly ONE classifier state, `stale-pointer`: the directory is absent, git registers nothing
+    at that path, and git registers nothing for this branch either. `unclaimed-live-tree` is reported as
+    `owned-elsewhere` and written by nobody here, because `reconcileTaskWorktreeMetadata`'s rebind arm is
+    that field's only writer and two writers of one column is how a repair becomes a race;
+  - every repair is a fenced re-read of the LIVE row, so a card that was dispatched, rebound, paused, or
+    moved between the page read and the write keeps whatever state it now has;
+  - `branch` is never cleared. The pointer says where a checkout is; the branch says where the work is.
+    Clearing both is the difference between RUFU-243's manual repair (which survived 50 minutes of real
+    execution) and a card that loses its identity.
+
+  It runs AFTER `reconcile-task-worktree-metadata` in both pass lists (FN-4962's ordering comment governs
+  that pair), so the rebind owner always gets first refusal on a row both lanes could act on: anything this
+  sweep then clears is a row the rebind owner provably had no candidate for.
+  */
+  async reconcileWorktreePointers(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause || settings.enginePaused) return 0;
+
+      // ONE registry read for the whole pass, and a pass that could not read git repairs nothing at all.
+      // `getRegisteredWorktreeBranchMap` returns an empty map on a git failure, which is how a transient
+      // subprocess problem used to look like "nothing is registered anywhere" and clear live metadata.
+      const collector = createWorktreePointerFactsCollector(this.options.rootDir, this.options.readWorktreeRegistry);
+      const facts = await collector.facts();
+      if (facts.registry.status !== "ok") {
+        worktreeMetadataReconcileLog.warn(
+          "reconcileWorktreePointers: the worktree registry could not be read — the pass repairs nothing",
+        );
+        return 0;
+      }
+
+      const pointerWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const pointerReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      if (pointerWipColumns.size === 0 && pointerReviewColumns.size === 0) {
+        // An unreadable lane vocabulary would make every card look out-of-scope (or every card in-scope);
+        // both readings are guesses, so the pass abstains. Same rule RUFU-288 names for its own sweep.
+        worktreeMetadataReconcileLog.warn(
+          "reconcileWorktreePointers: neither WIP nor review lanes resolved — the pass repairs nothing",
+        );
+        return 0;
+      }
+
+      const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false, excludeLog: true });
+      let repaired = 0;
+      let examined = 0;
+      for (const task of tasks) {
+        // Page-cheap candidate gates, silent like RUFU-356's: these rows are not this sweep's candidates,
+        // so a row per non-candidate would be noise. `todo`/hold rows are deliberately excluded — that
+        // lane's state-B rows are the existing sweep's clear, and the two lane sets are disjoint by
+        // construction so neither writes the other's rows.
+        if (!task.worktree) continue;
+        if (!pointerWipColumns.has(task.column) && !pointerReviewColumns.has(task.column)) continue;
+
+        examined += 1;
+        if (await this.reconcileWorktreePointer(task, { facts, executingIds, passCount: examined }) === "repaired") {
+          repaired += 1;
+        }
+      }
+
+      if (repaired > 0) {
+        worktreeMetadataReconcileLog.log(
+          `Cleared the stale worktree pointer on ${repaired} active-lane card(s) whose recorded working directory is gone and which git registers nowhere`,
+        );
+      }
+      if (examined > repaired) {
+        worktreeMetadataReconcileLog.debug(
+          `reconcileWorktreePointers examined ${examined} active-lane card(s), repaired ${repaired}`,
+        );
+      }
+      return repaired;
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      worktreeMetadataReconcileLog.error(`reconcileWorktreePointers failed: ${errorMessage}`);
+      return 0;
+    }
+  }
+
+  /**
+   * One WIP/review card: classify its pointer and clear it only when git proves the checkout is gone.
+   *
+   * FNXC:WorktreePointerState 2026-11-18-03:25 (RUFU-1054):
+   * Every non-repair branch emits a reasoned `-no-action` row. Silence is the failure mode this card was
+   * filed for: RUFU-243 sat in a WIP lane with a pointer nothing could reconcile and no record anywhere
+   * that a pass had looked at it.
+   *
+   * The metadata vocabulary stays inside five keys: `state` names the verdict that decided the pass (one
+   * of the three positive states, the classifier's refusal code when it answered `unknown`, or a `gate-*`
+   * token when a candidate gate refused before classification), and `outcome` names what the pass did
+   * (`no-action`, `owned-elsewhere`, `write-refused`). The dead path, the branch tip, and any error text
+   * are unrepresentable here on purpose — RUFU-356's lesson is that a decision or a row carrying a
+   * sentence is how prose becomes evidence.
+   */
+  private async reconcileWorktreePointer(
+    task: Task,
+    context: { facts: WorktreePointerFacts; executingIds: Set<string>; passCount: number },
+  ): Promise<"repaired" | "no-action"> {
+    const noAction = async (state: string, outcome?: "no-action" | "owned-elsewhere" | "write-refused"): Promise<"no-action"> => {
+      await this.emitWorktreePointerNoAction(task, state, context.passCount, outcome);
+      return "no-action";
+    };
+
+    if (task.deletedAt != null) return noAction("gate-deleted");
+    if (isWorkspaceTask(task)) return noAction("gate-workspace-task");
+    // An operator park is authoritative; the sweep never reaches through it.
+    if (task.userPaused === true || task.paused === true) return noAction("gate-paused");
+    if (isTaskExternallyBlocked(task)) return noAction("gate-externally-blocked");
+    if (context.executingIds.has(task.id)) return noAction("gate-executing");
+    if (task.worktree && activeSessionRegistry.isPathActive(task.worktree)) return noAction("gate-path-active");
+    // FN-7802 owns a merge-active card whose worktree vanished mid-merge; RUFU-356 owns a card whose own
+    // error sentence is an acquisition conflict. Both re-derive from more evidence than a pointer check.
+    if (typeof task.status === "string" && RECONCILE_SCOPE_OVERRIDE_MERGE_ACTIVE_STATUS_SET.has(task.status)) {
+      return noAction("gate-merge-active");
+    }
+    if (isMissingWorktreeSessionStartFailure(task.error ?? undefined)) return noAction("gate-missing-worktree-session-start");
+    if (isAcquisitionExhaustionError(task.error ?? undefined)) return noAction("gate-acquisition-conflict");
+
+    /*
+    The branch handed to the classifier is the RESOLVED working branch, exactly what the metadata
+    reconcile matches its registry against — a card with `branch: null` still has a derivable
+    `fusion/<id>`, and asking git about a name the row never recorded would invent a refusal
+    (`no-branch`) for a card whose checkout is perfectly findable.
+    */
+    const verdict = classifyTaskWorktreeState(
+      {
+        worktree: task.worktree,
+        branch: resolveTaskWorkingBranch(task),
+        workspaceWorktrees: task.workspaceWorktrees,
+      },
+      context.facts,
+    );
+
+    if (verdict.state === "stale-pointer") return this.clearStaleWorktreePointer(task, context.passCount);
+    if (verdict.state === "consistent") {
+      // A healthy card is not a refusal: it is the state every executing card is in, and a row per card per
+      // engine lifetime for "nothing is wrong here" would bury the rows that are not silence by accident.
+      // RUFU-356 stays silent for the same reason on rows that are not its candidates.
+      return "no-action";
+    }
+    if (verdict.state === "unclaimed-live-tree") {
+      // `reconcileTaskWorktreeMetadata`'s rebind arm already ran this pass and holds the only sanctioned
+      // write of an adopted path; a second writer here would be writing the same column from two places.
+      return noAction("unclaimed-live-tree", "owned-elsewhere");
+    }
+    return noAction(verdict.code ?? "unknown");
+  }
+
+  /**
+   * The repair: null exactly one field, after re-deriving every gate against the live row.
+   *
+   * FNXC:WorktreePointerState 2026-11-18-03:25 (RUFU-1054):
+   * `updatedAt` equality is deliberately NOT among the re-checks. Any writer bumps it — including a
+   * History-line append — so requiring it would starve the repair on exactly the busy cards that need it,
+   * while every predicate that actually protects a checkout (the pointer identity, the lane, the branch,
+   * the pause and block state, the merge sub-status, the error family) is re-derived from the live row.
+   * This is a disclosed deviation from the card's parenthetical, not an omission.
+   */
+  private async clearStaleWorktreePointer(task: Task, passCount: number): Promise<"repaired" | "no-action"> {
+    const expectedWorktree = task.worktree ?? null;
+    const expectedBranch = task.branch ?? null;
+    const expectedColumn = task.column;
+    const buildPatch = (live: Task): TaskUpdatePatch | null => {
+      if (live.deletedAt != null) return null;
+      if (live.column !== expectedColumn) return null;
+      // The pointer that was judged stale is the only pointer this repair may clear. If acquisition
+      // re-derived it in the meantime, the row is no longer the one the classifier looked at.
+      if ((live.worktree ?? null) !== expectedWorktree) return null;
+      if ((live.branch ?? null) !== expectedBranch) return null;
+      if (live.userPaused === true || live.paused === true) return null;
+      if (isTaskExternallyBlocked(live)) return null;
+      if (isWorkspaceTask(live)) return null;
+      if (typeof live.status === "string" && RECONCILE_SCOPE_OVERRIDE_MERGE_ACTIVE_STATUS_SET.has(live.status)) return null;
+      if (isMissingWorktreeSessionStartFailure(live.error ?? undefined)) return null;
+      if (isAcquisitionExhaustionError(live.error ?? undefined)) return null;
+      // Exactly one field. No `branch`, no `sessionFile`, no counters, no move.
+      return { worktree: null };
+    };
+
+    let wrote = false;
+    if (typeof this.store.updateTaskAtomic === "function") {
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        const patch = buildPatch(live);
+        if (patch) wrote = true;
+        return patch;
+      });
+    } else {
+      // Compatibility only for structural test/extension stores; production TaskStore is atomic.
+      const live = await this.store.getTask(task.id).catch(() => null);
+      const patch = live ? buildPatch(live) : null;
+      if (live && patch) {
+        await this.store.updateTask(task.id, patch);
+        wrote = true;
+      }
+    }
+
+    if (!wrote) {
+      // The live row drifted away from the row the classifier answered on. The card keeps its state.
+      await this.emitWorktreePointerNoAction(task, "stale-pointer", passCount, "write-refused");
+      return "no-action";
+    }
+
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-worktree-pointer", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-worktree-pointer" as DatabaseMutationType,
+      target: task.id,
+      // ids/counts/fixed enums only: no dead path, no adopted path, no branch name, no sha.
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        state: "stale-pointer",
+        outcome: "repaired",
+        passCount,
+      },
+    }, { log });
+
+    /*
+    The card's own sentence, in operator language and carrying no absolute path: run-audit has no board
+    surface, so a repair recorded only there is invisible to the person who will otherwise conclude the
+    card is broken again.
+    */
+    const marker = "[worktree-pointer] The recorded working directory no longer exists and git registers no checkout for this branch, so the pointer was cleared. The next run will create a fresh checkout; the branch and its commits were left untouched.";
+    if (typeof this.store.logEntryOnce === "function") {
+      await this.store.logEntryOnce(task.id, {
+        action: marker,
+        outcome: "stale-pointer",
+        dedupeKey: `worktree-pointer:${task.id}:cleared`,
+        windowMs: 24 * 60 * 60 * 1000,
+      }).catch(() => undefined);
+    } else {
+      await this.store.logEntry(task.id, marker).catch(() => undefined);
+    }
+    return "repaired";
+  }
+
+  /**
+   * One deduped `-no-action` row per `(card, verdict)` — the RUFU-356 memo. A card that stays
+   * un-repairable is reported once per reason for the life of the engine, and a card that starts refusing
+   * for a NEW reason still announces itself.
+   */
+  private async emitWorktreePointerNoAction(
+    task: Pick<Task, "id" | "column">,
+    state: string,
+    passCount: number,
+    outcome: "no-action" | "owned-elsewhere" | "write-refused" = "no-action",
+  ): Promise<void> {
+    const key = `${task.id}:${state}`;
+    if (this.worktreePointerNoActionAudited.has(key)) return;
+    this.worktreePointerNoActionAudited.add(key);
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-worktree-pointer", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-worktree-pointer-no-action" as DatabaseMutationType,
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        state,
+        outcome,
+        passCount,
+      },
+    }, { log });
   }
 
   async autoReboundPausedScopeDecay(options?: { ignoreAgeGate?: boolean }): Promise<number> {

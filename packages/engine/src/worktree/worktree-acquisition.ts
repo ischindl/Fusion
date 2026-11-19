@@ -5,7 +5,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile 
 import { exec } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
+import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, isTaskExternallyBlocked, isWorkspaceTask, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
 import { resolveTaskWorkingBranchWithOrigin } from "./worktree-names.js";
 import { findWorktreeHoldingBranch, resolveWorkspaceRootMembership } from "./workspace-root-member.js";
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
@@ -25,6 +25,19 @@ import {
   RemovalReason,
 } from "./worktree-pool.js";
 import { pinnedWorktreePathForTask } from "./worktree-pinning.js";
+/*
+ * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054):
+ * The shared pointer-state module is imported rather than re-implemented here so acquisition and the
+ * self-healing sweep cannot hold two opinions of "stale": one definition of the three states, one bounded
+ * registry read, one refusal vocabulary.
+ */
+import {
+  classifyTaskWorktreeState,
+  createWorktreePointerFactsCollector,
+  type WorktreeRegistryRead,
+} from "./worktree-pointer-state.js";
+import { isMissingWorktreeSessionStartFailure, MERGE_ACTIVE_MISSING_WORKTREE_STATUSES } from "../healing/restart-recovery-coordinator.js";
+import { isAcquisitionExhaustionError } from "./acquisition-conflict-revalidation.js";
 import {
   NativeWorktreeBackend,
   WorktrunkOperationError,
@@ -77,6 +90,8 @@ import {
 import { getConfiguredWorktreeInitCommand } from "./dependency-bootstrap-inference.js";
 
 const execAsync = promisify(exec);
+/** The FN-7802 lanes: a merge-active card whose worktree vanished mid-merge is that sweep's candidate, not this repair's. */
+const ACQUISITION_MERGE_ACTIVE_STATUSES = new Set<string>(MERGE_ACTIVE_MISSING_WORKTREE_STATUSES);
 const PRESERVED_ORPHAN_RETENTION_COUNT = 10;
 const PRESERVED_ORPHAN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -128,6 +143,14 @@ export interface AcquireTaskWorktreeOptions {
   workspaceContext?: WorkspaceWorktreeContext;
   /** A workspace task directory names the exact child destination and bypasses pinned-name derivation. */
   forceWorktreePath?: boolean;
+  /*
+   * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054):
+   * Test seam for the registry read the pointer repair needs, mirroring the identical seam on
+   * `SelfHealingManager`. It exists so a test can state whether git ANSWERED (`ok` with entries) or
+   * REFUSED (`unreadable`); production leaves it unset and gets `readWorktreeRegistrations`. Passing an
+   * unreadable read must make the acquisition repair nothing — that is the assertion this seam buys.
+   */
+  readWorktreeRegistry?: (rootDir: string) => Promise<WorktreeRegistryRead>;
 }
 
 export interface AcquireTaskWorktreeResult {
@@ -643,7 +666,187 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     throw refusal;
   };
 
-  let worktreePath: string = task.worktree || await resolveTaskWorktreePathForBackend(
+  /*
+   * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054):
+   * THE ACQUISITION LANE REPAIRS THE POINTER DURABLY, IT NO LONGER ONLY TOLERATES IT.
+   *
+   * `project.tasks.worktree` is a cache of where a checkout lives. Two executor seams already noticed a
+   * dead one — `prepare-graph-node-execution.ts` and `run-graph-custom-node.ts` both build
+   * `{ ...live, worktree: undefined, sessionFile: undefined }` for the duration of one dispatch and append
+   * a History line — and because neither ever wrote the row, the column stayed wrong forever: RUFU-243's
+   * card re-announced the same missing directory on every dispatch while the dashboard, the cleanup
+   * ledger, and every `hasWorktree` reader kept describing a path with nothing behind it. This is the one
+   * place that sees the pointer AND has git's answer, so this is where the durable clear belongs.
+   *
+   * Bounding rules, all three load-bearing:
+   * - The gate is `!existsSync(recorded)`, which is state B's own precondition (`stale-pointer` is only
+   *   ever the directory-absent shape). A pointer whose directory exists is never classified, so a warm
+   *   state-A dispatch of a healthy card pays ZERO extra `git worktree list --porcelain` — the read budget
+   *   this card was filed with, and the reason the facts collector is lazy rather than a resolved argument.
+   * - Only `stale-pointer` writes. `unclaimed-live-tree` is left to `reconcileTaskWorktreeMetadata`'s rebind
+   *   arm (two writers of one adopted path is how a repair becomes a race) and every `unknown` refusal —
+   *   `registry-unreadable` above all — repairs nothing. `consistent` and `unknown` reach the reservation
+   *   exactly as they did before this code existed.
+   * - The write is `{ worktree: null }` and nothing else: never `branch`, never `sessionFile`, never a
+   *   column move, never a counter. The arm at the non-pinned resume classification below is deliberately
+   *   NOT reused for this: it clears `branch` too, which strands a ref git still holds. `branch` says where
+   *   the work is; the pointer only says where a checkout is.
+   */
+  /*
+   * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054):
+   * THE ACQUISITION LANE REPAIRS THE POINTER DURABLY; IT NO LONGER ONLY TOLERATES IT.
+   *
+   * `project.tasks.worktree` is a cache of where a checkout lives. Two executor seams already noticed a dead
+   * one — `prepare-graph-node-execution.ts` and `run-graph-custom-node.ts` each build
+   * `{ ...live, worktree: undefined, sessionFile: undefined }` for the duration of one dispatch and append a
+   * History line — and because neither ever wrote the row, the column stayed wrong for the whole life of the
+   * card: RUFU-243 re-announced the same missing directory on every dispatch while the card face, the cleanup
+   * ledger, and every `hasWorktree` reader kept describing a path with nothing behind it. Acquisition is the
+   * lane that holds the pointer AND can ask git, so this is where the clear becomes durable: a card whose row
+   * enters here with a gone pointer leaves with the persisted column matching reality, in the same dispatch.
+   *
+   * Four rules bound it, all load-bearing:
+   * - The gate is `!existsSync(recorded)`, state B's own precondition (`stale-pointer` is only ever the
+   *   directory-absent shape). A pointer whose directory exists is never classified, so the warm state-A
+   *   dispatch of a healthy card pays ZERO extra `git worktree list --porcelain` — the read budget this card
+   *   was filed with, and the reason the shared facts collector is lazy rather than a resolved argument.
+   * - Only `stale-pointer` writes. `unclaimed-live-tree` is left to `reconcileTaskWorktreeMetadata`'s rebind
+   *   arm (two writers of one adopted path is how a repair becomes a race) and every `unknown` refusal —
+   *   `registry-unreadable` above all — repairs nothing.
+   * - The write is `{ worktree: null }` and nothing else: never `branch`, never `sessionFile`, never a
+   *   counter, never a column move. The non-pinned resume arm below is deliberately NOT reused for this — it
+   *   clears `branch` too, which strands a ref git still holds. `branch` says where the work is; the pointer
+   *   only says where a checkout is.
+   * - One candidate-gate list decides both whether to ask git and whether to write, so the read and the write
+   *   cannot disagree about who owns the row.
+   *
+   * Returns the pointer acquisition must treat as persisted: `null` after a durable clear (the row now
+   * matches git), or the recorded value UNCHANGED for every refusal, every non-repairing verdict, and every
+   * write the live row refused. An un-persisted repair deliberately does NOT steer this dispatch either: a
+   * lane that diverges from the row it read while another writer is still moving that row is how a metadata
+   * repair becomes a race, so the card keeps behaving exactly as it did before this code existed.
+   */
+  const reconcileStaleWorktreePointer = async (recorded: string | null): Promise<string | null> => {
+    if (!recorded) return null;
+    /*
+     * A workspace row holds one pointer per repository and the shared FN-5256 guard exists because clearing
+     * one lane's metadata mid-operation stranded the operation. `workspaceContext` (a per-repo re-entry),
+     * `suppressSingularWorktreePersist` (the same lane's write restriction), and `forceWorktreePath` (a
+     * workspace task dir that dictates the child destination) are the three shapes where the singular
+     * column is not this acquisition's to write, so the classifier is not even consulted — the classifier
+     * refuses a workspace row anyway, and asking git first would only spend a subprocess on a foregone
+     * answer.
+     */
+    if (workspaceContext || opts.forceWorktreePath || opts.suppressSingularWorktreePersist || isWorkspaceTask(task)) return recorded;
+    /*
+     * State B's own precondition: `stale-pointer` is only ever the directory-absent shape. A pointer whose
+     * directory exists is therefore never classified, which is what keeps a warm state-A dispatch of a
+     * healthy card free of any new `git worktree list --porcelain`.
+     */
+    if (existsSync(recorded)) return recorded;
+
+    const verdict = classifyTaskWorktreeState(
+      { worktree: recorded, branch: branchName, workspaceWorktrees: task.workspaceWorktrees },
+      await createWorktreePointerFactsCollector(rootDir, opts.readWorktreeRegistry).facts(),
+    );
+    // `consistent`, `unclaimed-live-tree`, and every `unknown` refusal (including `registry-unreadable`)
+    // reach the reservation unchanged, exactly as they did before this function existed.
+    if (verdict.state !== "stale-pointer") return recorded;
+
+    const buildPatch = (live: Task): Parameters<TaskStore["updateTask"]>[1] | null => {
+      if (live.deletedAt != null) return null;
+      // The pointer that was judged stale is the only pointer this repair may clear. If another writer
+      // re-derived it in the meantime, the row is no longer the one the classifier answered on.
+      if ((live.worktree ?? null) !== recorded) return null;
+      if ((live.branch ?? null) !== (task.branch ?? null)) return null;
+      if (live.column !== task.column) return null;
+      if (live.userPaused === true || live.paused === true) return null;
+      if (isTaskExternallyBlocked(live)) return null;
+      if (isWorkspaceTask(live)) return null;
+      // FN-7802 owns a merge-active card whose worktree vanished mid-merge; RUFU-356 owns a card parked on
+      // its own acquisition conflict. Both re-derive from more evidence than a pointer check can carry.
+      if (typeof live.status === "string" && ACQUISITION_MERGE_ACTIVE_STATUSES.has(live.status)) return null;
+      if (isMissingWorktreeSessionStartFailure(live.error ?? undefined)) return null;
+      if (isAcquisitionExhaustionError(live.error ?? undefined)) return null;
+      // FN-5256, kept: a session can still be running with its cwd under a directory that has been deleted.
+      if (activeSessionRegistry.isPathActive(recorded)) return null;
+      // Exactly one field. No `branch`, no `sessionFile`, no counters, no move.
+      return { worktree: null };
+    };
+
+    let cleared = false;
+    try {
+      if (typeof store.updateTaskAtomic === "function") {
+        await store.updateTaskAtomic(
+          task.id,
+          (live) => {
+            const patch = buildPatch(live);
+            if (patch) cleared = true;
+            return patch;
+          },
+          runContext,
+          () => !activeSessionRegistry.isPathActive(recorded),
+        );
+      } else {
+        // Compatibility only for structural test/extension stores; production TaskStore is atomic.
+        const live = typeof store.getTask === "function" ? await store.getTask(task.id).catch(() => null) : null;
+        const patch = live ? buildPatch(live) : null;
+        if (patch) {
+          await persistWorktreeAssignment(patch);
+          cleared = true;
+        }
+      }
+    } catch (error) {
+      // A metadata repair never fails an acquisition: the card is no worse off than it was a moment ago.
+      logger?.warn(`${task.id}: stale worktree pointer repair threw: ${formatError(error)}`);
+      return recorded;
+    }
+
+    if (!cleared) {
+      if (logger?.debug) logger.debug(`${task.id}: stale worktree pointer left in place — the live row no longer matches the pointer that was classified`);
+      return recorded;
+    }
+
+    await audit?.git({
+      type: "worktree:incomplete-detected",
+      target: recorded,
+      metadata: {
+        classification: "stale-pointer",
+        reason: "Recorded working directory is absent and git registers no checkout at that path or for this branch; the pointer column was cleared so this acquisition derives its own path.",
+        source: "pointer-state",
+        taskId: task.id,
+      },
+    });
+    /*
+    The card's own sentence, in operator language and carrying no absolute path or branch name: run-audit has
+    no board surface, and the two executor strips already taught agents that a History line here means the
+    column is still wrong. Shares the sweep's dedupe key so one card gets one line per day for this class
+    however many lanes repaired it.
+    */
+    const marker = "[worktree-pointer] The recorded working directory no longer exists and git registers no checkout for this branch, so the pointer was cleared. This run creates a fresh checkout; the branch and its commits were left untouched.";
+    if (typeof store.logEntryOnce === "function") {
+      await store.logEntryOnce(task.id, {
+        action: marker,
+        outcome: "stale-pointer",
+        dedupeKey: `worktree-pointer:${task.id}:cleared`,
+        windowMs: 24 * 60 * 60 * 1000,
+      }).catch(() => undefined);
+    } else {
+      await store.logEntry(task.id, marker, undefined, runContext).catch(() => undefined);
+    }
+    return null;
+  };
+
+  /*
+   * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054): the pointer this acquisition may act on, after
+   * the durable repair above. Every path decision downstream — `worktreePath`, `isResume`, the pinned
+   * flow's `persistedPathIsManaged`/`pin-rederived` arm, and the registered-tree adoption arm — reads this
+   * value instead of `task.worktree`, so a pointer that was cleared on the ROW also stops steering this
+   * dispatch instead of being re-derived from a string the row no longer holds.
+   */
+  const persistedPointer: string | null = await reconcileStaleWorktreePointer(task.worktree ?? null);
+
+  let worktreePath: string = persistedPointer || await resolveTaskWorktreePathForBackend(
     rootDir,
     task.id.toLowerCase(),
     settings,
@@ -654,9 +857,9 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
 
   // Grouped workspace paths have two container levels; native git requires the immediate parent to exist.
   if (workspaceContext && backend.kind !== "worktrunk") await mkdir(dirname(worktreePath), { recursive: true });
-  let isResume = Boolean(task.worktree && existsSync(worktreePath));
+  let isResume = Boolean(persistedPointer && existsSync(worktreePath));
   // Worktrunk owns its own layout; native task-id pinning runs its derive→validate→reuse-or-recreate path below.
-  if (!pinned && task.worktree && isResume) {
+  if (!pinned && persistedPointer && isResume) {
     const resumeClassification = await classifyTaskWorktree(rootDir, worktreePath);
     /*
      * FNXC:WorktreeLiveness 2026-06-21-11:10:
@@ -1141,20 +1344,27 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
    */
   const acquirePinnedWorktree = async (): Promise<AcquireTaskWorktreeResult> => {
     const derivedPinnedPath = pinnedWorktreePathForTask(task.id, settings, rootDir, workspaceContext);
-    const persistedPathIsManaged = task.worktree
-      && basename(canonicalizePath(task.worktree)) === task.id.toLowerCase()
-      && canonicalizePath(task.worktree) !== canonicalizePath(rootDir)
-      && isInsideWorktreesDir(rootDir, task.worktree, settings, workspaceContext);
-    const pinnedPath = persistedPathIsManaged ? task.worktree! : derivedPinnedPath;
+    /*
+     * FNXC:WorktreePointerState 2026-11-19-08:30 (RUFU-1054): every path decision below reads
+     * `persistedPointer`, the value the pointer reconcile above left standing, rather than `task.worktree`.
+     * A pointer that was cleared DURABLY must also stop steering this dispatch — otherwise the row and the
+     * run disagree for the remainder of the acquisition, which is the disagreement this card exists to end.
+     * When nothing was repaired (state A, state C, any `unknown`, or a refused write) the two are identical.
+     */
+    const persistedPathIsManaged = persistedPointer
+      && basename(canonicalizePath(persistedPointer)) === task.id.toLowerCase()
+      && canonicalizePath(persistedPointer) !== canonicalizePath(rootDir)
+      && isInsideWorktreesDir(rootDir, persistedPointer, settings, workspaceContext);
+    const pinnedPath = persistedPathIsManaged ? persistedPointer! : derivedPinnedPath;
     const resumedBranch = task.branch ?? branchName;
 
-    if (task.worktree && canonicalizePath(task.worktree) !== canonicalizePath(pinnedPath)) {
+    if (persistedPointer && canonicalizePath(persistedPointer) !== canonicalizePath(pinnedPath)) {
       await audit?.git({
         type: "worktree:pin-rederived",
         target: pinnedPath,
-        metadata: { taskId: task.id, previous: task.worktree, derived: pinnedPath, source: "acquire" },
+        metadata: { taskId: task.id, previous: persistedPointer, derived: pinnedPath, source: "acquire" },
       });
-      await store.logEntry(task.id, "Re-derived task-pinned worktree path from task id", `${task.worktree} -> ${pinnedPath}`, runContext);
+      await store.logEntry(task.id, "Re-derived task-pinned worktree path from task id", `${persistedPointer} -> ${pinnedPath}`, runContext);
       await persistWorktreeAssignment({ worktree: pinnedPath });
     }
 
@@ -1207,7 +1417,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
          * later lifecycle steps see a successful acquisition on an unassigned task. Idempotent when the cache
          * was already correct.
          */
-        if (task.worktree !== pinnedPath || task.branch !== resumedBranch) {
+        if (persistedPointer !== pinnedPath || task.branch !== resumedBranch) {
           // FNXC:BranchWriteOrigin 2026-08-28-10:12: warm reuse can adopt an operator-override branch; derive origin (#3523 Greptile P1).
           await persistWorktreeAssignment({ worktree: pinnedPath, branch: resumedBranch, branchWriteOrigin: branchWriteOriginFor(resumedBranch) });
         }
@@ -1487,7 +1697,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     return acquirePinnedWorktree();
   }
 
-  if (!workspaceContext && !task.worktree) {
+  if (!workspaceContext && !persistedPointer) {
     const registeredMatches = (await getRegisteredWorktreeBranches(rootDir))
       .filter((entry) => entry.branch === branchName);
     if (registeredMatches.length === 1) {
@@ -1508,7 +1718,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
   }
 
-  if (task.worktree && isResume) {
+  if (persistedPointer && isResume) {
     // FNXC:EngineDiagnostics 2026-08-03-05:54: resume reuses the pinned path — expected, not a default-visible event.
     if (logger?.debug) logger.debug(`Reusing existing worktree: ${worktreePath}`);
     const resumedBranch = task.branch ?? branchName;

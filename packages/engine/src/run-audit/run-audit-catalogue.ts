@@ -110,6 +110,17 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:reconcile-stale-duplicate-decision",
   "task:reconcile-orphaned-non-convergence-hold",
   "task:reconcile-terminal-branch-conflict-park",
+  /*
+  FNXC:WorktreePointerState 2026-11-19-09:09 (RUFU-1054):
+  The pointer residual FN-5256 left unowned is a card whose recorded working directory is gone. Before this
+  pair existed the class was not merely unrepaired but recorded as fixed: the metadata rebind re-wrote the
+  same deleted path back and stamped `task:auto-recover-worktree-metadata-rebound`. These two rows are the
+  first run-audit evidence about that column that describes a real decision — a clear, or a named reason why
+  nothing was cleared. They cover only the sweep; acquisition's own durable clear rides the pre-existing
+  `worktree:incomplete-detected` lane with `source: "pointer-state"`.
+  */
+  "task:reconcile-worktree-pointer",
+  "task:reconcile-worktree-pointer-no-action",
   "task:reconcile-stale-agent-assignment",
   "task:reconcile-engine-downtime-active-timing",
   "task:reconcile-engine-downtime-active-timing-no-action",
@@ -225,6 +236,10 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Self-healing clears a drifted stage-one approval hold (code-review-non-convergence or plan-review-replan-cap) whose gate evidence no longer exists, in place and without a lifecycle move.",
   "task:reconcile-terminal-branch-conflict-park":
     "Self-healing clears a stale branch-conflict park badge on a terminal-lane card whose premise is re-proven dead (branch ref absent and no registered worktree), in place and without a lifecycle move.",
+  "task:reconcile-worktree-pointer":
+    "Self-healing nulled a task's recorded working directory (outcome `repaired`) because git proves no checkout lives there or anywhere for that branch; the branch and its commits are untouched.",
+  "task:reconcile-worktree-pointer-no-action":
+    "Self-healing examined one worktree pointer and left it standing, naming why: another lane owns the write (`owned-elsewhere`), the fenced live-row re-read drifted (`write-refused`), or git refused to answer.",
   "task:reconcile-stale-duplicate-decision":
     "Self-healing clears a recurring duplicate-decision pause with no canonical target.",
   "task:reconcile-stale-agent-assignment":

@@ -213,8 +213,13 @@ pgTest("self-healing reconcileTaskWorktreeMetadata planning-lane identity (Postg
     const kept = await store.getTask(id);
     expect(kept?.branch).toBe("fusion/rufu893pg-d1");
     expect(kept?.column).toBe("todo");
-    const refusals = await auditRows(id, REFUSED_EVENT);
-    expect(refusals).toHaveLength(1);
-    expect(refusals[0]).toMatchObject({ code: "probe-unknown", outcome: "withheld" });
+    /*
+    FNXC:WorktreePointerState 2026-11-19-11:50 (RUFU-1054 merge resolution):
+    The verdict is unchanged — an unanswerable root clears NOTHING — but the refusal now happens one level
+    earlier: the pass reads the registry once through the three-valued reader, gets `unreadable`, and abstains
+    before the candidate loop, so no per-card `probe-unknown` row is authored. The pointers surviving with
+    their column untouched, asserted above, is the invariant this case exists to hold.
+    */
+    expect(await auditRows(id, REFUSED_EVENT)).toEqual([]);
   });
 });

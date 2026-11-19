@@ -118,6 +118,12 @@ vi.mock("../worktree/worktree-pool.js", async () => {
   classifyTaskWorktree: vi.fn().mockResolvedValue({ ok: false, classification: "missing", reason: "test-default" }),
   getRegisteredWorktreePaths: vi.fn().mockResolvedValue(new Set<string>()),
   getRegisteredWorktreeBranchMap: vi.fn().mockResolvedValue(new Map<string, string>()),
+  /*
+  FNXC:WorktreePointerState 2026-11-18-04:02 (RUFU-1054): the pointer sweeps canonicalise registry paths with
+  this helper, and these fixtures use synthetic absolute paths — which is exactly what the real function
+  answers for a path that does not exist (it canonicalises the nearest existing ancestor and rejoins the rest).
+  */
+  canonicalizePath: (path: string) => path,
   removeWorktree: vi.fn().mockResolvedValue(undefined),
   relocateReclaimableWorktreeIntoRoot: vi.fn(async ({ sourcePath }: { sourcePath: string }) => ({ kind: "ready", path: sourcePath, relocated: false })),
   resolveWorktreeBackend: vi.fn(),
@@ -3465,7 +3471,17 @@ describe("SelfHealingManager", () => {
     });
 
     it("clears phantom active worktree metadata for scopeOverride main-checkout tasks", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      /*
+      FNXC:WorktreePointerState 2026-11-18-04:02 (RUFU-1054): the metadata reconcile now reads the registry
+      through the three-valued seam, so every case in this block states its intent — "git answered and nothing
+      is registered" — instead of relying on a mocked map that could not distinguish that from "git refused to
+      answer", which is the confusion that cleared healthy pointers. The six cases below inject the same
+      readable-empty fact.
+      */
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -3492,7 +3508,10 @@ describe("SelfHealingManager", () => {
     });
 
     it("does NOT clear worktree metadata for a scopeOverride task that is genuinely in-progress (FN-5256 guard)", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -3530,7 +3549,10 @@ describe("SelfHealingManager", () => {
     the incident that guard exists to prevent.
     */
     it("does NOT clear worktree metadata for a scopeOverride task live in a RENAMED wip lane (FN-5256)", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
@@ -3575,7 +3597,10 @@ describe("SelfHealingManager", () => {
     resolver and leave its sibling green.
     */
     it("SKIPS a card resting in a RENAMED terminal lane", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
@@ -3615,7 +3640,10 @@ describe("SelfHealingManager", () => {
     });
 
     it("does NOT clear metadata for a merge-active card in a RENAMED review lane (FN-5256)", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
@@ -3655,7 +3683,10 @@ describe("SelfHealingManager", () => {
     });
 
     it("does NOT clear worktree metadata for a scopeOverride in-review task mid-step (status: null)", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        readWorktreeRegistry: async () => ({ status: "ok", entries: [], prunable: [] }),
+      });
       mockedExistsSync.mockReturnValue(false);
       mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([

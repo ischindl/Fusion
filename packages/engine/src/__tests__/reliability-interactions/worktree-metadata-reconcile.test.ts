@@ -4,8 +4,20 @@ import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import type { Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../../self-healing.js";
-import * as worktreePoolModule from "../../worktree/worktree-pool.js";
+import type { WorktreeRegistryRead } from "../../worktree/worktree-pointer-state.js";
 import { withBranchWriteProvenance } from "../branch-write-provenance-store-stub.js";
+
+/*
+FNXC:WorktreePointerState 2026-11-18-03:58 (RUFU-1054):
+These cases used to state "git is readable and this path is registered over there" by mocking
+`getRegisteredWorktreeBranchMap`, which is the helper whose empty-on-failure arm this card exists to close:
+the mock could not tell a readable empty registry from a git that refused to answer, so no failure coverage
+was ever possible. They now say it out loud through the injected three-valued read, the same seam production
+consults.
+*/
+function registry(...entries: Array<{ branch: string; worktreePath: string }>): WorktreeRegistryRead {
+  return { status: "ok", entries, prunable: [] };
+}
 
 function task(id: string, overrides: Partial<Task> = {}): Task {
   return {
@@ -46,10 +58,9 @@ describe("reliability interactions: worktree metadata reconcile", () => {
 
   it("defers while task is in executingTaskIds (recoverOrphaned/resume interaction)", async () => {
     const store = makeStore([task("FN-1", { column: "in-review", worktree: "/missing", branch: undefined })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map([["fusion/fn-1", "/live"]]));
-
     const manager = new SelfHealingManager(store, {
       rootDir: "/repo",
+      readWorktreeRegistry: async () => registry({ branch: "fusion/fn-1", worktreePath: "/live" }),
       getExecutingTaskIds: () => new Set(["FN-1"]),
     });
 
@@ -60,11 +71,10 @@ describe("reliability interactions: worktree metadata reconcile", () => {
 
   it("rebinds exactly once after deferred pass (acquireTaskWorktree interaction)", async () => {
     const store = makeStore([task("FN-2", { column: "todo", worktree: "/missing", branch: undefined })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map([["fusion/fn-2", "/live"]]));
-
     let executing = true;
     const manager = new SelfHealingManager(store, {
       rootDir: "/repo",
+      readWorktreeRegistry: async () => registry({ branch: "fusion/fn-2", worktreePath: "/live" }),
       getExecutingTaskIds: () => (executing ? new Set(["FN-2"]) : new Set<string>()),
     });
 
@@ -81,10 +91,10 @@ describe("reliability interactions: worktree metadata reconcile", () => {
       branch: "fusion/fn-213",
     });
     const store = makeStore([original]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map([
-      ["fusion/fn-213", "/registered/live"],
-    ]));
-    const manager = new SelfHealingManager(store, { rootDir: "/repo" });
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/repo",
+      readWorktreeRegistry: async () => registry({ branch: "fusion/fn-213", worktreePath: "/registered/live" }),
+    });
 
     expect(await manager.reconcileTaskWorktreeMetadata()).toBe(1);
 
@@ -110,8 +120,9 @@ describe("reliability interactions: worktree metadata reconcile", () => {
       worktree: "/missing/review",
       branch: "fusion/fn-214",
     })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
-    const manager = new SelfHealingManager(store, { rootDir: "/repo" });
+    // Readable, and nothing is registered anywhere: the honest empty answer, which the old mock could not
+    // distinguish from a git that refused to answer.
+    const manager = new SelfHealingManager(store, { rootDir: "/repo", readWorktreeRegistry: async () => registry() });
 
     expect(await manager.reconcileTaskWorktreeMetadata()).toBe(0);
 
@@ -139,13 +150,34 @@ describe("reliability interactions: worktree metadata reconcile", () => {
 
   it("skips done tasks during periodic reconcile (completion fan-out owns done lifecycle)", async () => {
     const store = makeStore([task("FN-3", { column: "done", worktree: "/missing", branch: undefined })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map([["fusion/fn-3", "/live"]]));
 
-    const manager = new SelfHealingManager(store, { rootDir: "/repo" });
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/repo",
+      readWorktreeRegistry: async () => registry({ branch: "fusion/fn-3", worktreePath: "/live" }),
+    });
     const repaired = await manager.reconcileTaskWorktreeMetadata();
 
     expect(repaired).toBe(0);
     expect((store as any).updateTask).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorktreePointerState 2026-11-18-03:58 (RUFU-1054):
+  The case the mocked map could never express: git refused to answer. An empty map used to be indistinguishable
+  from that, and the fall-through arm cleared a card's `worktree` and `branch` on the strength of it.
+  */
+  it("repairs nothing when the registry cannot be read", async () => {
+    const store = makeStore([task("FN-4", { column: "todo", worktree: "/missing", branch: "fusion/fn-4" })]);
+
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/repo",
+      readWorktreeRegistry: async () => ({ status: "unreadable" } as WorktreeRegistryRead),
+    });
+    const repaired = await manager.reconcileTaskWorktreeMetadata();
+
+    expect(repaired).toBe(0);
+    expect((store as any).updateTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -173,7 +205,15 @@ class StatedProbesManager extends SelfHealingManager {
       divergentCommitCount?: number;
     },
   ) {
-    super(store, { rootDir: "/repo" });
+    /*
+    FNXC:WorktreePointerState 2026-11-19-11:50 (RUFU-1054 merge resolution):
+    The pass now reads the registry through the three-valued seam instead of `getRegisteredWorktreeBranchMap`,
+    and an unreadable read abstains from the whole pass. Left at the bare `{ rootDir }` these two cases would
+    shell out to git at a non-existent `/repo`, read `unreadable`, and answer "repaired nothing" for the wrong
+    reason — the same intent the removed `getRegisteredWorktreeBranchMap → new Map()` spy stated, now said
+    through the seam production actually consults: git answered, and nothing is registered anywhere.
+    */
+    super(store, { rootDir: "/repo", readWorktreeRegistry: async () => registry() });
   }
 
   protected override async probePlanningLaneBranchPresence(): Promise<"present" | "absent" | "unknown"> {
@@ -202,7 +242,6 @@ describe("reliability interactions: worktree metadata reconcile (RUFU-893 sympto
 
   it("clears the branch-only planning pointer the pre-change entry gate never admitted", async () => {
     const store = makeStore([task("RUFU-254", { column: "todo", worktree: null, branch: "fusion/rufu-254" })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
 
     const manager = new StatedProbesManager(store, {
       ref: "absent",
@@ -225,7 +264,6 @@ describe("reliability interactions: worktree metadata reconcile (RUFU-893 sympto
 
   it("refuses the same shape while its branch still carries undelivered commits", async () => {
     const store = makeStore([task("RUFU-1044", { column: "todo", worktree: null, branch: "fusion/rufu-1044" })]);
-    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
 
     const manager = new StatedProbesManager(store, {
       ref: "present",

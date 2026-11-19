@@ -211,7 +211,18 @@ describeIfGit("planning-lane worktree identity against real git (RUFU-893)", () 
       branch: "fusion/rufu893-nr",
       worktree: join(rootDir, "members", "api"),
     });
-    expect(auditRows.find((r) => r.mutationType === REFUSED)?.metadata).toMatchObject({ code: "probe-unknown" });
-    expect(history).toHaveLength(1);
+    /*
+    FNXC:WorktreePointerState 2026-11-19-11:50 (RUFU-1054 merge resolution):
+    WHAT MOVED IS THE REFUSAL'S LOCATION, NOT ITS VERDICT. The sweep now asks the registry once per pass
+    through the three-valued reader; at a non-repository root that read answers `unreadable`, so the pass
+    abstains before the candidate loop instead of walking into the per-card probes. The invariant this case
+    exists to hold — silence is not absence, so NOTHING is cleared — is satisfied at its strongest, and the
+    per-card `probe-unknown` row plus its History line are deliberately gone: one refusal row per card for a
+    subprocess that failed is the flood `reconcileWorktreePointer`'s own contract rules out, and the
+    pass-level abstention is where that refusal is now recorded. Asserted as the absence of every write:
+    no audit row of any kind, no card history line, no pointer patch.
+    */
+    expect(auditRows).toEqual([]);
+    expect(history).toHaveLength(0);
   });
 });
