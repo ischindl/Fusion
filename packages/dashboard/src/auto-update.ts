@@ -18,10 +18,12 @@ is actually running.
 Deliberate constraints:
   - Server-side, not browser-driven: an unattended update must not depend on a
     dashboard tab being open.
-  - Supervised hosts only. Installing replaces the running program's files on
-    disk; without a supervising parent to respawn, the still-running process
-    would keep lazily importing modules from a tree that no longer matches its
-    loaded code. No supervisor -> skip the install and say so once.
+  - Hosts that can restart themselves only. Installing replaces the running program's files on
+    disk; with nothing to bring the process back, the still-running process would keep lazily
+    importing modules from a tree that no longer matches its loaded code. "Nothing to bring it back"
+    is now the honest test: since RUFU-513 a launch with no supervising parent can still restart
+    itself in-process, so the gate reads the effective capability, not `supervised`.
+    No restart path -> skip the install and say so once.
   - Honors `updateCheckEnabled`: an operator who turned update checks off must
     not get network calls (or installs) from this watcher.
   - Never restarts without a successful install, and never installs twice for
@@ -45,7 +47,13 @@ export type AutoUpdateOutcome =
   | "disabled"
   | "checks-disabled"
   | "externally-managed"
-  | "unsupervised"
+  /*
+  FNXC:AutoUpdate 2026-11-13-09:55 (RUFU-513):
+  Renamed from `unsupervised`, which stopped being the reason: a launch with no supervising parent can
+  restart itself in-process, so the refusal means NO respawn owner exists at all (no parent, and
+  self-restart refused or unavailable), not "no parent". The name carried the old premise.
+  */
+  | "restart-unsupported"
   | "up-to-date"
   | "check-failed"
   | "install-failed"
@@ -64,8 +72,16 @@ export interface AutoUpdateDeps {
   /** Reads the current global settings; failures are treated as "leave it off". */
   getSettings: () => Promise<AutoUpdateSettings>;
   currentVersion: string;
-  supervised: boolean;
-  /** Same contract as the System panel: false when no supervising parent will respawn. */
+  /*
+  FNXC:AutoUpdate 2026-11-13-09:55 (RUFU-513):
+  Same contract as the System panel's `restartSupported`: would a restart request actually bring this
+  process back? Before this field the lane read `supervised`, so the measured production launch
+  (`node --inspect=... dashboard --port 4040 --host 0.0.0.0`, ppid 1) skipped the whole auto-update path
+  even though its restart request would have been accepted: the setting was silently inert on the host
+  most operators run.
+  */
+  restartSupported: boolean;
+  /** Same contract as the System panel: false when this host refuses the restart request. */
   requestRestart: (reason: string) => boolean;
   log: AutoUpdateLogger;
   fusionDir?: string;
@@ -88,11 +104,12 @@ program that a global npm install could never change.
 export function buildAutoUpdateDeps(input: {
   getSettings: () => Promise<AutoUpdateSettings>;
   currentVersion: string;
-  systemControl: { supervised: boolean; requestRestart: (reason: string) => boolean; sourceWorkspaceRoot?: string };
+  systemControl: { supervised: boolean; restartSupported?: boolean; requestRestart: (reason: string) => boolean; sourceWorkspaceRoot?: string };
   log: AutoUpdateLogger;
   fusionDir?: string;
 }): AutoUpdateDeps {
-  return { getSettings: input.getSettings, currentVersion: input.currentVersion, supervised: input.systemControl.supervised, requestRestart: input.systemControl.requestRestart, sourceWorkspaceRoot: input.systemControl.sourceWorkspaceRoot, log: input.log, fusionDir: input.fusionDir, coordinator: processUpdateInstallCoordinator };
+  // `?? supervised` keeps hosts that predate the field (the Electron relaunch host) on the legacy meaning.
+  return { getSettings: input.getSettings, currentVersion: input.currentVersion, restartSupported: input.systemControl.restartSupported ?? input.systemControl.supervised, requestRestart: input.systemControl.requestRestart, sourceWorkspaceRoot: input.systemControl.sourceWorkspaceRoot, log: input.log, fusionDir: input.fusionDir, coordinator: processUpdateInstallCoordinator };
 }
 
 /**
@@ -116,11 +133,11 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
     return "externally-managed";
   }
 
-  if (!deps.supervised) {
-    deps.log.warn("Auto-update skipped: no supervising parent", {
-      message: "autoUpdateAndRestart is on but this host cannot restart itself. Start via `fn dashboard` (supervision is the default) to enable it.",
+  if (!deps.restartSupported) {
+    deps.log.warn("Auto-update skipped: this host cannot restart itself", {
+      message: "autoUpdateAndRestart is on but nothing would bring the new version up. Relaunch without --no-supervise to enable it.",
     });
-    return "unsupervised";
+    return "restart-unsupported";
   }
 
   const coordinator = deps.coordinator ?? new UpdateInstallCoordinator();

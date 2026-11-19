@@ -1729,13 +1729,12 @@ export function SettingsModal({
     setUpdateInstallResult(null);
     /*
     FNXC:SettingsUpdate 2026-07-25-10:05:
-    Do NOT clear restartSupported here. It is a property of the HOST (is there a
-    supervising parent?), not of this update check, and clearing it stranded the
-    post-update "Restart Fusion" button: the capability effect was keyed on
-    updateAvailable, so a second "Check now" that returned the same
-    updateAvailable=true left restartSupported permanently `undefined` and the
-    button disabled with "Needs a supervising parent" on a perfectly supervised
-    host. The probe below owns this state for the modal's lifetime.
+    Do NOT clear restartSupported here. It is a property of the HOST (can this process restart
+    itself?), not of this update check, and clearing it stranded the post-update "Restart Fusion"
+    button: the capability effect was keyed on updateAvailable, so a second "Check now" that returned
+    the same updateAvailable=true left restartSupported permanently `undefined` and the button disabled
+    with the unavailable-restart note on a host that could restart just fine. The probe below owns this
+    state for the modal's lifetime.
     */
     setRestartLoading(false);
     setRestartScheduled(false);
@@ -1957,14 +1956,24 @@ export function SettingsModal({
               )}
               {/*
                 FNXC:SettingsUpdate 2026-07-25-10:05:
-                Advisory, not a block. The probe says this host reported no supervising
-                parent, so restarting will likely be refused — but the operator can still
-                press the button and read the server's actual reason instead of facing a
-                dead control.
+                Advisory, not a block. The probe says this host refuses to restart itself, so restarting
+                will likely be refused — but the operator can still press the button and read the server's
+                actual reason instead of facing a dead control.
+
+                FNXC:SettingsUpdate 2026-11-13-09:30 (RUFU-513):
+                The condition reads `restartSupported`, the effective capability. It is false only for a host
+                that cannot restart itself (`--no-supervise`, or an unresolvable entry point) — a plain
+                absence of a supervising parent is no longer one, which is exactly what the note's wording
+                used to claim.
+
+                FNXC:SettingsUpdate 2026-11-19-04:00 (RUFU-513):
+                This block must stay wrapped in JSX comment braces, not a bare block comment. As a direct child
+                of the install-succeeded span, a bare block comment is JSX text, so esbuild emits the internal
+                FNXC copy as a rendered string child and the comment shows up as visible UI text in Settings.
               */}
               {restartSupported === false && (
                 <span className="settings-update-install-status" aria-live="polite">
-                  {t("settings.general.restartUnavailable", "Needs a supervising parent — restart Fusion manually without --no-supervise.")}
+                  {t("settings.general.restartUnavailable", "This launch cannot restart itself — relaunch without --no-supervise to enable Restart.")}
                 </span>
               )}
               {restartError && (

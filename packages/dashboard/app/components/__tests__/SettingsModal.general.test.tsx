@@ -539,17 +539,17 @@ describe("SettingsModal", () => {
     */
     it("shows manual guidance but still surfaces the server refusal when unsupported", async () => {
       mockFetchSystemInfo.mockResolvedValue({ supervised: false, restartSupported: false });
-      mockRequestSystemRestart.mockRejectedValue(new Error("Restart is not available: no supervising parent."));
+      mockRequestSystemRestart.mockRejectedValue(new Error("Restart is not available: this process cannot restart itself. There is no live supervising parent and self-restart is unavailable (launched with `--no-supervise`, or the entry point could not be re-resolved). Relaunch without `--no-supervise` to make the dashboard restartable."));
 
       const restartButton = await renderUpdatedSettings();
 
-      await waitFor(() => expect(screen.getByText(/Needs a supervising parent/)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/relaunch without --no-supervise to enable Restart/)).toBeInTheDocument());
       expect(restartButton).toBeEnabled();
 
       await settingsModalUser.click(restartButton);
 
       expect(mockRequestSystemRestart).toHaveBeenCalledWith("settings-update");
-      expect(await screen.findByText(/Restart is not available: no supervising parent\./)).toBeInTheDocument();
+      expect(await screen.findByText(/Restart is not available: this process cannot restart itself\./)).toBeInTheDocument();
     });
 
     it("still allows a restart attempt while system information is loading", async () => {
@@ -558,7 +558,7 @@ describe("SettingsModal", () => {
       const restartButton = await renderUpdatedSettings();
 
       expect(restartButton).toBeEnabled();
-      expect(screen.queryByText(/Needs a supervising parent/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/relaunch without --no-supervise to enable Restart/)).not.toBeInTheDocument();
     });
 
     it("shows manual guidance when system information cannot load", async () => {
@@ -566,7 +566,7 @@ describe("SettingsModal", () => {
 
       const restartButton = await renderUpdatedSettings();
 
-      await waitFor(() => expect(screen.getByText(/Needs a supervising parent/)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/relaunch without --no-supervise to enable Restart/)).toBeInTheDocument());
       expect(restartButton).toBeEnabled();
     });
 
@@ -606,7 +606,7 @@ describe("SettingsModal", () => {
     update check. Clicking "Check for updates" repeatedly (same updateAvailable
     result each time) used to strand restartSupported at `undefined` — the probe
     was keyed on updateAvailable flipping — so the post-install "Restart Fusion"
-    button was disabled with "Needs a supervising parent" on a supervised host.
+    button was disabled with the unavailable-restart note on a host that could restart.
     The invariant asserted here is: on a supervised host the restart button is
     enabled after an install regardless of how many checks preceded it.
     */
@@ -625,7 +625,7 @@ describe("SettingsModal", () => {
 
       const restartButton = await screen.findByRole("button", { name: "Restart Fusion" });
       await waitFor(() => expect(restartButton).toBeEnabled());
-      expect(screen.queryByText(/Needs a supervising parent/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/relaunch without --no-supervise to enable Restart/)).not.toBeInTheDocument();
     });
 
     it.each([
@@ -655,7 +655,7 @@ describe("SettingsModal", () => {
 
       const restartButton = await renderUpdatedSettings();
 
-      await waitFor(() => expect(screen.queryByText(/Needs a supervising parent/)).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByText(/relaunch without --no-supervise to enable Restart/)).not.toBeInTheDocument());
       expect(restartButton).toBeEnabled();
     });
 

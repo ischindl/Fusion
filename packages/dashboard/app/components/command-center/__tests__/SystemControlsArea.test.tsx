@@ -490,7 +490,7 @@ describe("SystemControlsArea layout integration", () => {
     expect(mockStartSystemSourceUpdate).not.toHaveBeenCalled();
   });
 
-  it("disables update-from-source with a supervision reason when nothing would respawn the process", async () => {
+  it("disables update-from-source with a cannot-restart-itself reason when nothing would respawn the process", async () => {
     mockFetchSystemInfo.mockResolvedValue(
       systemInfoFixture({ sourceUpdateSupported: true, restartSupported: false }),
     );
@@ -500,7 +500,7 @@ describe("SystemControlsArea layout integration", () => {
     const card = await screen.findByTestId("cc-syscontrol-source-update");
 
     expect(within(card).getByRole("button", { name: "Update & restart" })).toBeDisabled();
-    expect(card).toHaveTextContent(/supervising parent/i);
+    expect(card).toHaveTextContent(/relaunch the dashboard without --no-supervise/);
   });
 
   /*

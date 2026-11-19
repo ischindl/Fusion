@@ -730,7 +730,7 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
 
   // ── Control definitions ───────────────────────────────────────────────────
   const restartDisabledNote = info && !info.restartSupported
-    ? t("systemControls.restartUnavailable", "Needs a supervising parent — restart the dashboard without --no-supervise.")
+    ? t("systemControls.restartUnavailable", "This launch cannot restart itself — relaunch without --no-supervise to enable Restart.")
     : undefined;
   /*
   FNXC:SystemPanel 2026-07-12-14:15:
@@ -744,9 +744,11 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
   FNXC:SystemPanelSourceUpdate 2026-09-01-01:22:
   The update control is always VISIBLE (unlike the dev-only rebuild cards) but honestly disabled with
   the reason, because a container operator needs to be told WHY the one action they were promised is
-  unavailable — "not running from source" and "unsupervised, so nothing would respawn me" are
-  different problems with different fixes, and silently hiding the card looks like a missing feature.
-  Both conditions must hold: a git checkout to pull into, and a supervising parent to restart into it.
+  unavailable — "not running from source" and "this process refuses to restart itself, so nothing would
+  come back up into the new build" are different problems with different fixes, and silently hiding the
+  card looks like a missing feature.
+  Both conditions must hold: a git checkout to pull into, and a host that can restart itself into it
+  (`restartSupported` — a supervising parent or an in-process self-restart; RUFU-513).
   */
   const sourceUpdateEnabled = Boolean(info?.sourceUpdateSupported) && Boolean(info?.restartSupported);
   const sourceUpdateDisabledNote = !info
@@ -759,7 +761,7 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
       : !info.restartSupported
         ? t(
             "systemControls.sourceUpdateUnsupervised",
-            "Needs a supervising parent to restart into the new build — restart the dashboard without --no-supervise.",
+            "Cannot restart into the new build — relaunch the dashboard without --no-supervise to enable Update from source.",
           )
         : undefined;
   /*

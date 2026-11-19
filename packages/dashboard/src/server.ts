@@ -684,6 +684,20 @@ export interface ServerOptions {
   */
   systemControl?: {
     supervised: boolean;
+    /*
+    FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+    Effective restart capability, deliberately separate from `supervised`. `supervised` is the strict proof
+    of a LIVE supervising parent and must not be widened: a production launch with no parent
+    (`node --inspect=... packages/cli/bin.mjs dashboard --port 4040 --host 0.0.0.0`) truthfully reports
+    `supervised: false` yet CAN restart itself by releasing its listener and re-execing at the process-exit
+    choke. Before this field existed, `/system/info` aliased `restartSupported` to `supervised`, so the
+    panel disabled an affordance the host actually had, and the 409 pointed at `--supervise` — a flag that
+    cannot help a launch whose inspector flag already suppresses supervision.
+
+    Optional so existing hosts (the Electron relaunch host) keep working unchanged; readers fall back to
+    `supervised`, which is the legacy meaning.
+    */
+    restartSupported?: boolean;
     requestRestart: (reason: string) => boolean;
     sourceWorkspaceRoot?: string;
   };

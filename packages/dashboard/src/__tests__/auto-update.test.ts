@@ -6,8 +6,14 @@ import { UpdateInstallCoordinator } from "../update-install-coordinator.js";
 
 /*
 FNXC:AutoUpdate 2026-07-25-10:05:
-Contract for the unattended update watcher: opt-in only, supervised hosts only,
+Contract for the unattended update watcher: opt-in only, hosts that can restart themselves only,
 install before restart, never restart on a failed install.
+
+FNXC:AutoUpdate 2026-11-13-09:55 (RUFU-513):
+"Supervised hosts only" became "hosts that can restart themselves only", so the gate fixture is
+`restartSupported` and the refusal outcome is `restart-unsupported`. The case that had to change behaviour
+is `supervised: false` + `restartSupported: true` — the measured production launch shape — which now runs
+the cycle instead of skipping it.
 */
 
 function makeDeps(overrides: Partial<AutoUpdateDeps> = {}): AutoUpdateDeps & {
@@ -29,7 +35,7 @@ function makeDeps(overrides: Partial<AutoUpdateDeps> = {}): AutoUpdateDeps & {
   return {
     getSettings: async () => ({ autoUpdateAndRestart: true }),
     currentVersion: "1.0.0",
-    supervised: true,
+    restartSupported: true,
     requestRestart: vi.fn().mockReturnValue(true),
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     fusionDir: "/tmp/fusion-auto-update-test",
@@ -40,7 +46,7 @@ function makeDeps(overrides: Partial<AutoUpdateDeps> = {}): AutoUpdateDeps & {
 }
 
 describe("runAutoUpdateCycle", () => {
-  it("installs and restarts when enabled on a supervised host", async () => {
+  it("installs and restarts when enabled on a host that can restart itself", async () => {
     const deps = makeDeps();
 
     await expect(runAutoUpdateCycle(deps)).resolves.toBe("restarting");
@@ -77,10 +83,33 @@ describe("runAutoUpdateCycle", () => {
     expect(deps.requestRestart).not.toHaveBeenCalled();
   });
 
-  it("never installs on an unsupervised host", async () => {
-    const deps = makeDeps({ supervised: false });
+  it("runs the whole lane for the measured production shape: no parent, but self-restart is available", async () => {
+    // The launch the operator actually runs: `node --inspect=… dashboard --port 4040 --host 0.0.0.0`,
+    // ppid 1 so `supervised` is false, with in-process self-restart available. Before RUFU-513 this
+    // composition stopped at the capability gate and the setting was silently inert.
+    const checkForUpdate = vi.fn().mockResolvedValue({ currentVersion: "1.0.0", latestVersion: "2.0.0", updateAvailable: true, lastChecked: 0 });
+    const installUpdate = vi.fn().mockResolvedValue({ currentVersion: "1.0.0", latestVersion: "2.0.0", updated: true });
+    const requestRestart = vi.fn().mockReturnValue(true);
+    const deps = buildAutoUpdateDeps({
+      getSettings: async () => ({ autoUpdateAndRestart: true }),
+      currentVersion: "1.0.0",
+      systemControl: { supervised: false, restartSupported: true, requestRestart },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    deps.checkForUpdate = checkForUpdate;
+    deps.installUpdate = installUpdate;
+    deps.fusionDir = "/tmp/fusion-auto-update-test";
 
-    await expect(runAutoUpdateCycle(deps)).resolves.toBe("unsupervised");
+    await expect(runAutoUpdateCycle(deps)).resolves.toBe("restarting");
+
+    expect(installUpdate).toHaveBeenCalledWith("1.0.0", "2.0.0", expect.anything());
+    expect(requestRestart).toHaveBeenCalledWith("auto-update");
+  });
+
+  it("never installs when nothing would bring the new version up", async () => {
+    const deps = makeDeps({ restartSupported: false });
+
+    await expect(runAutoUpdateCycle(deps)).resolves.toBe("restart-unsupported");
 
     expect(deps.checkForUpdate).not.toHaveBeenCalled();
     expect(deps.installUpdate).not.toHaveBeenCalled();
@@ -280,9 +309,29 @@ describe("startAutoUpdateWatcher", () => {
     expect(serverSource).not.toMatch(/startAutoUpdateWatcher\(\s*\{\s*getSettings:/s);
   });
 
-  it("buildAutoUpdateDeps preserves host system-control context", () => {    const systemControl = { supervised: true, requestRestart: vi.fn(), sourceWorkspaceRoot: "/repo/fusion" };
+  it("buildAutoUpdateDeps preserves host system-control context", () => {    const systemControl = { supervised: true, restartSupported: true, requestRestart: vi.fn(), sourceWorkspaceRoot: "/repo/fusion" };
     const deps = buildAutoUpdateDeps({ getSettings: async () => ({}), currentVersion: "1.0.0", systemControl, log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } });
-    expect(deps).toMatchObject({ supervised: true, requestRestart: systemControl.requestRestart, sourceWorkspaceRoot: "/repo/fusion" });
+    expect(deps).toMatchObject({ restartSupported: true, requestRestart: systemControl.requestRestart, sourceWorkspaceRoot: "/repo/fusion" });
+  });
+
+  /*
+  FNXC:UpdatesAutoUpdateRestart 2026-11-13-09:55 (RUFU-513):
+  The gate reads the EFFECTIVE capability. These three rows are the whole point of the change: a host
+  with no parent that restarts itself in-process must be treated as capable, and the legacy meaning is
+  kept only for hosts that never advertise the field at all.
+  */
+  it.each([
+    ["a supervising parent and no advertised capability row", { supervised: true }, true],
+    ["no parent but self-restart available (the production shape)", { supervised: false, restartSupported: true }, true],
+    ["no parent and self-restart refused (--no-supervise)", { supervised: false, restartSupported: false }, false],
+  ])("derives the auto-update gate from the effective capability, not `supervised`: %s", (_label, control, expected) => {
+    const deps = buildAutoUpdateDeps({
+      getSettings: async () => ({}),
+      currentVersion: "1.0.0",
+      systemControl: { ...control, requestRestart: vi.fn() },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    expect(deps.restartSupported).toBe(expected);
   });
 
 });

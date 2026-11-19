@@ -230,6 +230,34 @@ describe("GET /system/info", () => {
     expect(res.body.engineAvailable).toBe(true);
   });
 
+  it("advertises the host's declared capability even when no parent supervises it", async () => {
+    /*
+    FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+    The measured production shape: no supervising parent, but the host CAN restart itself. Advertising
+    restartSupported:false here is what left the Restart button disabled on a host whose restart request
+    would have been accepted, so `supervised` and `restartSupported` must be able to disagree in the payload.
+    */
+    const { app } = createApp({
+      options: {
+        systemControl: { supervised: false, restartSupported: true, requestRestart: vi.fn(() => true) },
+      },
+    });
+    const res = await getJson(app, "/api/system/info");
+    expect(res.body.supervised).toBe(false);
+    expect(res.body.restartSupported).toBe(true);
+  });
+
+  it("falls back to the legacy supervised meaning when the host predates restartSupported", async () => {
+    const supervised = createApp({
+      options: { systemControl: { supervised: true, requestRestart: vi.fn(() => true) } },
+    });
+    const unsupported = createApp({
+      options: { systemControl: { supervised: false, requestRestart: vi.fn(() => false) } },
+    });
+    expect((await getJson(supervised.app, "/api/system/info")).body.restartSupported).toBe(true);
+    expect((await getJson(unsupported.app, "/api/system/info")).body.restartSupported).toBe(false);
+  });
+
   it("advertises use-global without a source checkout but not link-local", async () => {
     const { app } = createApp();
     const res = await getJson(app, "/api/system/info");
@@ -245,12 +273,50 @@ describe("POST /system/restart", () => {
     expect(res.status).toBe(409);
   });
 
-  it("409s when there is no supervising parent to respawn", async () => {
+  it("202s on the measured production shape: no supervising parent, but self-restart is available", async () => {
+    /*
+    FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513): the exact reported request.
+    `node --inspect=... packages/cli/bin.mjs dashboard --port 4040 --host 0.0.0.0` (ppid 1, zero supervisor
+    log lines) answered `POST /api/system/restart {"reason":"deploy RUFU-504"}` with
+    409 "Restart is not available: no supervising parent. Start via `pnpm dev` or `fn dashboard --supervise`."
+    and no side effect, so every deploy had to kill the listener. That request must now be accepted.
+    */
+    const requestRestart = vi.fn(() => true);
+    const { app } = createApp({
+      options: { systemControl: { supervised: false, restartSupported: true, requestRestart } },
+    });
+    const res = await postJson(app, "/api/system/restart", { reason: "deploy RUFU-504" });
+    expect(res.status).toBe(202);
+    expect(res.body.scheduled).toBe(true);
+    expect(requestRestart).toHaveBeenCalledWith("deploy RUFU-504");
+  });
+
+  it("409s naming the real cause when the process truly cannot restart itself", async () => {
     const requestRestart = vi.fn(() => false);
-    const { app } = createApp({ options: { systemControl: { supervised: false, requestRestart } } });
+    const { app } = createApp({
+      options: { systemControl: { supervised: false, restartSupported: false, requestRestart } },
+    });
     const res = await postJson(app, "/api/system/restart");
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/supervis/i);
+    expect(res.body.error).toContain("cannot restart itself");
+    expect(res.body.error).toContain("--no-supervise");
+    /*
+    The old text recommended `fn dashboard --supervise`, and the operator followed it: the relaunched
+    listener still had ppid 1, zero supervisor lines, and the same 409 — the inspector flag suppresses
+    supervision and the flag itself is a compatibility no-op. A remedy that cannot work is worse than none.
+    */
+    expect(res.body.error).not.toContain("fn dashboard --supervise");
+    expect(res.body.error).not.toMatch(/Start via/i);
+  });
+
+  it("409s honestly when a capable host refuses because a teardown is already running", async () => {
+    const { app } = createApp({
+      options: { systemControl: { supervised: true, requestRestart: vi.fn(() => false) } },
+    });
+    const res = await postJson(app, "/api/system/restart");
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("already shutting down or restarting");
+    expect(res.body.error).not.toContain("--no-supervise");
   });
 
   it("202s and forwards the reason to the host restart hook", async () => {

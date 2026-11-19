@@ -3882,7 +3882,7 @@
     "pluginsReloaded_other": "Reloaded {{count}} plugin(s){{failed}}",
     "reloadPlugins": "Reload plugins",
     "agentsRestarted_one": "Restarted {{count}} active agent(s){{failed}}",
-    "restartUnavailable": "Needs a supervising parent — restart the dashboard without --no-supervise.",
+    "restartUnavailable": "",
     "reportBugDesc": "Report a bug, send feedback, share an idea, or get help through a guided prompt.",
     "infoError": "Failed to load system info: {{error}}",
     "fnUseGlobalSucceeded": "Switched default fn to global npm install",
@@ -3937,7 +3937,7 @@
     "serverLogs": "Server logs",
     "reloadNow": "Reload now",
     "fnLinkLocal": "Build & link local fn",
-    "sourceUpdateUnsupervised": "Needs a supervising parent to restart into the new build — restart the dashboard without --no-supervise.",
+    "sourceUpdateUnsupervised": "",
     "noLogs": "No log entries yet.",
     "agentsRestarted_other": "Restarted {{count}} active agent(s){{failed}}",
     "reloadPluginsDesc": "Hot-reload every started plugin from its current build."

@@ -366,6 +366,24 @@ The terminal UI is localized. `--lang <code>` (one of `en`, `zh-CN`, `zh-TW`,
 | `--dev` | Start dashboard in development mode. The AI engine still starts unless `--no-engine` is also passed. |
 | `--no-engine` | Start dashboard/API only with no AI engine, planning, or scheduler runtime. |
 
+<!--
+FNXC:DashboardRestart 2026-11-18-19:43:
+Documented on the CLI side because the two facts an operator needs after a failed restart are process facts: who is expected to bring the process back, and what exit status a normal stop now produces.
+FNXC:DashboardRestart 2026-11-18-19:43:
+The `--inspect` skip of supervision is deliberate (the debugger port is already owned by the launch), so the self-restart path must carry execArgv itself; stating the skip here is what stops the old 409 remedy text from looking correct.
+-->
+#### Restart, supervision, and exit status
+
+`POST /api/system/restart` schedules the same graceful shutdown the dashboard **System** panel uses and answers `202` when it was scheduled. A `409` means this launch cannot restart itself and its text names the actual missing piece: an explicit `--no-supervise` launch, an unresolvable entry point, or a host with no restart wiring. `--supervise` and `--no-supervise` are compatibility flags; they do not decide the outcome.
+
+The replacement process is spawned at the process-exit choke point, never from inside the request handler, with the same argv, `execArgv`, and environment, so `NODE_OPTIONS` and `FUSION_PG_POOL_MAX` of the running process survive the restart. It retries the original port and exits non-zero rather than silently binding an ephemeral one.
+
+A launch carrying an `--inspect` flag in `execArgv` is never supervised, because the debugger port is already owned by that launch; the in-process self-restart is what keeps such a host restartable and it passes `execArgv` through, so the inspector flag itself crosses the restart.
+
+The one thing a restart cannot promise is a *free* debug port. If the dying parent still holds it when the replacement boots, Node logs `Starting inspector on <host>:<port> failed: address already in use` and the replacement keeps serving **without** a debugger attached — measured on Node 26 with two processes given the same explicit port, where the second one ran to completion with exit code 0 and never auto-incremented to the next port. So after a restart, expect either the debugger to still be attached on the same port or a warning line plus no debugger at all; the dashboard, its port, and its environment are unaffected either way. Attach the debugger from a fresh `fn dashboard --inspect=…` launch when you actually need a session.
+
+The supervising parent no longer outlives a child whose service is gone: an operator stop exits the parent with `128 + signum`, and a child that never served `GET /api/health` on its port exits the parent with `1`. Practical consequence: `pnpm dev` and `fn dashboard` now finish with a non-zero status after a normal stop, where they previously returned success.
+
 #### Startup banner token display
 
 The startup banner prints the launch URL and the bearer token so you can open your own dashboard.

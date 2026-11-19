@@ -110,7 +110,12 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
   const installError = effectiveInstallResult?.error;
   const installMessage = effectiveInstallResult?.message ?? installError ?? (effectiveInstallResult && !effectiveInstallResult.updated ? t("updateBanner.updateUnknown", "Update did not complete — see the Fusion logs") : undefined);
   const installIsError = effectiveInstallResult?.outcome === "check-failed" || effectiveInstallResult?.outcome === "failed" || Boolean(installError && effectiveInstallResult?.outcome !== "unsupported-install-method");
-  // Advisory guidance only — shown when the host explicitly reported no supervising parent.
+  /*
+  FNXC:UpdateBanner 2026-11-13-09:30 (RUFU-513):
+  Advisory only, and now keyed on the EFFECTIVE capability (`restartSupported`), not on supervision. A host
+  with no supervising parent can still restart itself, so "no parent" is no longer a reason to tell an
+  operator to do it by hand; this note is for launches that genuinely refuse to respawn (`--no-supervise`).
+  */
   const restartUnavailable = restartSupported === false;
 
   return (
@@ -190,7 +195,7 @@ export function UpdateAvailableBanner({ latestVersion, currentVersion, onDismiss
               )}
               {restartUnavailable && (
                 <span className="update-available-banner__install-status" aria-live="polite">
-                  {t("updateBanner.restartUnavailable", "Needs a supervising parent — restart Fusion manually without --no-supervise.")}
+                  {t("updateBanner.restartUnavailable", "This launch cannot restart itself — relaunch without --no-supervise, then update manually.")}
                 </span>
               )}
               {restartError && (

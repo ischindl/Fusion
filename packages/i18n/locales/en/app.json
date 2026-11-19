@@ -1863,7 +1863,7 @@
     "globalGeneral": {
       "operatorLanguage": " Operator language for agent text ",
       "gitLabEnabledHint": "Global GitLab URL and token fallbacks apply to projects that do not set their own values. No default — unset (unset behaves as enabled until explicitly disabled).",
-      "autoUpdateAndRestartHelp": "When enabled, Fusion installs available updates on the selected release channel by itself and then restarts to apply them. Requires a supervising parent (the default for `fn dashboard`); hosts started with --no-supervise skip the install. Default: disabled.",
+      "autoUpdateAndRestartHelp": "When enabled, Fusion installs available updates on the selected release channel by itself and then restarts to apply them. Requires a host that can restart itself (a supervised launch, or one that restarts itself in-process); hosts started with --no-supervise skip the install. Default: disabled.",
       "releaseChannelHelp": "Stable follows official releases. Beta follows pre-releases cut from main and also picks up each stable release once it overtakes the beta. Switching back to Stable never downgrades. Default: stable.",
       "checkForUpdatesAutomatically": " Check for updates automatically ",
       "chatSubmitOnEnterAuto": "Automatic (recommended)",
@@ -1898,7 +1898,7 @@
       "saveAIThinkingForEphemeralTaskWorkerAgents": " Save AI thinking for ephemeral / task-worker agents ",
       "reportRoadmapLabel": "Global public roadmap label",
       "whenDisabledToolRowsAreStillLoggedBut": " When disabled, tool rows are still logged but detailed tool payloads are omitted. Very large tool payloads may still be clipped even when this stays enabled. Default: enabled. ",
-      "autoRestartAfterUpdateHelp": "After a dashboard update installs, requests a supervised restart. Without a supervisor, Fusion keeps the manual restart path. Unset: disabled.",
+      "autoRestartAfterUpdateHelp": "After a dashboard update installs, requests a restart. A host that cannot restart itself keeps the manual restart path. Unset: disabled.",
       "gitLabTokenTypeHint": "No default — unset (the selector falls back to personal access token until you choose otherwise).",
       "gitLabProjectAccessToken": "Project access token",
       "general": "General",
@@ -2466,7 +2466,7 @@
       "chatRooms": "Chat Rooms",
       "gitLabApiBaseUrlOptional": "GitLab API base URL (optional / advanced)",
       "reportMode": "In-app report mode",
-      "restartUnavailable": "Needs a supervising parent — restart Fusion manually without --no-supervise.",
+      "restartUnavailable": "This launch cannot restart itself — relaunch without --no-supervise to enable Restart.",
       "aiUndoTaskWorkflowInherit": "Inherit project default workflow",
       "gitLabDisabledHint": "GitLab API imports, comments, close/reopen, and refresh operations are disabled. Saved URLs and tokens remain stored for re-enable.",
       "fN": "FN",
@@ -6823,7 +6823,7 @@
     "pluginsReloaded_other": "Reloaded {{count}} plugin(s){{failed}}",
     "reloadPlugins": "Reload plugins",
     "agentsRestarted_one": "Restarted {{count}} active agent(s){{failed}}",
-    "restartUnavailable": "Needs a supervising parent — restart the dashboard without --no-supervise.",
+    "restartUnavailable": "This launch cannot restart itself — relaunch without --no-supervise to enable Restart.",
     "reportBugDesc": "Report a bug, send feedback, share an idea, or get help through a guided prompt.",
     "infoError": "Failed to load system info: {{error}}",
     "fnUseGlobalSucceeded": "Switched default fn to global npm install",
@@ -6878,7 +6878,7 @@
     "serverLogs": "Server logs",
     "reloadNow": "Reload now",
     "fnLinkLocal": "Build & link local fn",
-    "sourceUpdateUnsupervised": "Needs a supervising parent to restart into the new build — restart the dashboard without --no-supervise.",
+    "sourceUpdateUnsupervised": "Cannot restart into the new build — relaunch the dashboard without --no-supervise to enable Update from source.",
     "noLogs": "No log entries yet.",
     "agentsRestarted_other": "Restarted {{count}} active agent(s){{failed}}",
     "reloadPluginsDesc": "Hot-reload every started plugin from its current build."
@@ -12003,7 +12003,7 @@
     "retryRestart": "Retry readiness check",
     "updateSuccess": "Updated to v{{version}} — restart Fusion to apply",
     "backOnline": "Fusion v{{version}} is back online — reloading…",
-    "restartUnavailable": "Needs a supervising parent — restart Fusion manually without --no-supervise."
+    "restartUnavailable": "This launch cannot restart itself — relaunch without --no-supervise, then update manually."
   },
   "editor": {
     "failedLoadFile": "Failed to load file",

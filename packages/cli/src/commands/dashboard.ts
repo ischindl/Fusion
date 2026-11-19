@@ -1344,10 +1344,73 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // process.exit(86)s before the first (graceful) teardown finishes.
   let restartScheduled = false;
   let requestSelfRestart: ((reason: string) => boolean) | null = null;
+
+/*
+FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+The HTTP listener, published to the shutdown path. Declared here because the shutdown closures are defined
+before `app.listen()` runs, and a restart-intended shutdown has to release the port before it exits. Stays
+null for a shutdown that begins before the bind, which `closeDashboardListener` handles by doing nothing.
+*/
+let dashboardListener: import("node:http").Server | null = null;
+  /*
+  FNXC:SystemPanel 2026-11-13-02:10 (RUFU-513):
+  Decided ONCE, at boot, from facts that cannot change while the process lives: is a parent
+  supervising me, did the operator opt out of being respawned, and can a replacement command be built at
+  all. Both `requestSelfRestart` closures below consult this instead of `supervised`, because "nobody
+  else will relaunch me" was being answered as "I cannot restart" — which is what made every deploy on the
+  default production launch end in a manual kill.
+
+  There is deliberately NO second "restart is pending" boolean. The restart intent already has one honest
+  single-writer signal, `shutdownExitCode === FUSION_RESTART_EXIT_CODE`, which only these two closures
+  ever set and which `FNXC:RemoteAccess 2026-09-01-02:54` already documents as the local "a relaunch is
+  coming" fact (the engine manager reads it the same way). A parallel latch would be a second source of
+  truth for one fact and could drift from it on the watchdog or second-signal exit, which call
+  `process.exit(shutdownExitCode)` rather than the shutdown body; the exit-choke seam below therefore reads
+  this pair (`restartMode` + the exit code) instead.
+  */
+  const supervisedHost = hasLiveSupervisingParent();
+  const selfRespawnCommand = resolveSelfRespawnCommand();
+  const restartMode = resolveDashboardRestartMode({
+    supervised: supervisedHost,
+    cliArgs: process.argv,
+    respawnAvailable: selfRespawnCommand !== null,
+  });
+  /*
+  FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+  The ONLY place a replacement process is ever created for a restart: registered once, at boot, and only
+  for a host nobody supervises. It is not registered for a supervised host (its parent owns the respawn) nor
+  for `--no-supervise` (the operator asked not to be respawned), and even when registered it acts only on a
+  restart-intended exit, so a plain SIGTERM spawns nothing. A supervised host that ALSO self-respawned would
+  be the split-brain shape this host has already lived through, which is why the seam is mutually exclusive
+  with `supervisor` by construction rather than by a check inside the handler.
+  */
+  if (restartMode === "self-respawn" && selfRespawnCommand) {
+    registerSelfRespawnForMode(restartMode, {
+      spawn,
+      command: selfRespawnCommand,
+      env: process.env,
+      restartIntended: () => shutdownExitCode === FUSION_RESTART_EXIT_CODE,
+      // Covers the exits that skip the graceful tail (hard-exit watchdog, second signal): the fd is
+      // released by process teardown either way, this only narrows the window the replacement waits in.
+      closeListener: () => { void closeDashboardListener(dashboardListener); },
+      log: (message) => logSink.log(message, "dashboard"),
+    });
+  }
   const systemControlForServer = {
     // FNXC:SystemPanel 2026-07-25-10:05: proof of a LIVE supervising parent, not
     // just an inherited env flag — see hasLiveSupervisingParent.
-    supervised: hasLiveSupervisingParent(),
+    // FNXC:SystemPanel 2026-11-13-02:10 (RUFU-513): stays STRICTLY that proof. A self-respawn host reports
+    // supervised:false; its effective capability is the separate `restartSupported` field, so advertising
+    // restart capability never redefines what `supervised` proves.
+    supervised: supervisedHost,
+    /*
+    FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+    The effective capability advertised to the panel and to the auto-update lane. It is `mode !== "none"`,
+    i.e. "a restart request will be accepted", which is exactly the question the Restart affordance asks —
+    and it stays independent of `supervised` above so a self-respawn host never claims a parent it does not
+    have. A refusal after this says true is only ever "already shutting down", never "I cannot restart".
+    */
+    restartSupported: restartMode !== "none",
     requestRestart: (reason: string) => (requestSelfRestart ? requestSelfRestart(reason) : false),
     sourceWorkspaceRoot: resolveFusionSourceWorkspaceRoot(),
   };
@@ -2685,6 +2748,23 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       // its `close` listener that does the same cleanup may not run in time.
       await timeShutdownStep("stopAllDevServers", () => stopAllDevServers());
 
+      /*
+      FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+      Release the HTTP listener on a RESTART exit only. The port is the interface the restart contract is
+      written against — `/api/system/restart` answers 202 and the browser reloads — so a replacement that
+      cannot rebind the requested port turns a working restart into a manual kill. A plain shutdown keeps the
+      behavior it has always had (the comment above is load-bearing there): nothing else about the teardown
+      order changes.
+      */
+      if (shutdownExitCode === FUSION_RESTART_EXIT_CODE) {
+        await timeShutdownStep("closeDashboardListener", async () => {
+          const released = await closeDashboardListener(dashboardListener);
+          if (!released) {
+            logSink.warn(`Dashboard listener did not close within ${DASHBOARD_LISTENER_CLOSE_TIMEOUT_MS}ms — the replacement retries the bind until the port is free`, "dashboard");
+          }
+        });
+      }
+
       if (hybridExecutor) {
         await timeShutdownStep("hybridExecutor.shutdown", () => hybridExecutor!.shutdown());
       }
@@ -2728,12 +2808,19 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     FNXC:SystemPanel 2026-07-12-11:00:
     Bind the System panel restart request to the real graceful-shutdown path.
     The short delay lets the HTTP 202 response flush before teardown starts.
-    Restart is only honored when a supervising parent will respawn us.
+
+    FNXC:SystemPanel 2026-11-13-02:10 (RUFU-513):
+    The refusal leg used to be `!supervised`, i.e. "a supervising parent will respawn us or the request is
+    refused". It is now the boot-time `restartMode`, so a host nobody supervises still accepts the request
+    and hands the restart to the exit-choke self-respawn. Coalescing (`restartScheduled`, plus the
+    `shutdownInProgress` fast-path inside `shutdown`) and the `FUSION_RESTART_EXIT_CODE` contract are
+    unchanged: one accepted request still schedules exactly one teardown.
     */
     requestSelfRestart = (reason: string) => {
-      if (!systemControlForServer.supervised || shutdownInProgress || restartScheduled) return false;
+      if (restartMode === "none" || shutdownInProgress || restartScheduled) return false;
       restartScheduled = true;
-      logSink.log(`restart requested (${reason}) — shutting down for supervised respawn`, "dashboard");
+      const handOff = restartMode === "self-respawn" ? "self-restart re-exec" : "supervised respawn";
+      logSink.log(`restart requested (${reason}) — shutting down for ${handOff}`, "dashboard");
       shutdownExitCode = FUSION_RESTART_EXIT_CODE;
       setTimeout(() => {
         void shutdown("SIGTERM");
@@ -2974,6 +3061,18 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       // before exiting. process.exit below skips server.close()'s cleanup hook.
       await timeShutdownStep("stopAllDevServers", () => stopAllDevServers());
 
+      // FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513): same restart-gated listener release as the
+      // engine-mode shutdown above, so a self-restart hands the port back on both listen shapes. A plain
+      // UI-only shutdown is unchanged.
+      if (shutdownExitCode === FUSION_RESTART_EXIT_CODE) {
+        await timeShutdownStep("closeDashboardListener", async () => {
+          const released = await closeDashboardListener(dashboardListener);
+          if (!released) {
+            logSink.warn(`Dashboard listener did not close within ${DASHBOARD_LISTENER_CLOSE_TIMEOUT_MS}ms — the replacement retries the bind until the port is free`, "dashboard");
+          }
+        });
+      }
+
       // Stop peer exchange service
       if (peerExchangeService) {
         await timeShutdownStep("peerExchangeService.stop", () => peerExchangeService!.stop());
@@ -2997,12 +3096,17 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
       process.exit(shutdownExitCode);
     };
-    // FNXC:SystemPanel 2026-07-12-11:00: System panel restart binding for
-    // UI-only mode — same contract as the engine-mode shutdown above.
+    /*
+    FNXC:SystemPanel 2026-07-12-11:00: System panel restart binding for
+    UI-only mode — same contract as the engine-mode shutdown above, including the
+    RUFU-513 rule that the gate is `restartMode` (not `supervised`) so a
+    self-respawn host in UI-only mode restarts exactly like an engine-mode one.
+    */
     requestSelfRestart = (reason: string) => {
-      if (!systemControlForServer.supervised || shutdownInProgress || restartScheduled) return false;
+      if (restartMode === "none" || shutdownInProgress || restartScheduled) return false;
       restartScheduled = true;
-      logSink.log(`restart requested (${reason}) — shutting down for supervised respawn`, "dashboard");
+      const handOff = restartMode === "self-respawn" ? "self-restart re-exec" : "supervised respawn";
+      logSink.log(`restart requested (${reason}) — shutting down for ${handOff}`, "dashboard");
       shutdownExitCode = FUSION_RESTART_EXIT_CODE;
       setTimeout(() => {
         void devShutdown("SIGTERM");
@@ -3058,9 +3162,48 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     await migrationHoldingServer.close();
   }
   const server = app.listen(selectedPort, selectedHost);
+  dashboardListener = server;
+
+  /*
+  FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+  Bind-collision policy depends on WHO this process is. An ordinary launch keeps the long-standing ephemeral
+  rebind: a second dashboard on a busy port is a convenience case, and the warn line plus a changed URL is
+  what an operator expects. A restart REPLACEMENT is different — the operator named that port by launching on
+  it, its predecessor is releasing it at this very moment, and an `--inspect` flag means a second dashboard
+  cannot even coexist on the same host. So a replacement defends the requested port with a bounded retry and
+  then fails loudly; a silent rebind would leave a live dashboard on a port nobody configured while the
+  requested port answers for something else. `dev-source-restart.ts` reached the same verdict about an
+  inferred port ("a guess, not a fact") and that is why the marker env exists at all.
+  */
+  const isRestartRespawnChild = process.env[FUSION_RESTART_RESPAWN_CHILD_ENV] === "1";
+  let bindRetries = 0;
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
+      const action = resolveAddressInUseAction({
+        isRespawnChild: isRestartRespawnChild,
+        attempt: bindRetries,
+        maxAttempts: RESTART_RESPAWN_BIND_MAX_ATTEMPTS,
+      });
+      if (action === "retry") {
+        bindRetries += 1;
+        logSink.warn(
+          `Port ${selectedPort} is still held by the process being replaced — restart bind attempt ${bindRetries}/${RESTART_RESPAWN_BIND_MAX_ATTEMPTS} in ${RESTART_RESPAWN_BIND_RETRY_MS}ms`,
+          "dashboard",
+        );
+        // Deliberately NOT unref'd: while a replacement waits for the port this timer is often its only
+        // active handle, and an unref'd one would let the process exit without ever binding.
+        setTimeout(() => server.listen(selectedPort, selectedHost), RESTART_RESPAWN_BIND_RETRY_MS);
+        return;
+      }
+      if (action === "fail-loud") {
+        logSink.error(
+          `Port ${selectedPort} is still in use after ${RESTART_RESPAWN_BIND_MAX_ATTEMPTS} restart bind attempts — refusing to start on an ephemeral port. Stop whatever is holding ${selectedPort} and relaunch with: fn dashboard`,
+          "dashboard",
+        );
+        process.exit(1);
+        return;
+      }
       server.listen(0, selectedHost);
     } else {
       logSink.error(`Failed to start server: ${err.message}`, "dashboard");
@@ -3959,6 +4102,275 @@ export function shouldSuperviseDashboard(
   return resolveSupervisorRespawnCommand() !== null;
 }
 
+// ── Dashboard restart capability ─────────────────────────────────────────────
+
+/**
+ * How a dashboard host is able to come back after an operator-requested restart.
+ *
+ * - `"supervisor"` — a live supervising parent owns the respawn (exit 86 is enough).
+ * - `"self-respawn"` — nobody else will relaunch this process, so the process owns its
+ *   own replacement (graceful shutdown, listener release, re-exec at the exit choke).
+ * - `"none"` — nothing may relaunch it; a restart request must be refused honestly.
+ */
+export type DashboardRestartMode = "supervisor" | "self-respawn" | "none";
+
+/*
+FNXC:SystemPanel 2026-11-13-02:10 (RUFU-513):
+A restart request used to be refused unless `supervised` was true, so the measured production launch
+`node --inspect=... packages/cli/bin.mjs dashboard --port 4040 --host 0.0.0.0` answered
+`POST /api/system/restart` with 409 and no side effect, and every deploy fell back to killing the listener
+— the one operation the project rules single out, and the step where this host's mandatory
+`NODE_OPTIONS=--max-old-space-size=16384` / `FUSION_PG_POOL_MAX=20` pair can silently go missing.
+
+Two options were on the table. Forcing supervision under `--inspect` was rejected because the supervisor's
+own respawn path would have to keep carrying the inspector flag (the inspector is deliberately part of this
+host's launch shape for OOM forensics), because `--supervise` is a documented compatibility no-op that
+cannot override the skip anyway, and because the reported launch carries NO flag at all, so re-meaning the
+flag would leave the reported shape broken regardless. Chosen option: accept a non-supervised launch as a
+supported production shape and give it an in-process graceful self-restart.
+
+The inspector skip in `shouldSuperviseDashboard` above is deliberately NOT relaxed: it answers a different
+question (who may BECOME the supervisor, because a respawned child would fight the debugger for the
+inspector port). This helper answers who will RESTART me, and it never redefines `supervised` — a
+self-respawn host stays `supervised: false`, which is why capability advertising gained the separate
+`restartSupported` signal instead of widening that field.
+*/
+export function resolveDashboardRestartMode(input: {
+  /** Proof of a live supervising parent (`hasLiveSupervisingParent()`), not an inherited env flag. */
+  supervised: boolean;
+  /** The process argv, consulted only for the explicit `--no-supervise` opt-out. */
+  cliArgs: readonly string[];
+  /** Whether a replacement command can be resolved at all (`resolveSelfRespawnCommand`). */
+  respawnAvailable: boolean;
+}): DashboardRestartMode {
+  if (input.supervised) return "supervisor";
+  // An explicit opt-out is a request NOT to respawn me. It outranks the fact that a
+  // replacement could be built, and the 409 must name it as the cause.
+  if (input.cliArgs.includes("--no-supervise")) return "none";
+  return input.respawnAvailable ? "self-respawn" : "none";
+}
+
+/*
+FNXC:SystemPanel 2026-11-13-02:10 (RUFU-513):
+Identity-preserving rebuild of THIS process for the self-respawn path, so a restart cannot quietly
+change the launch an operator chose. `execArgv` rides ahead of the entry script for the reason
+`resolveSupervisorRespawnCommand` documents (a V8 flag after the script name is a program argument, not a
+flag): the inspector flag and any `--max-old-space-size` ceiling survive only in that position. `argv
+.slice(1)` carries `dashboard --port 4040 --host 0.0.0.0` verbatim.
+
+The bun-compiled branch mirrors `resolveSupervisorRespawnCommand`: the binary IS the program and argv[1] is
+Bun's virtual embedded path, so the replacement is the binary plus the user arguments from index 2 —
+passing the embedded path would hand the child an argument it cannot open.
+
+Injectable for the same reason the supervisor resolver is: the claim is about argument ORDER, so it needs an
+assertion rather than a comment. Returns null when no command can be built, which is what makes the restart
+mode `"none"` rather than a spawn that is guaranteed to fail.
+*/
+export function resolveSelfRespawnCommand(
+  execPath: string = process.execPath,
+  argv: readonly string[] = process.argv,
+  execArgv: readonly string[] = process.execArgv,
+  compiled: boolean = isCompiledBinary(),
+): { command: string; args: string[] } | null {
+  if (compiled) {
+    return { command: execPath, args: argv.slice(2) };
+  }
+  if (!argv[1]) return null;
+  return { command: execPath, args: [...execArgv, ...argv.slice(1)] };
+}
+
+/**
+ * The one environment addition a self-restart replacement is allowed to carry. It is an honest
+ * statement of provenance ("I am a restart replacement"), NOT a supervision claim — the supervision
+ * stamps are `FUSION_RESTART_SUPERVISED` / `FUSION_SUPERVISOR_PID` and a self-respawn host must never
+ * wear them, or it would advertise `supervised: true` and exit 86 for a parent that does not exist.
+ */
+export const FUSION_RESTART_RESPAWN_CHILD_ENV = "FUSION_RESTART_RESPAWN_CHILD";
+
+/** Bounded bind-retry budget for a restart replacement: 40 x 250 ms = 10 s. */
+export const RESTART_RESPAWN_BIND_RETRY_MS = 250;
+export const RESTART_RESPAWN_BIND_MAX_ATTEMPTS = 40;
+
+export type AddressInUseAction = "retry" | "fail-loud" | "silent-rebind";
+
+/*
+FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+The bind-collision decision, extracted so the matrix is testable without real sockets.
+
+`server.listen(0, selectedHost)` on EADDRINUSE is long-standing shipped behavior for an ordinary launch: a
+developer starting a second dashboard gets an ephemeral port and a warn line, which is friendlier than
+dying. For a RESTART replacement that same line is a defect — the operator asked for a restart of the
+dashboard ON ITS PORT, and an ephemeral rebind produces a live process serving a port nobody configured
+while the requested port answers for whatever replaced it. `dev-source-restart.ts` already treats the silent
+rebind as a defect on a restart-ish path (its header records that the asked-for port "is a guess, not a
+fact"); this is the same verdict applied to the self-restart path.
+
+`attempt` counts retries ALREADY performed, so 0 is the first collision. A child that exhausts the budget
+fails loudly: the parent has already released the fd at process exit, so a 10 s budget that still cannot
+bind means something else deliberately holds the port, and a silently relocated dashboard is worse than a
+dead one.
+*/
+export function resolveAddressInUseAction(input: {
+  isRespawnChild: boolean;
+  attempt: number;
+  maxAttempts?: number;
+}): AddressInUseAction {
+  if (!input.isRespawnChild) return "silent-rebind";
+  return input.attempt >= (input.maxAttempts ?? RESTART_RESPAWN_BIND_MAX_ATTEMPTS)
+    ? "fail-loud"
+    : "retry";
+}
+
+/** The subset of an HTTP listener the restart path releases. Structural so a fake can stand in. */
+export interface ClosableListener {
+  close: (callback?: (error?: Error) => void) => unknown;
+  closeAllConnections?: () => unknown;
+}
+
+/** How long the restart-intent shutdown waits for the listener before proceeding to exit. */
+export const DASHBOARD_LISTENER_CLOSE_TIMEOUT_MS = 1_000;
+
+/*
+FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+Release the HTTP listener so the port is actually free before this process exits.
+
+Measured before this existed: neither shutdown body closed the listener (their own comments said so —
+"server.close() is not awaited on this exit path" and "process.exit below skips server.close()'s cleanup
+hook"), so the port was reclaimed only by process teardown and the replacement raced a dying parent for it.
+
+The shape is the one `migration-holding-server.ts` proves race-free: `close()` alone does not finish while a
+keep-alive or SSE socket is open, and the dashboard is exactly the kind of server that has both (SSE log
+tails, websockets). `closeAllConnections()` is what makes `close()`'s callback arrive. The whole thing is
+bounded by a timeout because a wedged socket must never hold shutdown open: on timeout the exit still
+proceeds and the replacement's bounded bind-retry covers the gap.
+
+Returns whether the listener closed inside the budget — a false is information for the log line, never a
+failure that may stop shutdown.
+*/
+export async function closeDashboardListener(
+  server: ClosableListener | null | undefined,
+  deps: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  if (!server) return false;
+  const timeoutMs = deps.timeoutMs ?? DASHBOARD_LISTENER_CLOSE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closed = new Promise<boolean>((resolve) => {
+    try {
+      server.close(() => resolve(true));
+      server.closeAllConnections?.();
+    } catch {
+      resolve(false);
+    }
+  });
+  const bounded = await Promise.race([
+    closed,
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return bounded;
+}
+
+export interface SelfRespawnHandle {
+  /** The registered exit-handler body, exposed so each terminating route can be exercised in tests. */
+  handleExit: () => void;
+  /** True once a replacement has been spawned; a second terminating route must not spawn another. */
+  spawned: () => boolean;
+}
+
+export interface SelfRespawnDeps {
+  /** Injectable for the acceptance tests; production passes node's `spawn`. */
+  spawn: (command: string, args: string[], options: {
+    env: NodeJS.ProcessEnv;
+    stdio: "inherit";
+    detached: true;
+  }) => { unref?: () => void } | undefined | null;
+  command: { command: string; args: string[] };
+  env: NodeJS.ProcessEnv;
+  /** The single-writer restart intent: `shutdownExitCode === FUSION_RESTART_EXIT_CODE`. */
+  restartIntended: () => boolean;
+  /** Best-effort listener release immediately before the spawn, for exits that skipped the graceful tail. */
+  closeListener?: () => void;
+  log: (message: string) => void;
+  /** Injectable so a test can capture the handler and fire each terminating route. */
+  registerExitHandler?: (handler: () => void) => void;
+}
+
+/*
+FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+The self-restart spawn, anchored at the process-exit choke point and nowhere else.
+
+This host has already had a four-engine-process / two-listener incident, which is why the request handler is
+forbidden from spawning a replacement: a handler that spawns races whatever the graceful path is already
+doing, and every additional route into "start another dashboard" is another way to get split-brain. One
+choke, reached by all three terminating paths of a restart-intended exit — the graceful tail, the hard-exit
+watchdog, and the second-signal forced exit — is what makes "exactly one replacement" a property of the code
+rather than a timing race.
+
+Identity is the whole deliverable: same `execPath`, same `execArgv` (the inspector flag), same `argv` (the
+port and host), same environment (`NODE_OPTIONS`, `FUSION_PG_POOL_MAX`) plus the one provenance marker. An
+environment rebuilt from a template is how this host lost its memory ceiling once already, so `env` is
+spread verbatim and nothing is filtered.
+
+`detached` + `unref()` is what lets the replacement outlive this exit; `stdio: "inherit"` keeps the
+operator's log redirection writing one continuous file across the hand-off.
+*/
+export function createSelfRespawnOnExit(deps: SelfRespawnDeps): SelfRespawnHandle {
+  let hasSpawned = false;
+  const spawnReplacement = (): void => {
+    if (hasSpawned || !deps.restartIntended()) return;
+    hasSpawned = true;
+    const commandLine = [deps.command.command, ...deps.command.args].join(" ");
+    deps.log(`[dashboard:self-restart] exiting for restart — spawning replacement ${commandLine}`);
+    try {
+      deps.closeListener?.();
+    } catch (err) {
+      // The listener is released by process teardown regardless; a failure here must not cost the restart.
+      deps.log(`[dashboard:self-restart] listener release at the exit choke failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      // Detached + unref is what lets the replacement outlive this exit.
+      // Deliberately NOT superviseSpawn: that would install a supervisor for a host whose entire premise
+      // is that nobody supervises it, and its detached process group is what made the supervised TUI unusable.
+      // process-supervisor-allowlist: sanctioned user-facing daemon hand-off — this child IS the dashboard.
+      const child = deps.spawn(deps.command.command, deps.command.args, {
+        env: { ...deps.env, [FUSION_RESTART_RESPAWN_CHILD_ENV]: "1" },
+        stdio: "inherit",
+        detached: true,
+      });
+      child?.unref?.();
+    } catch (err) {
+      // A replacement that cannot start is the old behavior (a manual relaunch), not a reason to
+      // fail the exit this process is already performing.
+      deps.log(`[dashboard:self-restart] replacement spawn failed — relaunch manually: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const handleExit = (): void => { spawnReplacement(); };
+  const register = deps.registerExitHandler ?? ((handler: () => void) => { process.on("exit", handler); });
+  register(handleExit);
+  return { handleExit, spawned: () => hasSpawned };
+}
+
+/*
+FNXC:SystemPanel 2026-11-13-03:36 (RUFU-513):
+Registration gate for the exit-choke spawn: only a host whose restart mode is `self-respawn` may register one.
+
+This is the structural half of "exactly one replacement". A supervised host's parent owns the respawn and a
+`--no-supervise` host's operator opted out of being respawned, so registering the spawn for either would
+create a second starter for one port — the split-brain shape this host has already been a victim of. Keeping
+the gate as a function (rather than an inline `if`) means the exclusion is asserted by a test instead of
+resting on the shape of a call site.
+*/
+export function registerSelfRespawnForMode(
+  mode: DashboardRestartMode,
+  deps: SelfRespawnDeps,
+): SelfRespawnHandle | null {
+  if (mode !== "self-respawn") return null;
+  return createSelfRespawnOnExit(deps);
+}
+
 /**
  * Run the dashboard under foreground process supervision with bounded restart
  * attempts and exponential backoff.
@@ -3970,7 +4382,10 @@ export function shouldSuperviseDashboard(
  * Spawns the current CLI entry point as a child process (minus the --supervise
  * flag) and monitors for unexpected exits. If the child exits non-zero, the
  * supervisor restarts up to SUPERVISE_MAX_RESTARTS times with exponential
- * backoff. Clean exits (SIGINT/SIGTERM/exit 0) propagate without restart.
+ * backoff. Clean exits (SIGINT/SIGTERM/exit 0) never restart, and since RUFU-513 they end the parent
+ * as well: it exits with an honest code (`128 + signum`, or a failure code when `/api/health` on the
+ * REQUESTED port answers nothing) rather than returning and lingering as a live pid over a service that
+ * no longer exists. See `resolveSupervisorLivenessAction` (Invariant 7).
  *
  * FNXC:SystemPanel 2026-07-12-14:05:
  * The child is spawned ATTACHED (same foreground process group, stdio
@@ -3995,10 +4410,178 @@ export function classifyDashboardFatalExit(error: unknown): { exitCode: number; 
   return { exitCode: 1, nonRetryable: false };
 }
 
+// ── Supervisor liveness honesty (Invariant 7, RUFU-513) ─────────────────────
+
+/**
+ * The parent's honest exit code when its child is gone, nothing signalled the stop, and the
+ * requested port never served. Deliberately an ordinary `1` rather than a new magic code: every
+ * consumer of this process (docker-entrypoint, systemd, a shell `$?`) distinguishes only
+ * `0` / `FUSION_RESTART_EXIT_CODE` / "not those", and a fresh code would be unreadable to all of
+ * them while the `[dashboard:supervisor]` line already names the port that never served.
+ */
+export const SUPERVISOR_EXIT_CODE_NO_SERVICE = 1;
+
+/** One bounded `/api/health` request is the witness. This is a probe, never a poll. */
+export const SUPERVISOR_SERVICE_PROBE_TIMEOUT_MS = 1_500;
+
+export type SupervisorLivenessAction =
+  /** Operator-requested restart: the loop respawns and the crash budget stays untouched (unchanged leg). */
+  | "respawn"
+  /** The parent dies with a code that states what happened, instead of lingering as a live pid. */
+  | "exit-honest"
+  /** The child stopped cleanly AND the requested port verifiably serves elsewhere — service survives. */
+  | "exit-clean";
+
+export interface SupervisorLivenessDecision {
+  action: SupervisorLivenessAction;
+  /** Code describing the parent's OWN death; 0 only on `exit-clean`. */
+  exitCode: number;
+}
+
+/** Signal → number for the `128 + n` convention the parent's own handlers already use (SIGINT → 130, SIGTERM → 143). */
+const SIGNAL_EXIT_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGKILL: 9,
+  SIGUSR1: 10,
+  SIGUSR2: 12,
+  SIGPIPE: 13,
+  SIGALRM: 14,
+  SIGTERM: 15,
+  SIGBREAK: 21,
+};
+
+export function signalExitCode(signal: NodeJS.Signals): number {
+  const number = SIGNAL_EXIT_NUMBERS[signal];
+  return number ? 128 + number : 1;
+}
+
+/*
+FNXC:SystemPanel 2026-11-13-08:45 (RUFU-513 Invariant 7):
+A parent must not present as healthy while its child does not serve.
+
+Measured on the production host (operator comment `1793982858607-oid7cq`, peer measurements
+`1793983588459-y7of3l`): a manual `SIGTERM` to a supervised child hit the `stopping` latch and the
+`SIGINT`/`SIGTERM`/`exitCode === 0` legs, both of which merely `return`ed. The parent kept a live pid
+over a service that no longer existed, so a pid-based liveness check reported health across a ~90 s
+invisible outage while whatever eventually appeared could not bind the port and silently took an
+ephemeral one. "The child lives" is not "the child serves", and a live pid is exactly what an
+external watchdog reads as health.
+
+The criterion is therefore SERVICE — HTTP 200 from `/api/health` on the requested port, the same
+endpoint and the same 127.0.0.1 address the operator's watchdog probes — never a pid and never an
+ephemeral port. "Dying honestly" is the whole remedy: the stop contract ("never respawn after an
+operator-requested stop") is preserved exactly, because this helper kills the parent rather than
+restarting the child, and `128 + signum` is the same convention the parent's own SIGINT/SIGTERM
+handlers already use, so an operator stop still reads as a stop and not as a crash.
+
+The exit code is forced non-zero whenever the port does not verifiably serve, including the case
+where the child exited `0` — a supervisor whose child is gone and whose port is dark has not
+succeeded at anything, and an exit code of 0 would make the outage look like a clean shutdown.
+
+`childExitedWithoutRestartIntent` is the caller's verdict AFTER the `stopping` precedence is applied:
+the loop passes `true` from both stop legs, because an operator stop outranks a restart request that
+races it (that precedence is pre-existing shipped behavior, and respawn-after-stop is the shape this
+helper must never introduce).
+
+FNXC:SystemPanel 2026-11-19-04:00 (RUFU-513, review finding 1-2):
+Reachability is stated plainly so nobody reads the `"respawn"` arm as live behavior: every PRODUCTION
+call site is a stop leg and therefore passes `true`, so today that arm is reached only from
+`dashboard-supervise.test.ts`. It is kept as the helper's total function — the input names the restart
+intent, and the arm pins the one disposition a future restart-intent caller must get — not as a live
+respawn path. Deleting it would not change any shipped behavior; treating it as shipped behavior would
+be the actual error.
+*/
+export function resolveSupervisorLivenessAction(input: {
+  /** False only when the loop honoured `FUSION_RESTART_EXIT_CODE` as a restart request. */
+  childExitedWithoutRestartIntent: boolean;
+  /** Witness for the REQUESTED port: HTTP 200 from `/api/health`, nothing weaker. */
+  servedRequestedPort: boolean;
+  /** The signal the child died of, when it died of one. */
+  childSignal: NodeJS.Signals | null;
+  /** The child's numeric exit code (`0` = it stopped cleanly). */
+  childExitCode: number;
+  /** Signal the OPERATOR sent to the parent, latched by its own handlers; outranks a clean child exit. */
+  operatorStopSignal?: NodeJS.Signals | null;
+}): SupervisorLivenessDecision {
+  if (!input.childExitedWithoutRestartIntent) return { action: "respawn", exitCode: 0 };
+  const stopSignal = input.childSignal ?? input.operatorStopSignal ?? null;
+  if (stopSignal) return { action: "exit-honest", exitCode: signalExitCode(stopSignal) };
+  if (input.childExitCode !== 0) return { action: "exit-honest", exitCode: input.childExitCode };
+  return input.servedRequestedPort
+    ? { action: "exit-clean", exitCode: 0 }
+    : { action: "exit-honest", exitCode: SUPERVISOR_EXIT_CODE_NO_SERVICE };
+}
+
+/*
+FNXC:SystemPanel 2026-11-13-08:45 (RUFU-513 Invariant 7):
+The service witness itself: ONE bounded `GET /api/health` on the requested port, answered `false` by
+any error, timeout, or non-200. 127.0.0.1 is deliberate — it is the exact address the operator's
+watchdog probes and the address the supervisor's own give-up message already prints, so the parent and
+the watcher can never disagree about what "serving" meant. A single request at a decision point costs
+nothing; a poll would be a new failure mode (a slow boot reads as a dead service), which is why the
+probe is taken at the moment the parent is about to persist, not on a timer.
+*/
+export async function probeDashboardServiceOnPort(
+  port: number,
+  deps: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  const timeoutMs = deps.timeoutMs ?? SUPERVISOR_SERVICE_PROBE_TIMEOUT_MS;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+    return response.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/** What the supervisor needs to drive one child, structural so a test can hand it a fake close. */
+export interface SupervisedChildHandle {
+  child: { kill: (signal?: NodeJS.Signals | number) => unknown };
+  waitExit: Promise<AttachedChildExit>;
+}
+
+export interface AttachedChildExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+/**
+ * Injectable seams for the supervisor loop. Production defaults are the real `spawnAttached`, a real
+ * one-shot health probe, the real `process` handlers, and the real `process.exit`; tests inject fakes
+ * so the post-child-exit decision can be driven per branch without processes, sockets, or real timers
+ * (the no-slow-tests rule).
+ */
+export interface SupervisedLoopDeps {
+  attachChild?: (command: string, args: string[]) => SupervisedChildHandle;
+  probeService?: (port: number) => Promise<boolean>;
+  registerSignal?: (signal: NodeJS.Signals, handler: () => void) => void;
+  registerExitHandler?: (handler: () => void) => void;
+  exit?: (code: number) => void;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (message: string) => void;
+  error?: (message: string) => void;
+}
+
 export async function runDashboardSupervised(
   port: number,
   _opts: Parameters<typeof runDashboard>[1] = {},
+  deps: SupervisedLoopDeps = {},
 ): Promise<void> {
+  const attachChild = deps.attachChild ?? spawnAttached;
+  const probeService = deps.probeService ?? ((targetPort: number) => probeDashboardServiceOnPort(targetPort));
+  const registerSignal = deps.registerSignal ?? ((signal: NodeJS.Signals, handler: () => void) => { process.on(signal, handler); });
+  const registerExitHandler = deps.registerExitHandler ?? ((handler: () => void) => { process.on("exit", handler); });
+  const exitProcess = deps.exit ?? ((code: number) => { process.exit(code); });
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const logLine = deps.log ?? ((message: string) => { console.log(message); });
+  const logError = deps.error ?? ((message: string) => { console.error(message); });
   // Reconstruct child args: same flags, minus the supervision flags.
   const childArgs = process.argv.slice(2).filter((a) => a !== "--supervise" && a !== "--no-supervise");
   // Ensure "dashboard" is present without duplicating it after global flags.
@@ -4009,43 +4592,61 @@ export async function runDashboardSupervised(
 
   const respawn = resolveSupervisorRespawnCommand();
   if (!respawn) {
-    console.error("[dashboard:supervisor] cannot determine entry point for child process");
-    process.exit(1);
+    logError("[dashboard:supervisor] cannot determine entry point for child process");
+    exitProcess(1);
+    return;
   }
 
   let restartCount = 0;
   let lastExitTime = 0;
   const restartCommand = formatSupervisorRestartCommand(respawn.command, respawn.args, childArgs);
 
-  let activeChild: ReturnType<typeof spawnAttached> | null = null;
+  let activeChild: SupervisedChildHandle | null = null;
   // `stopping` latches once the operator asks to quit so the restart loop never
   // respawns after an intentional shutdown, even if the child's post-signal
   // exit code is non-zero.
   let stopping = false;
+  /*
+  FNXC:SystemPanel 2026-11-13-08:45 (RUFU-513 Invariant 7):
+  Which signal the OPERATOR sent, remembered so the parent's own death can state it. A child that
+  handled a forwarded `SIGTERM` and exited `0` carries no signal of its own, and without this latch the
+  parent's honest code would have to fall back to a generic failure — which reads as a crash to an
+  operator who stopped it deliberately. The stop contract is unchanged: this latch still never respawns.
+  */
+  let stopSignal: NodeJS.Signals | null = null;
   // Parent lifecycle: terminal Ctrl+C (SIGINT) already reaches the attached
   // child via the shared foreground process group, so when a child is alive the
   // parent just waits for its graceful exit. But during crash-backoff (or
   // between spawns) there is NO child to receive the terminal SIGINT, so Ctrl+C
   // would hang for up to the backoff window — exit immediately in that case.
-  process.on("SIGINT", () => {
+  registerSignal("SIGINT", () => {
     stopping = true;
-    if (!activeChild) process.exit(130);
+    stopSignal = "SIGINT";
+    if (!activeChild) {
+      exitProcess(130);
+      return;
+    }
   });
   // A direct SIGTERM to the parent (process managers, `kill`) is forwarded so
   // the child shuts down too, then the loop stops. During crash-backoff there
   // is no child to forward to and the loop is parked in a sleep, so exit
   // immediately rather than waiting out the backoff. If the parent dies
   // unexpectedly, best-effort kill the child on exit.
-  process.on("SIGTERM", () => {
+  registerSignal("SIGTERM", () => {
     stopping = true;
-    if (!activeChild) process.exit(143);
+    stopSignal = "SIGTERM";
+    const child = activeChild;
+    if (!child) {
+      exitProcess(143);
+      return;
+    }
     try {
-      activeChild.child.kill("SIGTERM");
+      child.child.kill("SIGTERM");
     } catch {
       // Child may already be gone.
     }
   });
-  process.on("exit", () => {
+  registerExitHandler(() => {
     try {
       activeChild?.child.kill("SIGTERM");
     } catch {
@@ -4068,16 +4669,48 @@ export async function runDashboardSupervised(
   // em-dashes in one operator line read like a broken sentence.
   const ceilingCarry = `${formatHeapCeilingCompact(ceiling)}; ${describeHeapCeilingRespawnCarry(ceiling)}`;
 
+  /*
+  FNXC:SystemPanel 2026-11-13-08:45 (RUFU-513 Invariant 7):
+  Every route that stops supervising now ENDS the parent, after asking the one question a pid cannot
+  answer: does the requested port serve HTTP 200 from `/api/health`?
+
+  Before this, both stop legs just `return`ed, and a parent could go on living — invisibly — over a
+  child that no longer served anything, which is precisely the false-health shape an external pid-based
+  watchdog scores as healthy. The probe is taken here and nowhere else (one request, at the decision),
+  and a probe failure is treated as "not serving", never as "unknown but fine".
+  */
+  const stopSupervising = async (cause: "operator-stop" | "child-stopped", exitSignal: NodeJS.Signals | null, exitCode: number): Promise<void> => {
+    const servedRequestedPort = await probeService(port).catch(() => false);
+    const decision = resolveSupervisorLivenessAction({
+      // Both callers are stop legs: an operator stop outranks a restart request that races it, so no
+      // stop disposition may be re-read as a respawn.
+      childExitedWithoutRestartIntent: true,
+      servedRequestedPort,
+      childSignal: exitSignal,
+      childExitCode: exitCode,
+      operatorStopSignal: stopSignal,
+    });
+    // The sentence must match the measurement: claiming "a service that does not exist" while the probe
+    // answered 200 would be the same kind of false statement this whole branch exists to remove.
+    const verdict = servedRequestedPort
+      ? `http://127.0.0.1:${port}/api/health answers 200, so the service survives on another listener`
+      : `nothing serves http://127.0.0.1:${port}/api/health, so this pid would be a false health signal `
+        + `and the parent exits rather than persist over a service that does not exist`;
+    logError(`[dashboard:supervisor] ${cause}: dashboard child is gone and ${verdict} · exiting (code ${decision.exitCode}).`);
+    exitProcess(decision.exitCode);
+  };
+
   while (true) {
     const attemptLabel = `${restartCount + 1}/${SUPERVISE_MAX_RESTARTS + 1}`;
-    console.log(`[dashboard:supervisor] starting dashboard (attempt ${attemptLabel}) · heap ceiling ${ceilingCarry}`);
+    logLine(`[dashboard:supervisor] starting dashboard (attempt ${attemptLabel}) · heap ceiling ${ceilingCarry}`);
 
     try {
-      activeChild = spawnAttached(respawn.command, [...respawn.args, ...childArgs]);
+      activeChild = attachChild(respawn.command, [...respawn.args, ...childArgs]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[dashboard:supervisor] failed to spawn child: ${message}`);
-      process.exit(1);
+      logError(`[dashboard:supervisor] failed to spawn child: ${message}`);
+      exitProcess(1);
+      return;
     }
 
     const exitResult = await activeChild.waitExit;
@@ -4086,13 +4719,16 @@ export async function runDashboardSupervised(
     const exitSignal = exitResult.signal;
 
     // Operator asked to stop (SIGINT/SIGTERM to the parent) — never respawn,
-    // regardless of the child's post-signal exit code.
+    // regardless of the child's post-signal exit code, and never linger either.
     if (stopping) {
+      await stopSupervising("operator-stop", exitSignal, exitCode);
       return;
     }
 
-    // Clean exit — propagate without restart
+    // Child stopped on its own (signal or clean exit) — no restart, but the parent
+    // must not outlive its child's service (Invariant 7).
     if (exitSignal === "SIGINT" || exitSignal === "SIGTERM" || exitCode === 0) {
+      await stopSupervising("child-stopped", exitSignal, exitCode);
       return;
     }
 
@@ -4103,12 +4739,13 @@ export async function runDashboardSupervised(
     SUPERVISE_MAX_RESTARTS or incur crash backoff.
     */
     if (exitCode === FUSION_NON_RETRYABLE_EXIT_CODE) {
-      console.error("[dashboard:supervisor] dashboard stopped after a non-retryable unique constraint or project partition identity reconciliation failure; inspect the preceding startup error.");
-      process.exit(exitCode);
+      logError("[dashboard:supervisor] dashboard stopped after a non-retryable unique constraint or project partition identity reconciliation failure; inspect the preceding startup error.");
+      exitProcess(exitCode);
+      return;
     }
 
     if (exitCode === FUSION_RESTART_EXIT_CODE) {
-      console.log("[dashboard:supervisor] restart requested — restarting now");
+      logLine("[dashboard:supervisor] restart requested — restarting now");
       restartCount = 0;
       lastExitTime = 0;
       continue;
@@ -4123,7 +4760,7 @@ export async function runDashboardSupervised(
 
     restartCount++;
     if (restartCount > SUPERVISE_MAX_RESTARTS) {
-      console.error(
+      logError(
         `\n[dashboard:supervisor] dashboard exited unexpectedly ${SUPERVISE_MAX_RESTARTS + 1} times.\n` +
         `Giving up. If using Tailscale Serve, the remote URL will return 502\n` +
         `until the dashboard is restarted manually:\n\n` +
@@ -4136,23 +4773,19 @@ export async function runDashboardSupervised(
         `To check if a listener is still active:\n` +
         `  curl http://127.0.0.1:${port}/api/health\n`,
       );
-      process.exit(1);
+      exitProcess(1);
+      return;
     }
 
     const delay = Math.min(
       SUPERVISE_BASE_DELAY_MS * Math.pow(2, restartCount - 1),
       SUPERVISE_MAX_DELAY_MS,
     );
-    console.log(
+    logLine(
       `[dashboard:supervisor] restarting in ${Math.round(delay / 1000)}s (attempt ${restartCount}/${SUPERVISE_MAX_RESTARTS}) · heap ceiling ${ceilingCarry}`,
     );
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    await sleep(delay);
   }
-}
-
-interface AttachedChildExit {
-  code: number | null;
-  signal: NodeJS.Signals | null;
 }
 
 /*

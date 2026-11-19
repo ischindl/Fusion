@@ -335,7 +335,15 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     const fromSource = Boolean(systemControl?.sourceWorkspaceRoot);
     res.json({
       supervised: systemControl?.supervised ?? false,
-      restartSupported: systemControl?.supervised ?? false,
+      /*
+      FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+      The host's declared effective capability when it has one, falling back to the legacy meaning
+      (`supervised`) for hosts that predate the field, so the desktop relaunch host keeps answering exactly
+      as before. Measured before this line existed: this aliased `supervised`, so a production launch with no
+      parent advertised restartSupported:false even though its restart request would have been accepted, and
+      the panel kept the Restart button disabled on a host that could restart itself.
+      */
+      restartSupported: systemControl?.restartSupported ?? systemControl?.supervised ?? false,
       rebuildSupported: fromSource,
       /*
       FNXC:SystemPanelFnBinary 2026-07-15-09:54:
@@ -386,9 +394,27 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
       .slice(0, 200);
     const accepted = systemControl.requestRestart(reason);
     if (!accepted) {
+      /*
+      FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+      The old sentence was measured to be a dead end, not merely unhelpful. On the production launch
+      `node --inspect=... packages/cli/bin.mjs dashboard --port 4040 --host 0.0.0.0` (ppid 1, zero supervisor
+      log lines) it told the operator to start via `fn dashboard --supervise`; they did, and the new listener
+      still had ppid 1, zero supervisor lines, and answered the same 409 — `shouldSuperviseDashboard` skips
+      supervision whenever `execArgv` carries `--inspect`, and `--supervise` is a compatibility no-op that
+      cannot override that skip. A message that names an unreachable remedy is what forced every deploy into
+      killing the listener, the operation the project rules single out.
+
+      So the text now states the cause the host actually reported, and it is chosen from the same effective
+      capability /system/info advertises, so a refusal can never disagree with the advertised capability: a
+      capable host is refusing because a teardown is already running, and an incapable host is told which
+      opt-out produced that. `--supervise` never appears as a remedy, because for this launch shape it is not one.
+      */
+      const restartCapable = systemControl.restartSupported ?? systemControl.supervised;
       throw new ApiError(
         409,
-        "Restart is not available: no supervising parent. Start via `pnpm dev` or `fn dashboard --supervise`.",
+        restartCapable
+          ? "Restart is not available: this process is already shutting down or restarting."
+          : "Restart is not available: this process cannot restart itself. There is no live supervising parent and self-restart is unavailable (launched with `--no-supervise`, or the entry point could not be re-resolved). Relaunch without `--no-supervise` to make the dashboard restartable.",
       );
     }
     log.info("System restart scheduled", { reason });

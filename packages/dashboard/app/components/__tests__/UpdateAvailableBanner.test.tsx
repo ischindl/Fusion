@@ -180,18 +180,18 @@ describe("UpdateAvailableBanner", () => {
   */
   it("shows manual guidance but still attempts the restart when unsupported", async () => {
     mockFetchSystemInfo.mockResolvedValueOnce({ restartSupported: false });
-    mockRequestSystemRestart.mockRejectedValueOnce(new Error("Restart is not available: no supervising parent."));
+    mockRequestSystemRestart.mockRejectedValueOnce(new Error("Restart is not available: this process cannot restart itself. There is no live supervising parent and self-restart is unavailable (launched with `--no-supervise`, or the entry point could not be re-resolved). Relaunch without `--no-supervise` to make the dashboard restartable."));
     renderBanner();
     await completeInstall();
 
     const restartButton = screen.getByRole("button", { name: "Restart Fusion" });
     expect(restartButton).toBeEnabled();
-    expect(screen.getByText(/Needs a supervising parent/)).toBeInTheDocument();
+    expect(screen.getByText(/relaunch without --no-supervise, then update manually/)).toBeInTheDocument();
 
     fireEvent.click(restartButton);
 
     await waitFor(() => expect(mockRequestSystemRestart).toHaveBeenCalledWith("update-banner"));
-    expect(await screen.findByText(/Restart is not available: no supervising parent\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Restart is not available: this process cannot restart itself\./)).toBeInTheDocument();
   });
 
   it("allows a restart attempt while system info is still loading", async () => {
@@ -200,7 +200,7 @@ describe("UpdateAvailableBanner", () => {
     await completeInstall();
 
     expect(screen.getByRole("button", { name: "Restart Fusion" })).toBeEnabled();
-    expect(screen.queryByText(/Needs a supervising parent/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/relaunch without --no-supervise, then update manually/)).not.toBeInTheDocument();
   });
 
   it("shows manual guidance when system info cannot be loaded", async () => {
@@ -208,7 +208,7 @@ describe("UpdateAvailableBanner", () => {
     renderBanner();
     await completeInstall();
 
-    await waitFor(() => expect(screen.getByText(/Needs a supervising parent/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/relaunch without --no-supervise, then update manually/)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Restart Fusion" })).toBeEnabled();
   });
 
@@ -325,7 +325,7 @@ describe("UpdateAvailableBanner", () => {
     expect(actions).toContainElement(restartButton);
     expect(restartButton).toBeInTheDocument();
     expect(restartButton).toHaveProperty("disabled", false);
-    if (!restartSupported) expect(screen.getByText(/Needs a supervising parent/)).toBeInTheDocument();
+    if (!restartSupported) expect(screen.getByText(/relaunch without --no-supervise, then update manually/)).toBeInTheDocument();
 
     Object.defineProperty(window, "innerWidth", { configurable: true, value: previousWidth });
   });

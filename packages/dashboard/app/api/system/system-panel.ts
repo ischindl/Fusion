@@ -44,7 +44,15 @@ export interface SystemRebuildJobLine {
 }
 
 export interface SystemInfoResponse {
+  /** Strict fact: a LIVE supervising parent owns this process's respawn. Never widened for self-restart. */
   supervised: boolean;
+  /*
+  FNXC:SystemPanel 2026-11-13-09:20 (RUFU-513):
+  Effective restart capability — "a restart request will be accepted" — which is the question every Restart
+  affordance must ask. It is NOT the same as `supervised`: a production launch with no parent can restart
+  itself (listener release + re-exec at the process-exit choke), so the affordance keys off this field and
+  the `supervised` note stays reserved for hosts that genuinely cannot restart (`--no-supervise`).
+  */
   restartSupported: boolean;
   rebuildSupported: boolean;
   /** True when the host is a Fusion source checkout (dev) — can build & link local fn. */
