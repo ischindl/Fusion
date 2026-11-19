@@ -305,21 +305,30 @@ pgDescribe("store-open boot backlog attribution at saneca scale (RUFU-275)", () 
 
     /*
     FNXC:TaskStoreBootAttribution 2026-09-26-20:42 (RUFU-275 merge):
-    Wire proof 1 — direction corrected by measurement, because `slim: true` alone does NOT keep
-    `log` off the wire. With the derive pass on, the issued SELECT enumerates every task column
-    including `"log"`; `derive: false` (the shipped Step 2 fix) is what yields the log-free
-    projection. So the pre-fix census shape MUST name the column and the fix shape MUST NOT.
-    The earlier note claimed the opposite ("BOTH census shapes hydrate ~zero log bytes") because it
-    read the HYDRATED row shape, which the slim mapper restores to `log: []` in both shapes; only
-    the wire capture distinguishes them. Pinned in both directions so a regression that re-enables
-    derivation on the boot path fails here.
+    Wire proof 1 pinned `derive: false` as the ONLY log-free census shape. That was true in
+    September 2026: `slim: true` did not keep `log` off the wire, so the derive-on SELECT enumerated
+    every task column including `"log"` and only the derive-off fix shape yielded a log-free read.
+
+    FNXC:StaleTestRepair 2026-11-19-01:18 (RUFU-634):
+    The subject of that direction is gone. RUFU-615 tranche 5 (f55fa4507c, "make slim board reads
+    omit the log column they discard") deleted the `slim` veto — `effectiveExcludeLog =
+    excludeLog === true || slim` in `packages/core/src/task-store/reads.ts` — so `slim: true` reaches
+    the SELECT without the column regardless of what `derive` says. Both census shapes are now
+    log-free, so the wire capture no longer distinguishes them and both pins read `false`. What
+    remains load-bearing here is the RUFU-275 intent restated against the shipped reader: no boot
+    census shape pays to ship a column the slim mapper discards. The positive pin moved to where the
+    column is still pulled (wire proof 2, cold init, `slim: false`) and the caller-side decision stays
+    pinned by `packages/engine/src/__tests__/board-read-shape-guard.test.ts`, which asserts
+    `excludeLog: true` on switched callers and its ABSENCE on the retaining caller. Measured
+    deterministically red on the pg lane (2 runs, same assertion) with a docs-only diff, i.e. red at
+    the base commit and not caused by the change this card ships.
     */
     const tasksSelectsFrom = (statements: string[]) => statements.filter(
       (statement) => /^\s*SELECT/i.test(statement) && /FROM\s+"?project"?\."?tasks"?/i.test(statement),
     );
     const censusTasksSelects = tasksSelectsFrom(censusOnSql);
     expect(censusTasksSelects.length).toBeGreaterThan(0);
-    expect(censusTasksSelects.some((statement) => SELECTS_LOG_COLUMN.test(statement))).toBe(true);
+    expect(censusTasksSelects.some((statement) => SELECTS_LOG_COLUMN.test(statement))).toBe(false);
     const censusOffTasksSelects = tasksSelectsFrom(censusOffSql);
     expect(censusOffTasksSelects.length).toBeGreaterThan(0);
     expect(censusOffTasksSelects.some((statement) => SELECTS_LOG_COLUMN.test(statement))).toBe(false);

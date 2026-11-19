@@ -22,6 +22,11 @@ related:
   - docs/diagnostics.md
   - docs/dashboard-guide.md
   - docs/solutions/performance/done-range-attribution-subprocess-batching.md
+  # Cross-linked rather than extended: this runbook is about the dashboard *process* heap, and its
+  # storage-side sibling question (does `tasks.log` history storage need a different shape?) was priced
+  # and answered in RUFU-634, so there is no second TOAST or side-table pass without re-reading that
+  # measurement.
+  - docs/solutions/performance/task-log-storage-policy-pricing.md
   - packages/dashboard/src/lib/retention-census.ts
   - packages/dashboard/src/metrics/retention-sampler.ts
   - scripts/check-retention-coverage.mjs

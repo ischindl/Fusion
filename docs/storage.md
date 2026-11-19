@@ -821,6 +821,22 @@ RUFU-312 never runs any of the following, at boot, in a migration, or from a swe
    `task-log-projection-pairing.test.ts`, and the `TASK_COLUMN_DESCRIPTORS` entries to name every reader that
    still needs it.
 
+**The storage policy of `project.tasks.log` is settled and is not a maintenance knob.** Measured 2026-11-18
+(RUFU-634, on a scratch copy of the reference database): the column ships as **EXTENDED** -
+`attstorage = 'x'`, which is also `jsonb`'s own `pg_type.typstorage` default - and its stored values are
+pglz-compressed (`pg_column_compression(log) = 'pglz'`; 53.1 MB stored against 189.6 MB of text). Nothing
+may add `ALTER TABLE project.tasks ALTER COLUMN log SET STORAGE ...`, to a migration or to the list above,
+because the option was priced and rejected on numbers: `SET STORAGE EXTERNAL` costs **+150 % on the
+column's TOAST relation** (125 435 904 -> 314 040 320 B) to save 5.6 ms on the one read that still touches
+the column; the `ALTER` itself changes **zero** bytes without a value rewrite; and `VACUUM (FULL,
+ANALYZE)` - step 2 above - copies the existing chunks **by reference** (identical chunk count, witness
+still `pglz`), so a storage-class migration would do nothing on an installed database unless it also
+rewrote every card's History. `SET STORAGE PLAIN` is worse than useless: PostgreSQL accepts the `ALTER`
+and then refuses every later write to a fat row (`ERROR: row is too big`). The full measurement, the
+read-shape table, the recipe, and the priced residual (53 101 171 B = 42.9 % of live-row column payload;
+`DROP COLUMN` plus a rewrite returns ~57 MB, 0.8 % of a 7 GB board) are in
+[`docs/solutions/performance/task-log-storage-policy-pricing.md`](solutions/performance/task-log-storage-policy-pricing.md).
+
 If the board was restored from a backup taken *before* 0093 ran, the marker is what makes the re-run safe: the
 copy pass selects only tasks that have no side rows yet, so a restored copy cannot double-insert a card's
 History.
