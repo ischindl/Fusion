@@ -2,6 +2,13 @@ import { exec, execSync } from "node:child_process";
 import { promisify } from "node:util";
 
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
+import {
+  COMMIT_EPOCH_FORMAT_FIELD,
+  commitDeclaresForeignProject,
+  commitPredatesTaskBirth,
+  COMMIT_BIRTH_CLOCK_SKEW_MS,
+  type CommitOwnershipProofContext,
+} from "./commit-trailer-evidence.js";
 
 const execAsync = promisify(exec);
 
@@ -14,6 +21,13 @@ export interface AlreadyMergedLookupInput {
   baseBranch: string;
   taskBranch?: string;
   baseCommitSha?: string;
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: the two facts that turn a task-id match into an ownership
+  proof — this board's project namespace and the owning card's `createdAt`. Every candidate a
+  lookup wants to credit is checked against them, so an anachronistic or foreign-project commit can
+  never be named as this card's delivery. Absent or null on either half skips only that check.
+  */
+  ownership?: CommitOwnershipProofContext;
 }
 
 export type AlreadyMergedOwnershipProof =
@@ -35,7 +49,12 @@ export interface CommitTaskOwnership {
   proof?: Extract<AlreadyMergedOwnershipProof, "task-trailer" | "lineage-trailer" | "subject-anchor">;
   ownerTaskId?: string;
   ownerLineageId?: string;
-  rejectionReason?: "foreign-task" | "foreign-lineage";
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: `foreign-project` and `anachronistic` extend the rejection
+  vocabulary for the two states a task-id match cannot see: the commit declares a DIFFERENT
+  project's namespace, or it was committed before the card that allegedly owns it was created.
+  */
+  rejectionReason?: "foreign-task" | "foreign-lineage" | "foreign-project" | "anachronistic";
 }
 
 interface DetectAlreadyLandedInput {
@@ -45,6 +64,8 @@ interface DetectAlreadyLandedInput {
   baseBranch: string;
   taskBranch?: string;
   baseCommitSha?: string;
+  /** See `AlreadyMergedLookupInput.ownership` — the same evidence the detector's anchors require. */
+  ownership?: CommitOwnershipProofContext;
 }
 
 function shellQuote(value: string): string {
@@ -75,6 +96,7 @@ export function getCommitTaskOwnership(
   lineageId: string | undefined,
   subject: string,
   body: string,
+  evidence?: CommitOwnershipProofContext & { committerEpochMs?: number | null },
 ): CommitTaskOwnership {
   const ownerTaskId = firstTrailerValue(body, "Fusion-Task-Id");
   const ownerLineageId = firstTrailerValue(body, "Fusion-Task-Lineage");
@@ -83,6 +105,23 @@ export function getCommitTaskOwnership(
   }
   if (lineageId && ownerLineageId && ownerLineageId !== lineageId) {
     return { owned: false, ownerTaskId, ownerLineageId, rejectionReason: "foreign-lineage" };
+  }
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: the two identity refusals run BEFORE any positive proof,
+  because they are refusals of the match itself, not tie-breakers: a commit that declares another
+  project's namespace, or that was committed before this card existed, is not this card's delivery
+  however exactly its trailer or subject names the id. RUFU-394 measured three such commits on
+  `main`, two of them stamped hours before the card they name was created.
+  */
+  if (commitDeclaresForeignProject(body, evidence?.projectNamespace ?? null)) {
+    return { owned: false, ownerTaskId, ownerLineageId, rejectionReason: "foreign-project" };
+  }
+  if (commitPredatesTaskBirth(
+    evidence?.committerEpochMs ?? null,
+    evidence?.taskCreatedAtMs ?? null,
+    COMMIT_BIRTH_CLOCK_SKEW_MS,
+  )) {
+    return { owned: false, ownerTaskId, ownerLineageId, rejectionReason: "anachronistic" };
   }
   if (ownerTaskId === taskId) {
     return { owned: true, proof: "task-trailer", ownerTaskId, ownerLineageId };
@@ -104,20 +143,58 @@ export function getCommitTaskOwnership(
   return { owned: false, ownerTaskId, ownerLineageId };
 }
 
+/**
+ * Read the commit facts an ownership decision needs: subject, body, and committer epoch seconds.
+ *
+ * FNXC:CommitOwnership 2026-11-19-15:48: `%ct` is the only git clock that is honestly advanced by
+ * the operations that legitimately move a commit forward (rebase, cherry-pick, squash), so a
+ * re-attributed commit keeps its delivery while a commit stamped before its card's `createdAt`
+ * cannot be one. A read that fails yields `null` fields, which SKIP the anachronism check rather
+ * than refuse — the refusal direction stays reserved for a proven claim.
+ */
+export async function readCommitOwnershipFacts(
+  repoDir: string,
+  sha: string,
+): Promise<{ subject: string; body: string; committerEpochMs: number | null }> {
+  const { stdout } = await execAsync(
+    `git show -s --format=%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD} ${shellQuote(sha)}`,
+    { cwd: repoDir, timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  const [subject = "", body = "", epochRaw = ""] = stdout.split("\x1f");
+  const epochSeconds = Number(epochRaw.trim());
+  return {
+    subject,
+    body,
+    committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1000 : null,
+  };
+}
+
+/** True when the commit's ownership evidence REFUSES it as this task's delivery. */
+async function commitOwnershipRejectsDelivery(
+  repoDir: string,
+  sha: string,
+  taskId: string,
+  lineageId: string | undefined,
+  ownership?: CommitOwnershipProofContext,
+): Promise<boolean> {
+  const facts = await readCommitOwnershipFacts(repoDir, sha).catch(() => null);
+  if (!facts) return false;
+  const ownershipVerdict = getCommitTaskOwnership(taskId, lineageId, facts.subject, facts.body, {
+    projectNamespace: ownership?.projectNamespace,
+    taskCreatedAtMs: ownership?.taskCreatedAtMs,
+    committerEpochMs: facts.committerEpochMs,
+  });
+  return ownershipVerdict.rejectionReason !== undefined;
+}
+
 async function commitHasForeignTaskOwnership(
   repoDir: string,
   sha: string,
   taskId: string,
   lineageId: string | undefined,
+  ownership?: CommitOwnershipProofContext,
 ): Promise<boolean> {
-  const { stdout } = await execAsync(`git show -s --format=%s%x1f%b ${shellQuote(sha)}`, {
-    cwd: repoDir,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  });
-  const [subject = "", body = ""] = stdout.split("\x1f");
-  const ownership = getCommitTaskOwnership(taskId, lineageId, subject, body);
-  return ownership.rejectionReason === "foreign-task" || ownership.rejectionReason === "foreign-lineage";
+  return commitOwnershipRejectsDelivery(repoDir, sha, taskId, lineageId, ownership);
 }
 
 async function branchHasNoUniqueDiff(repoDir: string, branchTip: string, baseBranch: string): Promise<boolean> {
@@ -143,7 +220,7 @@ async function branchHasNoUniqueDiff(repoDir: string, branchTip: string, baseBra
 export async function findAlreadyMergedTaskCommit(
   input: AlreadyMergedLookupInput,
 ): Promise<AlreadyMergedLookupResult | null> {
-  const { taskId, lineageId, repoDir, baseBranch, taskBranch, baseCommitSha } = input;
+  const { taskId, lineageId, repoDir, baseBranch, taskBranch, baseCommitSha, ownership } = input;
 
   try {
     if (lineageId) {
@@ -152,7 +229,7 @@ export async function findAlreadyMergedTaskCommit(
         "git log",
         `--grep=${shellQuote(lineagePattern)}`,
         "-E",
-        "--max-count=1",
+        "--max-count=5",
         "--format=%H",
         shellQuote(baseBranch),
       ].join(" ");
@@ -161,8 +238,14 @@ export async function findAlreadyMergedTaskCommit(
         timeout: 30_000,
         maxBuffer: 1024 * 1024,
       });
-      const lineageSha = lineage.stdout.trim();
-      if (lineageSha) {
+      /*
+      FNXC:CommitOwnership 2026-11-19-15:48: the trailer fast path used to hand back its FIRST grep
+      hit with no ownership read at all, so it bypassed the anchor the ancestry path routes through.
+      A refusal now moves to the next bounded candidate (and then on to the ancestry path), which is
+      why the grep is bounded rather than `--max-count=1`.
+      */
+      for (const lineageSha of lineage.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+        if (await commitOwnershipRejectsDelivery(repoDir, lineageSha, taskId, lineageId, ownership)) continue;
         return { sha: lineageSha, strategy: "trailer", ownershipProof: "lineage-trailer" };
       }
     }
@@ -172,7 +255,7 @@ export async function findAlreadyMergedTaskCommit(
       "git log",
       `--grep=${shellQuote(trailerPattern)}`,
       "-E",
-      "--max-count=1",
+      "--max-count=5",
       "--format=%H",
       shellQuote(baseBranch),
     ].join(" ");
@@ -181,8 +264,13 @@ export async function findAlreadyMergedTaskCommit(
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
-    const sha = stdout.trim();
-    if (sha) {
+    /*
+    FNXC:CommitOwnership 2026-11-19-15:48: same closure as the lineage fast path — the first hit is
+    a CANDIDATE, not a verdict. `36a88363e2` is exactly this shape: a bare-id grep would credit it
+    to RUFU-391 with no ownership check ever running.
+    */
+    for (const sha of stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+      if (await commitOwnershipRejectsDelivery(repoDir, sha, taskId, lineageId, ownership)) continue;
       return { sha, strategy: "trailer", ownershipProof: "task-trailer" };
     }
   } catch {
@@ -213,7 +301,7 @@ export async function findAlreadyMergedTaskCommit(
     FNXC:WorkflowRecovery 2026-07-03-21:31:
     A new no-op task branch can inherit the current main tip and therefore a previous task's Fusion trailer. Prove the branch has no unique diff from its merge-base before applying the FN-7143/FN-7187 foreign-tip guard; the base branch may have advanced since the no-op branch was created, so current base-tree equality is not part of ownership classification.
     */
-    const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId);
+    const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId, ownership);
     if (!branchTipHasNoUniqueDiff && branchTipHasForeignOwnership) {
       return null;
     }
@@ -236,7 +324,7 @@ export async function findAlreadyMergedTaskCommit(
       "git log",
       "--first-parent",
       "-E",
-      "--format=%H%x1f%s%x1f%b%x1e",
+      `--format=%H%x1f%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD}%x1e`,
       `--grep=${shellQuote(escapeRegex(taskId))}`,
       "--max-count=20",
       shellQuote(baseBranch),
@@ -251,11 +339,21 @@ export async function findAlreadyMergedTaskCommit(
       .map((record) => record.trim())
       .filter((record) => record.length > 0);
     for (const record of records) {
-      const [candidateSha, candidateSubject = "", candidateBody = ""] = record.split("\x1f");
+      const [candidateSha, candidateSubject = "", candidateBody = "", candidateEpoch = ""] = record.split("\x1f");
       const sha = candidateSha?.trim();
-      const ownership = getCommitTaskOwnership(taskId, lineageId, candidateSubject, candidateBody);
-      if (sha && ownership.owned) {
-        return { sha, strategy: "ancestry", ownershipProof: ownership.proof };
+      const epochSeconds = Number(candidateEpoch.trim());
+      /*
+      FNXC:CommitOwnership 2026-11-19-15:48: the ancestry loop now carries `%ct` in its format.
+      Without the clock the anachronism refusal would be unreachable on the one path that already
+      ran the anchor honestly.
+      */
+      const ownershipVerdict = getCommitTaskOwnership(taskId, lineageId, candidateSubject, candidateBody, {
+        projectNamespace: ownership?.projectNamespace,
+        taskCreatedAtMs: ownership?.taskCreatedAtMs,
+        committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1000 : null,
+      });
+      if (sha && ownershipVerdict.owned) {
+        return { sha, strategy: "ancestry", ownershipProof: ownershipVerdict.proof };
       }
     }
   } catch {
@@ -275,7 +373,7 @@ export async function findAlreadyMergedTaskCommit(
       if (hasCanonicalBranchIdentity) {
         branchTipHasNoUniqueDiff = await branchHasNoUniqueDiff(repoDir, branchTip, baseBranch).catch(() => false);
       }
-      const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId);
+      const branchTipHasForeignOwnership = await commitHasForeignTaskOwnership(repoDir, branchTip, taskId, lineageId, ownership);
       if (!branchTipHasNoUniqueDiff && branchTipHasForeignOwnership) {
         return null;
       }
@@ -329,7 +427,7 @@ export async function findAlreadyMergedTaskCommit(
       }
 
       const matchedSha = basePatchMap.get(branchPatchId);
-      if (matchedSha && !await commitHasForeignTaskOwnership(repoDir, matchedSha, taskId, lineageId)) {
+      if (matchedSha && !await commitHasForeignTaskOwnership(repoDir, matchedSha, taskId, lineageId, ownership)) {
         return { sha: matchedSha, strategy: "patch-id", ownershipProof: "canonical-branch-patch" };
       }
     }
@@ -368,7 +466,7 @@ export async function findAlreadyMergedTaskCommit(
         maxBuffer: 1024 * 1024,
       });
       const baseHead = baseHeadStdout.trim();
-      if (baseHead && (branchTipForeignNoDiff || !await commitHasForeignTaskOwnership(repoDir, baseHead, taskId, lineageId))) {
+      if (baseHead && (branchTipForeignNoDiff || !await commitHasForeignTaskOwnership(repoDir, baseHead, taskId, lineageId, ownership))) {
         return { sha: baseHead, strategy: "tree-equal", ownershipProof: "canonical-branch-tree" };
       }
     }
@@ -389,5 +487,6 @@ export async function detectAlreadyLandedOnMain(
     baseBranch: input.baseBranch,
     taskBranch: input.taskBranch,
     baseCommitSha: input.baseCommitSha,
+    ownership: input.ownership,
   });
 }

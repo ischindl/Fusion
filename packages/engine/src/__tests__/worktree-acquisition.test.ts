@@ -1,6 +1,6 @@
 import { proveTaskWorktreeRebind } from "../worktree/prove-task-worktree-rebind.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -201,6 +201,94 @@ describe("acquireTaskWorktree", () => {
     expect(git(pinnedPath, "git rev-parse HEAD")).toBe(head);
     expect(readFileSync(join(pinnedPath, "user-file"), "utf8")).toBe("retain\n");
     expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  /*
+   * FNXC:CommitOwnership 2026-11-19-17:38 (RUFU-394):
+   * A rebind is the one recovery that hands a worktree AND a branch to a card on the strength of the
+   * commits inside it, and until RUFU-394 the only question it asked of those commits was "does the
+   * trailer name this id?". That question is answerable by a board that re-used the id and by a
+   * counter read one past the allocator's high-water — the exact two shapes measured on `main` for
+   * `RUFU-391` and `RUFU-380`.
+   *
+   * Every refusal below is paired with a control on the SAME commit where exactly one input differs
+   * (the card's birth, or the namespace the question is asked in). Without that pairing the test
+   * would still go green when the refusal came from something unrelated to ownership — a first draft
+   * of this case quoted its trailer through a shell and every "refusal" it reported was a quoting
+   * artifact that the control case immediately exposed.
+   */
+  function commitDatedTo(repoDir: string, date: string, subject: string, trailers: string[]): string {
+    // execFileSync, not a shell string: the trailer block must arrive with its newlines intact, in
+    // ONE paragraph, the way a real `commit-msg` hook writes it.
+    execFileSync("git", ["commit", "-m", subject, "-m", trailers.join("\n")], {
+      cwd: repoDir, encoding: "utf-8",
+      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return git(repoDir, "git rev-parse HEAD");
+  }
+
+  /** Pinned checkout on a renamed branch holding exactly one commit of the card's claimed work. */
+  function rebindRepoWithCommit(commitDate: string, trailers: string[]) {
+    const rootDir = makeRepo();
+    const pinnedPath = join(rootDir, ".worktrees", "fn-1");
+    git(rootDir, `git worktree add -b fusion/renamed '${pinnedPath}'`);
+    writeFileSync(join(pinnedPath, "change"), "work\n");
+    git(pinnedPath, "git add change");
+    const head = commitDatedTo(pinnedPath, commitDate, "work", trailers);
+    writeFileSync(join(pinnedPath, "user-file"), "retain\n");
+    return { rootDir, pinnedPath, head };
+  }
+
+  function proveRebind(rootDir: string, pinnedPath: string, proof: { createdAt: string | null; projectId?: string }) {
+    const rebindStore: Record<string, unknown> = { listTasks: vi.fn().mockResolvedValue([]), updateTask: store.updateTask };
+    if (proof.projectId !== undefined) rebindStore.getProjectId = vi.fn().mockReturnValue(proof.projectId);
+    return { rebindStore, prove: () => proveTaskWorktreeRebind({
+      rootDir, worktreePath: pinnedPath, store: rebindStore as typeof store, integrationBranch: "main",
+      task: { ...task, createdAt: proof.createdAt },
+    }) };
+  }
+
+  it("refuses a rebind whose only commit was committed before the card was created", async () => {
+    const { rootDir, pinnedPath, head } = rebindRepoWithCommit("2020-01-01T00:00:00Z", ["Fusion-Task-Id: FN-1"]);
+    const refused = proveRebind(rootDir, pinnedPath, { createdAt: "2026-01-01T00:00:00Z" });
+    await expect(refused.prove()).rejects.toThrow();
+    expect(git(pinnedPath, "git rev-parse HEAD")).toBe(head);
+    expect(readFileSync(join(pinnedPath, "user-file"), "utf8")).toBe("retain\n");
+    expect(store.updateTask).not.toHaveBeenCalled();
+
+    // Same commit, same repo: a card old enough to have written it still rebinds.
+    const accepted = proveRebind(rootDir, pinnedPath, { createdAt: "2019-01-01T00:00:00Z" });
+    await expect(accepted.prove()).resolves.toEqual({ branch: "fusion/renamed", head });
+  });
+
+  it("refuses a rebind whose commit declares another project's identity", async () => {
+    const { rootDir, pinnedPath, head } = rebindRepoWithCommit("2020-01-01T00:00:00Z", [
+      "Fusion-Task-Id: FN-1", "Fusion-Project-Id: proj_other",
+    ]);
+    const refused = proveRebind(rootDir, pinnedPath, { createdAt: "2019-01-01T00:00:00Z", projectId: "proj_us" });
+    await expect(refused.prove()).rejects.toThrow();
+    expect(git(pinnedPath, "git rev-parse HEAD")).toBe(head);
+    expect(store.updateTask).not.toHaveBeenCalled();
+
+    // Same commit: asked in the namespace the commit itself declares, it is this card's work.
+    const matched = proveRebind(rootDir, pinnedPath, { createdAt: "2019-01-01T00:00:00Z", projectId: "proj_other" });
+    await expect(matched.prove()).resolves.toEqual({ branch: "fusion/renamed", head });
+
+    // And a board that cannot name its own project skips the check instead of refusing.
+    const unknown = proveRebind(rootDir, pinnedPath, { createdAt: "2019-01-01T00:00:00Z" });
+    await expect(unknown.prove()).resolves.toEqual({ branch: "fusion/renamed", head });
+  });
+
+  it.each([
+    // The commit names the card, names this board, and is older than the ask but younger than the card.
+    ["matching project", ["Fusion-Task-Id: FN-1", "Fusion-Project-Id: proj_us"], "proj_us"],
+    // A commit written before the key existed carries no project identity: absence is skipped.
+    ["legacy commit", ["Fusion-Task-Id: FN-1"], "proj_us"],
+  ] as const)("still rebinds a card's own commit when the evidence is sound (%s)", async (_kind, trailers, projectId) => {
+    const { rootDir, pinnedPath, head } = rebindRepoWithCommit("2020-01-01T00:00:00Z", trailers);
+    const { prove } = proveRebind(rootDir, pinnedPath, { createdAt: "2019-01-01T00:00:00Z", projectId });
+    await expect(prove()).resolves.toEqual({ branch: "fusion/renamed", head });
   });
 
   /*

@@ -77,6 +77,12 @@ export type GetWorkflowMergeImplementationProofFailureDeps = {
 export async function hasLandedEmptyStepApprovedCodeReview(
   task: TaskDetail,
   rootDir: string,
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: this narrow exception credits a card as implemented because
+  a commit proves its work landed, so the lookup is asked in this board's namespace and against the
+  card's birth time. Unknown ⇒ the check skips; it never refuses on absence of evidence.
+  */
+  ownership?: { projectNamespace?: string | null; taskCreatedAtMs?: number | null },
 ): Promise<boolean> {
   if (!Array.isArray(task.steps) || task.steps.length !== 0) return false;
   const hasApprovedCodeReview = (task.workflowStepResults ?? []).some((result) =>
@@ -95,6 +101,7 @@ export async function hasLandedEmptyStepApprovedCodeReview(
       baseBranch: target.branch,
       taskBranch: task.branch,
       baseCommitSha: task.baseCommitSha,
+      ownership,
     })) !== null;
   } catch {
     return false;

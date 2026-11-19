@@ -45,6 +45,24 @@ describe("worktree-hooks", () => {
     expect(hook).toContain("s/^FN-//i");
   });
 
+  it("stamps the board's project identity in the commit-msg hook when it is known", () => {
+    // FNXC:CommitOwnership 2026-11-19-17:05 (RUFU-394): the hook is the only writer for ordinary
+    // agent commits, and it wrote no project identity at all, so a task id re-used across boards was
+    // undetectable at the moment of delivery. The id is baked into the hook by the installing lane.
+    const hook = buildCommitMsgTrailerHook("FN-42", { projectId: "proj_18b91890789b432f" });
+    expect(hook).toContain("--trailer 'Fusion-Project-Id: proj_18b91890789b432f'");
+    expect(hook.match(/git interpret-trailers/g)?.length).toBe(3);
+    expect(hook).toContain("--if-exists doNothing");
+  });
+
+  it("emits no project trailer when the installing surface has no project identity", () => {
+    // RUFU-394: an unknown id must omit the key entirely, never write `Fusion-Project-Id:` with an
+    // empty value - a blank key would read as a real identity to every consumer.
+    const hook = buildCommitMsgTrailerHook("FN-42");
+    expect(hook).not.toContain("Fusion-Project-Id");
+    expect(hook.match(/git interpret-trailers/g)?.length).toBe(2);
+  });
+
   it("parameterizes commit-msg co-author trailer and omits it when disabled", () => {
     const customHook = buildCommitMsgTrailerHook("FN-42", {
       commitAuthorName: "Fusion Bot",
@@ -126,7 +144,7 @@ describe("worktree-hooks", () => {
     let installation = 0;
     for (const [path, branch] of [[parent, "fusion/fn-1"], [child, "fusion/spawn-agent-child"], [parent, "fusion/fn-1"]]) {
       installation++;
-      await installTaskWorktreeIdentityGuard({ worktreePath: path, taskId: "FN-1", expectedBranch: branch });
+      await installTaskWorktreeIdentityGuard({ worktreePath: path, taskId: "FN-1", expectedBranch: branch, projectId: null });
       for (const candidate of [parent, child]) {
         // The child first receives its metadata at the second installation.
         if (candidate === child && installation === 1) continue;
@@ -136,8 +154,8 @@ describe("worktree-hooks", () => {
       }
     }
     await Promise.all([
-      installTaskWorktreeIdentityGuard({ worktreePath: parent, taskId: "FN-1", expectedBranch: "fusion/fn-1" }),
-      installTaskWorktreeIdentityGuard({ worktreePath: child, taskId: "FN-1", expectedBranch: "fusion/spawn-agent-child" }),
+      installTaskWorktreeIdentityGuard({ worktreePath: parent, taskId: "FN-1", expectedBranch: "fusion/fn-1", projectId: null }),
+      installTaskWorktreeIdentityGuard({ worktreePath: child, taskId: "FN-1", expectedBranch: "fusion/spawn-agent-child", projectId: null }),
     ]);
     // Legacy canonical checkouts still work without the newly introduced branch metadata.
     await rm(git(parent, "rev-parse", "--git-path", "fusion-task-branch"));
@@ -160,7 +178,7 @@ describe("worktree-hooks", () => {
     const wt = join(root, "wt");
     execFileSync("git", ["worktree", "add", "-b", "fusion/fn-1", wt], { cwd: root });
 
-    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-1" });
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-1", projectId: null });
 
     const taskIdRaw = execFileSync("git", ["rev-parse", "--git-path", "fusion-task-id"], { cwd: wt, encoding: "utf-8" }).trim();
     const taskIdPath = isAbsolute(taskIdRaw) ? taskIdRaw : resolve(wt, taskIdRaw);
@@ -193,7 +211,7 @@ describe("worktree-hooks", () => {
     const wt = join(root, "wt");
     execFileSync("git", ["worktree", "add", "-b", "fusion/fn-2", wt], { cwd: root });
 
-    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2" });
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2", projectId: null });
     const preCommitRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/pre-commit"], {
       cwd: wt,
       encoding: "utf-8",
@@ -208,7 +226,7 @@ describe("worktree-hooks", () => {
     const firstCommitMsg = (await stat(commitMsgPath)).mtimeMs;
 
     await new Promise((r) => setTimeout(r, 20));
-    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2" });
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2", projectId: null });
     const secondPreCommit = (await stat(preCommitPath)).mtimeMs;
     const secondCommitMsg = (await stat(commitMsgPath)).mtimeMs;
     expect(secondPreCommit).toBe(firstPreCommit);
@@ -225,7 +243,7 @@ describe("worktree-hooks", () => {
     const wt = join(root, "wt");
     execFileSync("git", ["worktree", "add", "-b", "fusion/fn-3", wt], { cwd: root });
 
-    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-3", commitMsgHookEnabled: false });
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-3", commitMsgHookEnabled: false, projectId: null });
 
     const commitMsgRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/commit-msg"], {
       cwd: wt,
@@ -253,7 +271,7 @@ describe("worktree-hooks", () => {
     await writeFile(commitMsgPath, "#!/bin/sh\necho custom\n", "utf-8");
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-4" });
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-4", projectId: null });
     expect(await readFile(commitMsgPath, "utf-8")).toContain("echo custom");
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
@@ -261,7 +279,7 @@ describe("worktree-hooks", () => {
 
   it("throws when not in git worktree", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wt-hook-bad-"));
-    await expect(installTaskWorktreeIdentityGuard({ worktreePath: dir, taskId: "FN-3" })).rejects.toThrow(
+    await expect(installTaskWorktreeIdentityGuard({ worktreePath: dir, taskId: "FN-3", projectId: null })).rejects.toThrow(
       "Failed to resolve git path",
     );
   });

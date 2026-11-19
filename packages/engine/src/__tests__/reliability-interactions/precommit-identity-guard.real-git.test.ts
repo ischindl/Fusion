@@ -23,7 +23,7 @@ describe("pre-commit identity guard (real git)", () => {
       git(rootDir, "git add README.md && git commit -m 'init'");
 
       git(rootDir, "git worktree add -b fusion/fn-old wt-pooled HEAD");
-      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-OLD" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-OLD", projectId: null });
 
       // Pool preparation reuses the same linked worktree for a new task branch.
       git(worktreeDir, "git checkout -B fusion/fn-new main");
@@ -39,7 +39,7 @@ describe("pre-commit identity guard (real git)", () => {
         "fusion: refusing commit — worktree owns FN-OLD but HEAD is fusion/fn-new",
       );
 
-      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-NEW" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-NEW", projectId: null });
 
       const refreshedOwnerCommit = spawnSync("git", ["commit", "-m", "fix(FN-NEW): accepted after owner refresh"], {
         cwd: worktreeDir,
@@ -68,10 +68,10 @@ describe("pre-commit identity guard (real git)", () => {
       git(rootDir, "git add README.md && git commit -m 'init'");
 
       git(rootDir, "git worktree add -b fusion/fn-stale wt-stale HEAD");
-      await installTaskWorktreeIdentityGuard({ worktreePath: staleDir, taskId: "FN-STALE" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: staleDir, taskId: "FN-STALE", projectId: null });
 
       git(rootDir, "git worktree add -b fusion/fn-active wt-active HEAD");
-      await installTaskWorktreeIdentityGuard({ worktreePath: activeDir, taskId: "FN-ACTIVE" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: activeDir, taskId: "FN-ACTIVE", projectId: null });
 
       const staleHookRawPath = git(staleDir, "git rev-parse --git-path hooks/pre-commit");
       const staleHookPath = isAbsolute(staleHookRawPath) ? staleHookRawPath : resolve(staleDir, staleHookRawPath);
@@ -122,7 +122,7 @@ describe("pre-commit identity guard (real git)", () => {
       git(rootDir, "git add README.md && git commit -m 'init'");
 
       git(rootDir, "git worktree add -b fusion/fn-5271 wt-fn-5271 HEAD");
-      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-5271" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-5271", projectId: null });
 
       const taskIdPathRaw = git(worktreeDir, "git rev-parse --git-path fusion-task-id");
       const taskIdPath = isAbsolute(taskIdPathRaw) ? taskIdPathRaw : resolve(worktreeDir, taskIdPathRaw);
@@ -169,7 +169,7 @@ describe("pre-commit identity guard (real git)", () => {
 
       git(rootDir, "git worktree add -b fusion/fn-a wt-fn-a HEAD");
 
-      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-A" });
+      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FN-A", projectId: null });
 
       const taskIdPath = git(worktreeDir, "git rev-parse --git-path fusion-task-id");
       const taskIdFile = readFileSync(isAbsolute(taskIdPath) ? taskIdPath : resolve(worktreeDir, taskIdPath), "utf-8");

@@ -10,6 +10,18 @@ The public `isRepoLanded` export from index.ts is preserved by re-exporting from
 */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+/*
+FNXC:CommitOwnership 2026-11-19-15:48:
+This module stays dependency-free at RUNTIME: `commit-trailer-evidence.ts` has no runtime imports
+of its own (its only import is an erased `import type`), so sharing the trailer grammar with it
+adds no package dependency and no cycle. The alternative — re-typing the `Fusion-Project-Id` regex
+here — is how a delivery proof drifts from the surface that writes the trailer.
+*/
+import {
+  COMMIT_BIRTH_CLOCK_SKEW_MS,
+  commitDeclaresForeignProject,
+  commitPredatesTaskBirth,
+} from "./commit-trailer-evidence.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -98,11 +110,37 @@ export async function findProvenLandedCommit(
   branch?: string,
   revertBoundarySha?: string,
   taskCreatedAt?: string | number,
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: this board's namespace. A recorded `landedSha` and a
+  trailer-scan candidate are both CREDENTIALS that a mis-attribution can mint, so each is now
+  re-read against the commit's own declared identity before it is credited. Unknown (undefined or
+  null) skips the project check; a commit that declares a DIFFERENT project, or that was committed
+  before this card existed, is refused as proof and the scan falls through.
+  */
+  projectNamespace?: string | null,
 ): Promise<string | undefined> {
   const intRef = `refs/heads/${integrationBranch}`;
   if (!(await gitOk(["rev-parse", "--verify", intRef], repoRootDir))) {
     return undefined;
   }
+  const taskCreatedAtMs =
+    taskCreatedAt === undefined ? null : Number(new Date(taskCreatedAt).getTime()) || null;
+  /** Read a candidate's own identity and answer whether it REFUSES to be this task's proof. */
+  const refusesAsProof = async (sha: string, knownBody?: string): Promise<boolean> => {
+    const body = knownBody ?? (await gitCapture(["show", "-s", "--format=%B", sha], repoRootDir));
+    if (body === undefined) return false; // Unreadable identity: skip the check, never invent a verdict.
+    if (commitDeclaresForeignProject(body, projectNamespace ?? null)) return true;
+    if (taskCreatedAtMs === null) return false;
+    const epochRaw = await gitCapture(["show", "-s", "--format=%ct", sha], repoRootDir);
+    const epochMs = epochRaw === undefined ? null : Number(epochRaw) * 1_000;
+    return commitPredatesTaskBirth(
+      epochMs !== null && Number.isFinite(epochMs) ? epochMs : null,
+      taskCreatedAtMs,
+      // The verdict bound (could this commit be this card's work at all), not the scan window: the
+      // 24 h figure below bounds how far back the degraded trailer scan may look.
+      COMMIT_BIRTH_CLOCK_SKEW_MS,
+    );
+  };
   /*
   FNXC:Workspace 2026-08-15-06:45:
   A revert commit carries this task's Fusion-Task-Id trailer, so clearing landedSha alone would
@@ -118,7 +156,8 @@ export async function findProvenLandedCommit(
   if (
     landedSha &&
     (await gitOk(["merge-base", "--is-ancestor", landedSha, intRef], repoRootDir)) &&
-    !(await isAtOrBehindRevertBoundary(landedSha))
+    !(await isAtOrBehindRevertBoundary(landedSha)) &&
+    !(await refusesAsProof(landedSha))
   ) {
     return landedSha;
   }
@@ -167,16 +206,15 @@ export async function findProvenLandedCommit(
     if (candidates) {
       for (const sha of candidates.trim().split("\n")) {
         if (!sha) continue;
-        const commitTime = degradedRange
-          ? await gitCapture(["show", "-s", "--format=%ct", sha], repoRootDir)
-          : undefined;
+        const commitTime = await gitCapture(["show", "-s", "--format=%ct", sha], repoRootDir);
         const commitTimeMs = commitTime === undefined ? Number.NaN : Number(commitTime) * 1_000;
         const body = await gitCapture(["show", "-s", "--format=%B", sha], repoRootDir);
         if (
           (!degradedRange || (Number.isFinite(commitTimeMs) && commitTimeMs >= minCommitTimeMs)) &&
           body &&
           body.split("\n").some((line) => line.trim() === trailer) &&
-          !(await isAtOrBehindRevertBoundary(sha))
+          !(await isAtOrBehindRevertBoundary(sha)) &&
+          !(await refusesAsProof(sha, body))
         ) {
           return sha;
         }
@@ -194,8 +232,18 @@ export async function isRepoLanded(
   branch?: string,
   revertBoundarySha?: string,
   taskCreatedAt?: string | number,
+  projectNamespace?: string | null,
 ): Promise<boolean> {
   return Boolean(
-    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch, revertBoundarySha, taskCreatedAt),
+    await findProvenLandedCommit(
+      repoRootDir,
+      integrationBranch,
+      landedSha,
+      taskId,
+      branch,
+      revertBoundarySha,
+      taskCreatedAt,
+      projectNamespace,
+    ),
   );
 }

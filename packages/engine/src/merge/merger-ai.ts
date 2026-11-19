@@ -162,6 +162,7 @@ module so self-healing can import the predicate without re-entering the self-hea
 import cycle (merger-ai-worktree imports `MIN_TEMP_WORKTREE_REAP_AGE_MS` from self-healing).
 */
 import { isRepoLanded, findProvenLandedCommit, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
+import { COMMIT_EPOCH_FORMAT_FIELD, FUSION_PROJECT_ID_TRAILER_KEY, resolveProjectNamespace, taskBirthMs } from "./commit-trailer-evidence.js";
 import { resolveWorkspaceMergeReadiness } from "./workspace-merge-readiness.js";
 import {
   createTipAncestryProbe,
@@ -461,9 +462,23 @@ async function recoverApprovedPreexistingAiMergeWorktree(
       const squashSha = await git(["rev-parse", "--verify", "HEAD"], mergeRoot);
       if (!squashSha || squashSha === tipSha || squashSha !== state.candidateSha) continue;
       if (state.candidateTreeSha && await git(["rev-parse", `${squashSha}^{tree}`], mergeRoot) !== state.candidateTreeSha) continue;
-      const show = await git(["show", "-s", "--format=%s%x1f%b", squashSha], mergeRoot);
-      const [subject = "", body = ""] = show.split("\x1f");
-      if (!getCommitTaskOwnership(taskId, task?.lineageId, subject, body).owned) continue;
+      const show = await git(["show", "-s", `--format=%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD}`, squashSha], mergeRoot);
+      const [subject = "", body = "", epochRaw = ""] = show.split("\x1f");
+      const epochSeconds = Number(epochRaw.trim());
+      /*
+      FNXC:CommitOwnership 2026-11-19-17:20 (RUFU-394): a recovered clean room becomes the squash this
+      lane lands and records as the card's delivery, so the candidate must be owned here — and the two
+      facts that decide ownership for a stamp this board never issued are both already in hand: the
+      store's project id and the card's `createdAt`. An unreadable `%ct` or an unresolvable store skips
+      that check rather than refusing a legitimate recovery.
+      */
+      if (!getCommitTaskOwnership(taskId, task?.lineageId, subject, body, {
+        projectNamespace: resolveProjectNamespace(store),
+        taskCreatedAtMs: taskBirthMs(task),
+        committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
+      }).owned) {
+        continue;
+      }
 
       const alreadyLanded = await gitOk(["merge-base", "--is-ancestor", squashSha, `refs/heads/${integrationBranch}`], repoRootDir);
       const tipIsAncestor = await gitOk(["merge-base", "--is-ancestor", tipSha, squashSha], repoRootDir);
@@ -531,8 +546,16 @@ function taskTrailers(
   taskId: string,
   lineageId?: string | null,
   settings?: Pick<Settings, "commitAuthorEnabled" | "commitAuthorName" | "commitAuthorEmail">,
+  projectId?: string | null,
 ): string[] {
   const trailers = [`${FUSION_TASK_ID_TRAILER_KEY}: ${taskId}`];
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: a land squash is published into the integration checkout,
+  which carries no Fusion commit-msg hook, so project identity has to be composed here. It is the
+  evidence `getCommitTaskOwnership` reads to refuse `foreign-project`: without it, a task id that
+  happens to exist on this board would let another project's commit count as delivery here.
+  */
+  if (projectId) trailers.push(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${projectId}`);
   if (lineageId) trailers.push(buildTaskLineageTrailer(lineageId));
   if (settings?.commitAuthorEnabled !== false) {
     const name = (settings?.commitAuthorName ?? DEFAULT_COMMIT_AUTHOR_NAME).trim() || DEFAULT_COMMIT_AUTHOR_NAME;
@@ -1713,6 +1736,10 @@ async function proveEmptyMergeAlreadyLanded(
   branch: string,
   integrationBranch: string,
   projectRootDir: string,
+  // FNXC:CommitOwnership 2026-11-19-15:48: "already landed" is a delivery claim, so the lookup is
+  // asked in this board's namespace and against this card's birth time. Unknown namespace skips the
+  // project check; it never refuses.
+  projectNamespace?: string | null,
 ): Promise<{ strategy: string; sha?: string } | null> {
   // 1. Durable landing already recorded on this task.
   if (task.mergeDetails?.mergeConfirmed === true || !!task.mergeDetails?.commitSha) {
@@ -1737,6 +1764,7 @@ async function proveEmptyMergeAlreadyLanded(
     baseBranch: integrationBranch,
     taskBranch: branch,
     baseCommitSha: task.baseCommitSha,
+    ownership: { projectNamespace: projectNamespace ?? null, taskCreatedAtMs: taskBirthMs(task) },
   }).catch(() => null);
   if (landed && STRONG_LANDED_STRATEGIES.has(landed.strategy)) {
     return { strategy: landed.strategy, sha: landed.sha };
@@ -2073,7 +2101,7 @@ export async function runAiMerge(
    */
   const allowDirtyLocalCheckoutSync = options.allowDirtyLocalCheckoutSync ?? (settings.merger?.allowDirtyLocalCheckoutSync === true);
   // Trailers that link the squash commit to the board task (FN-id + lineage) and deterministic co-author attribution.
-  const trailers = taskTrailers(taskId, task.lineageId, settings);
+  const trailers = taskTrailers(taskId, task.lineageId, settings, resolveProjectNamespace(store));
   const taskTitle = task.title?.trim() ? task.title.split("\n")[0] : undefined;
 
   await setStatus("merging");
@@ -2260,7 +2288,7 @@ export async function runAiMerge(
      * They use INDEPENDENT evidence, so any one alone stops the FN-8141 laundering shape.
      */
     if (task.noCommitsExpected !== true) {
-      const landedProof = await proveEmptyMergeAlreadyLanded(task, branch, integrationBranch, projectRootDir);
+      const landedProof = await proveEmptyMergeAlreadyLanded(task, branch, integrationBranch, projectRootDir, resolveProjectNamespace(store));
       if (!landedProof) {
         /*
          * FNXC:EmptyLandEvidence 2026-09-25-10:55 (RUFU-293):
@@ -3209,7 +3237,7 @@ export async function landWorkspaceTask(
   const stashResolveAgent = deps.stashResolveAgent ?? makeMutatingAgent(store, settings, taskId, options, audit, buildStashResolveSystemPrompt());
   const includeTaskId = settings.includeTaskIdInCommit !== false;
   const allowDirtyLocalCheckoutSync = options.allowDirtyLocalCheckoutSync ?? (settings.merger?.allowDirtyLocalCheckoutSync === true);
-  const trailers = taskTrailers(taskId, task.lineageId, settings);
+  const trailers = taskTrailers(taskId, task.lineageId, settings, resolveProjectNamespace(store));
   const taskTitle = task.title?.trim() ? task.title.split("\n")[0] : undefined;
 
   /*
@@ -3767,6 +3795,7 @@ export async function landWorkspaceTask(
       entry.branch,
       entry.revertBoundarySha,
       task.createdAt,
+      resolveProjectNamespace(store),
     );
     if (provenLandedSha) {
       /*

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { Settings, TaskStore } from "@fusion/core";
 import { resolveProjectDefaultModel, resolveTaskPrHeadBranch } from "@fusion/core";
 import { createResolvedAgentSession, resolveMcpServersForStore, type PluginRunner } from "@fusion/engine";
+import { FUSION_PROJECT_ID_TRAILER_KEY, resolveProjectNamespace } from "@fusion/engine";
 import { runGitCommand } from "./routes/resolve-diff-base.js";
 
 const GIT_TIMEOUT_MS = 60_000;
@@ -281,6 +282,9 @@ export async function resolvePrConflicts(input: ResolvePrConflictsInput): Promis
           `fix(FN-5949): resolve PR conflicts for ${taskId}`,
           "-m",
           `Fusion-Task-Id: ${taskId}`,
+          // FNXC:CommitOwnership 2026-11-19-15:48: a resolution merge is an AI write into a
+          // checkout with no Fusion commit-msg hook, so it carries its project identity explicitly.
+          ...(resolveProjectNamespace(store) ? ["-m", `${FUSION_PROJECT_ID_TRAILER_KEY}: ${resolveProjectNamespace(store)}`] : []),
         ]);
         if (!committed) {
           await abortMerge(cwd);
@@ -312,6 +316,8 @@ export async function resolvePrConflicts(input: ResolvePrConflictsInput): Promis
       `fix(FN-5949): merge ${baseRef} into ${taskId}`,
       "-m",
       `Fusion-Task-Id: ${taskId}`,
+      // FNXC:CommitOwnership 2026-11-19-15:48: see the resolved-conflicts site above.
+      ...(resolveProjectNamespace(store) ? ["-m", `${FUSION_PROJECT_ID_TRAILER_KEY}: ${resolveProjectNamespace(store)}`] : []),
     ]);
     if (!committed) {
       await store.logEntry(taskId, "Skipped PR conflict-free merge commit", `${baseRef} already merged into ${branchName}`);

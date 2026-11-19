@@ -263,6 +263,25 @@ function landRepoForReal(fx: WorkspaceFixture, repoRel: string): string {
   return fx.git(repoRel, "git rev-parse refs/heads/main");
 }
 
+/*
+FNXC:CommitOwnership 2026-11-19-17:38 (RUFU-394):
+Some teardown fixtures used to claim "this repo is landed" by pointing `landedSha` at the fixture's
+baseline commit. That baseline is pinned to 2000-01-01 on purpose (see `_workspace-fixture.ts`: it
+must be distinguishable from task-era commits), which makes it exactly the shape RUFU-394 taught the
+land proof to refuse - a commit older than the card that claims it. The fixture was asserting the
+land proof's CONCLUSION while faking its premise; `landsOnMain` supplies the missing premise: a
+commit written now, on the integration branch, carrying this card's own trailer.
+*/
+/** Land a card's work on the integration branch for real, task-era, and return the landed SHA. */
+function landsOnMain(fx: WorkspaceFixture, repoRel: string, taskId: string): string {
+  const repoDir = fx.repoPath(repoRel);
+  configureIdentity(repoDir);
+  const file = `landed-${taskId.toLowerCase()}.txt`;
+  writeFileSync(path.join(repoDir, file), `${taskId} landed\n`, "utf-8");
+  fx.git(repoRel, `git add ${file} && git commit -m "feat(${taskId}): landed" -m "Fusion-Task-Id: ${taskId}"`);
+  return fx.git(repoRel, "git rev-parse refs/heads/main");
+}
+
 function workspaceTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Partial<Task> = {}): Task {
   return {
     id: TASK_ID,
@@ -1258,7 +1277,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-terminal");
     fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
     const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
-    const landedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const landedSha = landsOnMain(fx, "repo-a", TASK_ID);
     const task = workspaceTask(
       { "repo-a": { worktreePath, branch: BRANCH, landedSha } },
       { status: "failed", updatedAt: old, columnMovedAt: old },
@@ -1354,7 +1373,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     rmSync(worktreePath, { recursive: true, force: true });
     expect(fx.git("repo-a", "git worktree list --porcelain")).toContain(worktreePath);
     const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
-    const landedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const landedSha = landsOnMain(fx, "repo-a", TASK_ID);
     const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha } }, { status: "failed", updatedAt: old, columnMovedAt: old });
     const store = createStore([task]);
     const manager = makeManager(store, fx.rootDir);
@@ -1441,7 +1460,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const companionPath = path.join(fx.repoPath("repo-a"), ".wt-veto-companion");
     const companionBranch = "fusion/fn-7002";
     fx.git("repo-a", `git worktree add -b ${companionBranch} ${companionPath} HEAD`);
-    const companionLandedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const companionLandedSha = landsOnMain(fx, "repo-a", "FN-7002");
     const companion = workspaceTask({ "repo-a": { worktreePath: companionPath, branch: companionBranch, landedSha: companionLandedSha } }, { id: "FN-7002", status: "failed", updatedAt: old, columnMovedAt: old });
     const options: Record<string, unknown> = {};
     if (veto === "raw-path-session") activeSessionRegistry.registerPath(recordedPath, { taskId: "FN-elsewhere", kind: "executor", ownerKey: "raw" });

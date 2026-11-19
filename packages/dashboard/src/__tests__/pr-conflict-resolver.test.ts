@@ -17,6 +17,13 @@ vi.mock("../routes/resolve-diff-base.js", () => ({
 
 vi.mock("@fusion/engine", () => ({
   // FNXC:TestInfrastructure 2026-07-13-11:05: Missing @fusion/engine barrel exports added for mock completeness (check-mock-completeness.mjs gate).
+  // FNXC:CommitOwnership 2026-11-19-17:38 (RUFU-394): the PR-conflict resolver now stamps the project
+  // identity trailer onto the commit it publishes, so its two new barrel imports must be in this
+  // factory. Both are pure helpers: return the real implementations rather than vi.fn() mocks so the
+  // resolver's commit message stays truthful under test instead of resolving to `undefined`.
+  FUSION_PROJECT_ID_TRAILER_KEY: "Fusion-Project-Id",
+  resolveProjectNamespace: (store: unknown) =>
+    (store as { getProjectId?: () => string | null } | null)?.getProjectId?.() ?? null,
   resolveMcpServersForStore: vi.fn(async () => ({ servers: [] })),
   createResolvedAgentSession: mockCreateResolvedAgentSession,
   dropAutostashHandle: vi.fn(),

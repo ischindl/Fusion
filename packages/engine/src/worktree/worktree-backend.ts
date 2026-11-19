@@ -408,6 +408,13 @@ export class NativeWorktreeBackend implements WorktreeBackend {
     private readonly deps: {
       logger?: { log: (m: string) => void; warn: (m: string) => void };
       settings?: Partial<Pick<Settings, "worktreesDir" | "commitMsgHookEnabled" | "taskPrefix" | "taskAttributionTrailerNames" | "commitAuthorEnabled" | "commitAuthorName" | "commitAuthorEmail">>;
+      /*
+      FNXC:CommitOwnership 2026-11-19-15:48: `store.getProjectId()` of the lane constructing the
+      backend, forwarded to the commit-msg hook as `Fusion-Project-Id`. Optional because the
+      remove/prune-only backends (self-healing cleanup, removal fallback) construct a backend that
+      never creates a worktree and so never installs a hook; they honestly pass nothing.
+      */
+      projectId?: string | null;
       audit?: Pick<RunAuditor, "git">;
     } = {},
   ) {}
@@ -427,6 +434,7 @@ export class NativeWorktreeBackend implements WorktreeBackend {
           commitAuthorEnabled: this.deps.settings?.commitAuthorEnabled,
           commitAuthorName: this.deps.settings?.commitAuthorName,
           commitAuthorEmail: this.deps.settings?.commitAuthorEmail,
+          projectId: this.deps.projectId ?? null,
         });
       } catch (error) {
         await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
@@ -870,6 +878,8 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
       logger?: { log: (m: string) => void; warn: (m: string) => void };
       audit?: Pick<RunAuditor, "git">;
       settings?: Partial<Pick<Settings, "commitMsgHookEnabled" | "taskPrefix" | "taskAttributionTrailerNames" | "commitAuthorEnabled" | "commitAuthorName" | "commitAuthorEmail">>;
+      /** See NativeWorktreeBackend.deps.projectId - same contract for the worktrunk lane. */
+      projectId?: string | null;
     },
   ) {}
 
@@ -984,6 +994,7 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
         commitAuthorEnabled: this.deps.settings?.commitAuthorEnabled,
         commitAuthorName: this.deps.settings?.commitAuthorName,
         commitAuthorEmail: this.deps.settings?.commitAuthorEmail,
+        projectId: this.deps.projectId ?? null,
       });
     } catch (error) {
       await rm(resolvedPath, { recursive: true, force: true }).catch(() => undefined);
@@ -1928,6 +1939,8 @@ export function resolveWorktreeBackend(
     logger?: { log: (m: string) => void; warn: (m: string) => void };
     binaryPathResolver?: () => Promise<string | null>;
     audit?: Pick<RunAuditor, "git">;
+    /** Forwarded to whichever backend is resolved, for the commit-msg project trailer. */
+    projectId?: string | null;
   } = {},
 ): WorktreeBackend {
   if (settings.worktrunk?.enabled === true) {
@@ -1938,8 +1951,9 @@ export function resolveWorktreeBackend(
       binaryPath,
       logger: deps.logger,
       settings,
+      projectId: deps.projectId ?? null,
     });
   }
 
-  return new NativeWorktreeBackend({ logger: deps.logger, settings, audit: deps.audit });
+  return new NativeWorktreeBackend({ logger: deps.logger, settings, audit: deps.audit, projectId: deps.projectId ?? null });
 }

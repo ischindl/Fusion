@@ -49,7 +49,19 @@ describeIfGit("workspace land predicate recycled task id (real git)", () => {
     commit(repo, "base", "OTHER");
     git(repo, "git branch fusion/fn-2002");
     const oldAfterBase = commit(repo, "old-after-base", "FN-2002", "2024-01-01T00:00:00Z");
-    expect(await findProvenLandedCommit(repo, "main", undefined, "FN-2002", "fusion/fn-2002", undefined, new Date().toISOString())).toBe(oldAfterBase);
+    /*
+    FNXC:CommitOwnership 2026-09-28-11:17 (RUFU-394):
+    The card's birth moved BEFORE the landing commit. A known merge-base range bounds WHERE a
+    landing commit can sit; it cannot make a commit written two years before the card existed into
+    that card's work — which is exactly the shape RUFU-394 measured on `main` (`36a88363e2` carried
+    `RUFU-391` 2h46m before that card was created). The range-precision contract this file exists
+    for is unchanged: it is now expressed with a card that predates its own landing commit, and the
+    pre-birth case is asserted below as the refusal it has become.
+    */
+    const cardBornBeforeItsLanding = "2023-12-01T00:00:00Z";
+    expect(await findProvenLandedCommit(repo, "main", undefined, "FN-2002", "fusion/fn-2002", undefined, cardBornBeforeItsLanding)).toBe(oldAfterBase);
+    // The same commit is refused once the card is born after it, even with the range still known.
+    expect(await findProvenLandedCommit(repo, "main", undefined, "FN-2002", "fusion/fn-2002", undefined, new Date().toISOString())).toBeUndefined();
     const mention = commit(repo, "mention", "FN-9999", undefined, true);
     expect(await findProvenLandedCommit(repo, "main", undefined, "FN-2002", "fusion/fn-2002")).toBe(oldAfterBase);
     expect(mention).not.toBe(oldAfterBase);

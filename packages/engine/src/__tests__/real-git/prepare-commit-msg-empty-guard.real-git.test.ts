@@ -31,6 +31,7 @@ describe("prepare-commit-msg empty-commit guard (real git, FN-5345/FN-5377)", ()
       await installTaskWorktreeIdentityGuard({
         worktreePath: worktreeDir,
         taskId: "FN-5345",
+        projectId: null, // RUFU-394: this lane names no project, so the commit carries no project trailer.
       });
 
       // Real commit succeeds.

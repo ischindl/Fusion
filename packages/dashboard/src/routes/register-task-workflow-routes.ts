@@ -180,6 +180,13 @@ import {
   on a catch-all messageKey.
   */
   type WipAdmissionRejection,
+  /*
+  FNXC:CommitOwnership 2026-11-19-18:25 (RUFU-394): revert, restore and PR-branch surfaces stamp the
+  board's project identity into every commit they write. Asked through the engine's defensive
+  accessor: a route must never fail a user-visible action because it could not name its project -
+  unknown identity omits the trailer instead of throwing.
+  */
+  resolveProjectNamespace,
 } from "@fusion/engine";
 import { buildBoardWorkflowsPayload, resolveBoardColumnFlags } from "./board-workflows.js";
 import {
@@ -3485,6 +3492,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
                 scopedStore.getTaskCommitAssociationsByLineageId(lineageId),
             },
             store: scopedStore,
+            // FNXC:CommitOwnership 2026-11-19-15:48: stamp prepared workspace revert commits.
+            projectId: resolveProjectNamespace(scopedStore),
           });
 
           if (!prepared.eligible) {
@@ -3813,6 +3822,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             getTaskCommitAssociationsByLineageId: (lineageId: string) =>
               scopedStore.getTaskCommitAssociationsByLineageId(lineageId),
           },
+          // FNXC:CommitOwnership 2026-11-19-15:48: stamp the prepared single-repo revert commit.
+          projectId: resolveProjectNamespace(scopedStore),
         });
 
         if (!prepared.eligible) {
@@ -3899,6 +3910,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             scopedStore.getTaskCommitAssociationsByLineageId(lineageId),
         },
         effectiveAutoMerge: settings.autoMerge,
+        // FNXC:CommitOwnership 2026-11-19-15:48: stamp the revert commit with this board's project
+        // identity so `getCommitTaskOwnership` can refuse a `foreign-project` commit.
+        projectId: resolveProjectNamespace(scopedStore),
         granularity,
       });
 
@@ -4072,6 +4086,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         worktreePath: rootDir,
         baseBranch,
         effectiveAutoMerge: settings.autoMerge,
+        // FNXC:CommitOwnership 2026-11-19-15:48: stamp the restore commit with this board's project identity.
+        projectId: resolveProjectNamespace(scopedStore),
       });
 
       if (result.mode === "git" && "clean" in result && result.clean === true) {

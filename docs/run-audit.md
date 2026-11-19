@@ -1023,7 +1023,17 @@ that nobody was given is an outcome the operator has to be able to see without q
 
 Missing implementation proof is normally repaired through the workflow's durable task log and graph remediation path before merge admission. On startup and periodic maintenance, `task:merge-boundary-evidence-recovered` records a historic proofless park only after durable unfinished work, lifecycle ownership, liveness, and auto-merge policy are re-verified. These repairs intentionally do not put boundary reason prose, foreach identities, paths, review output, or external capability diagnostics in run-audit metadata. If recovery cannot prove an executable owner, the existing terminal `task:merge-boundary-unproven-parked` event remains the fail-closed audit surface and retains its ids/counts/fixed-outcomes-only contract.
 
-### The stall park that owned the verdict it was waiting for (RUFU-391)
+### The stall park that owned the verdict it was waiting for (`36a88363e2` + `65b0dec011`)
+
+<!--
+FNXC:CommitOwnership 2026-11-19-16:39 (RUFU-394):
+This section was headed `(RUFU-391)`. The two commits that introduced `task:review-no-verdict-park-repaired`
+carry that trailer, but RUFU-394 measured that both were committed 2h46m and 2h47m BEFORE this board
+issued the id — the task-id reservation ledger's last committed row at 09:17:14Z was `RUFU-390`, and
+`RUFU-391`'s row was created at 12:03:28Z — and that the live card of that id specifies an unrelated
+surface (project-default workflow editing). The section is therefore headed by the commits that own the
+behavior, because in this project no card does.
+-->
 
 `task:review-no-verdict-park-repaired` is written once per pass that re-seeds a required pre-merge gate whose latest row has no authored verdict and then lifts the in-review stall-deadlock park around that same card. Metadata is `taskId`, `workflowStepId`, fixed `source` (`self-healing`) and `outcome` (`cleared`/`signature-drift`) only — no findings, verdicts, blocker sentences, or error text.
 

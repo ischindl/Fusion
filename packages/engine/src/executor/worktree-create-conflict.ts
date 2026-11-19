@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { Settings } from "@fusion/core";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
+import { resolveProjectNamespace } from "../merge/commit-trailer-evidence.js";
 import { isInsideWorktreesDir } from "../worktree/worktree-pool.js";
 import { inspectBranchConflict, taskWorktreeCheckoutIsClean } from "../execution/branch-conflicts.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
@@ -91,6 +92,7 @@ export async function tryCreateWorktree(
         worktreePath: path,
         taskId,
         expectedBranch: branch,
+        projectId: resolveProjectNamespace(deps.store),
         commitMsgHookEnabled: settings.commitMsgHookEnabled,
         taskPrefix: settings.taskPrefix,
         taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],

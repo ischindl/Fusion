@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type { Task, TaskStore } from "@fusion/core";
 import { activeSessionRegistry, type ActiveSessionKind } from "../agents/active-session-registry.js";
 import { getCommitTaskOwnership } from "../merge/already-merged-detector.js";
+import { resolveProjectNamespace, taskBirthMs } from "../merge/commit-trailer-evidence.js";
 
 const execFileAsync = promisify(execFile);
 // Exhaustive so a new session kind cannot silently bypass adoption exclusion.
@@ -21,7 +22,7 @@ const sessionKinds: Record<ActiveSessionKind, true> = {
 export async function proveTaskWorktreeRebind(input: {
   rootDir: string;
   worktreePath: string;
-  task: Pick<Task, "id" | "lineageId">;
+  task: Pick<Task, "id" | "lineageId" | "createdAt">;
   integrationBranch: string;
   store: Pick<TaskStore, "listTasks">;
 }): Promise<{ branch: string; head: string }> {
@@ -68,15 +69,27 @@ export async function proveTaskWorktreeRebind(input: {
   const base = await git("rev-parse", "--verify", `${integrationBranch}^{commit}`);
   const commits = (await git("rev-list", `${base}..${head}`)).split("\n").filter(Boolean);
   if (!commits.length || commits.length > 256) refuse();
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: a rebind hands a worktree and its branch to a card, so every
+  commit in the range must be that card's work. The bare-id scan above cannot see a commit written by
+  ANOTHER project that re-used this id, nor one stamped before this card was created; the shared
+  anchor can, provided it is told which board is asking and when the card was born.
+  */
+  const projectNamespace = resolveProjectNamespace(store);
+  const taskCreatedAtMs = taskBirthMs(task);
   for (const sha of commits) {
-    const message = await git("show", "-s", "--format=%s%n%b", sha);
-    const split = message.indexOf("\n");
-    const body = message.slice(split + 1);
+    const message = await git("show", "-s", `--format=%s%x1f%b%x1f%ct`, sha);
+    const [subject = "", body = "", epochRaw = ""] = message.split("\x1f");
+    const epochSeconds = Number(epochRaw.trim());
     const taskIds = [...body.matchAll(/^Fusion-Task-Id:[\t ]*([^\r\n]*)\r?$/gm)].map((match) => match[1].trim());
     const lineages = [...body.matchAll(/^Fusion-Task-Lineage:[\t ]*([^\r\n]*)\r?$/gm)].map((match) => match[1].trim());
     if (taskIds.some((id) => id !== task.id) || new Set(lineages).size > 1
       || (task.lineageId && lineages.some((lineage) => lineage !== task.lineageId))) refuse();
-    const ownership = getCommitTaskOwnership(task.id, task.lineageId, message.slice(0, split), body);
+    const ownership = getCommitTaskOwnership(task.id, task.lineageId, subject, body, {
+      projectNamespace,
+      taskCreatedAtMs,
+      committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
+    });
     if (!ownership.owned || ownership.proof === "subject-anchor") refuse();
   }
   // Recheck after awaited ownership reads before returning authority to the caller.

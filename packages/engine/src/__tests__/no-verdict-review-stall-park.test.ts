@@ -4,6 +4,13 @@ The saneca shape: a workspace `in-review` card whose Code Review session died be
 verdict, then parked itself with `in-review-stall-deadlock`. Two guards made that park permanent —
 the recovery sweep skipped `task.paused` blanket, and the seed lane refused workspace cards. These
 tests pin both halves of the fix plus the operator holds that must stay refused.
+
+FNXC:CommitOwnership 2026-11-19-16:51 (RUFU-394):
+`(RUFU-391)` here is the id as written on the delivering commits `36a88363e2` + `65b0dec011`, not an
+owner: this board issued that id 2h46m AFTER both commits, and the card that received it specifies
+project-default workflow editing (delivery `b6ff490934`). The card named on a commit is not evidence
+that the commit is its work - which is why `getCommitTaskOwnership` now refuses `anachronistic` and
+`foreign-project` candidates outright.
 */
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";

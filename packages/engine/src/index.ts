@@ -507,6 +507,22 @@ export { rewindBranchRef } from "./merge/merger-ref-update-advance.js";
 // FNXC:Workspace 2026-06-22-14:10 (Phase D review G): canonical landed predicate now lives in its
 // own dependency-free module (self-healing ↔ merger-ai cycle dissolved). Public export preserved.
 export { isRepoLanded } from "./merge/workspace-land-predicate.js";
+/*
+FNXC:CommitOwnership 2026-11-19-15:48: the commit-trailer identity leaf is exported so the
+merge/Patchnode surfaces that compose or consume published commit identity share ONE grammar with
+the engine instead of re-typing the trailer key.
+*/
+export {
+  FUSION_PROJECT_ID_TRAILER_KEY,
+  buildFusionCommitTrailers,
+  parseCommitProjectId,
+  commitDeclaresForeignProject,
+  commitPredatesTaskBirth,
+  COMMIT_BIRTH_CLOCK_SKEW_MS,
+  resolveProjectNamespace,
+  COMMIT_EPOCH_FORMAT_FIELD,
+} from "./merge/commit-trailer-evidence.js";
+export type { CommitOwnershipRefusal } from "./merge/commit-trailer-evidence.js";
 export { withWorkspaceMergeDispatchLease, WorkspaceMergeDispatchBusyError } from "./merge/workspace-merge-dispatch-lease.js";
 // FNXC:Workspace 2026-06-21-23:40 (Phase C U1): per-repo workspace merge loop +
 // the extracted per-repo land primitive, exported for the CLI/dashboard merge doors.

@@ -260,6 +260,10 @@ import {
   FUSION_TASK_ID_TRAILER_KEY,
   classifyOwnedLandedEvidence,
 } from "./merge/merger-owned-landed.js";
+import {
+  FUSION_PROJECT_ID_TRAILER_KEY,
+  resolveProjectNamespace,
+} from "./merge/commit-trailer-evidence.js";
 
 export {
   getConflictedFiles,
@@ -3967,6 +3971,9 @@ export async function commitOrAmendMergeWithFixes(
             baseBranch: preAttemptHeadSha,
             taskBranch: branch,
             baseCommitSha: preAttemptHeadSha,
+            // FNXC:CommitOwnership 2026-11-19-15:48: a recovery that declares a card already landed
+            // is a delivery claim, so it must be asked in this board's namespace.
+            ownership: { projectNamespace: resolveProjectNamespace(store) },
           });
           if (landed) {
             mergerLog.debug(
@@ -4026,7 +4033,7 @@ export async function commitOrAmendMergeWithFixes(
       const existingTask = await store.getTask(taskId);
       lineageId = existingTask?.lineageId;
     }
-    const trailerArg = buildTaskTrailerArgs(taskId, lineageId);
+    const trailerArg = buildTaskTrailerArgs(taskId, lineageId, resolveProjectNamespace(store));
 
     if (!headMoved) {
       // No merge commit yet — create one fresh on top of preAttemptHeadSha.
@@ -4482,11 +4489,19 @@ export async function resolveTaskDiffBaseRef({
  */
 
 /** Build the `-m "Fusion-Task-Id: <id>"` arg fragment used in fallback commit
- *  invocations. Returns a leading space + quoted -m arg. */
-function buildTaskTrailerArgs(taskId: string, lineageId?: string): string {
+ *  invocations. Returns a leading space + quoted -m arg.
+ *
+ * FNXC:CommitOwnership 2026-11-19-15:48: the merger publishes squash commits in the integration
+ * checkout, where no Fusion `commit-msg` hook is installed and the identity guard is bypassed by
+ * `mergerCommitEnv()`. That makes this the only place project identity can enter a published
+ * commit, so it is appended here rather than left to the hook. An unknown project id omits the
+ * trailer (see the empty-value rule on `parseCommitProjectId`); it never emits an empty key.
+ */
+function buildTaskTrailerArgs(taskId: string, lineageId?: string, projectId?: string | null): string {
   const taskIdTrailer = `${FUSION_TASK_ID_TRAILER_KEY}: ${taskId}`;
   const lineageArg = lineageId ? ` -m "${buildTaskLineageTrailer(lineageId)}"` : "";
-  return ` -m "${taskIdTrailer}"${lineageArg}`;
+  const projectArg = projectId ? ` -m "${FUSION_PROJECT_ID_TRAILER_KEY}: ${projectId}"` : "";
+  return ` -m "${taskIdTrailer}"${lineageArg}${projectArg}`;
 }
 
 /** True iff HEAD's commit message contains the `Fusion-Task-Id: <taskId>`
@@ -4520,7 +4535,11 @@ async function headCarriesTaskIdTrailer(rootDir: string, taskId: string): Promis
  *  agent didn't include it (especially under includeTaskIdInCommit=false,
  *  where the subject also lacks the task ID and recovery has nothing to
  *  grep against). No-op if the trailer is already on HEAD. */
-async function ensureTaskTrailersOnHead(rootDir: string, task: Pick<Task, "id"> & { lineageId?: string }): Promise<void> {
+async function ensureTaskTrailersOnHead(
+  rootDir: string,
+  task: Pick<Task, "id"> & { lineageId?: string },
+  projectId?: string | null,
+): Promise<void> {
   try {
     const { stdout: existingMessage } = await execAsync("git log -1 --pretty=%B", {
       cwd: rootDir,
@@ -4532,6 +4551,14 @@ async function ensureTaskTrailersOnHead(rootDir: string, task: Pick<Task, "id"> 
     if (task.lineageId) {
       const lineageTrailer = buildTaskLineageTrailer(task.lineageId);
       if (!existingMessage.includes(lineageTrailer)) trailersToAdd.push(lineageTrailer);
+    }
+    /*
+    FNXC:CommitOwnership 2026-11-19-15:48: this amend is the last chance to give a published
+    commit its project identity, so it adds the trailer the missing hook would have added - only
+    when absent, and only when the lane can name its project.
+    */
+    if (projectId && !existingMessage.includes(`${FUSION_PROJECT_ID_TRAILER_KEY}:`)) {
+      trailersToAdd.push(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${projectId}`);
     }
     if (trailersToAdd.length === 0) return;
     let amendCommand = "git -c trailer.ifExists=addIfDifferent commit --amend --no-edit";
@@ -4618,6 +4645,7 @@ async function cherryPickCommitPreservingTaskTrailers(
   mergeConflictStrategy: CanonicalMergeConflictStrategy,
   smartConflictResolution: boolean,
   result: MergeResult,
+  projectId?: string | null,
 ): Promise<CherryPickCommitResult> {
   try {
     const initialPick = await runCherryPickWithEmptySkip(rootDir, quoteArg(commitSha));
@@ -4650,7 +4678,7 @@ async function cherryPickCommitPreservingTaskTrailers(
 
       if (unresolvedComplex === 0) {
         await execAsync("git cherry-pick --continue", { cwd: rootDir });
-        await ensureTaskTrailersOnHead(rootDir, task);
+        await ensureTaskTrailersOnHead(rootDir, task, projectId);
         return { landed: true };
       }
     }
@@ -4676,7 +4704,7 @@ async function cherryPickCommitPreservingTaskTrailers(
     }
   }
 
-  await ensureTaskTrailersOnHead(rootDir, task);
+  await ensureTaskTrailersOnHead(rootDir, task, projectId);
   return { landed: true };
 }
 
@@ -4718,6 +4746,7 @@ async function applyBranchCommitsPreservingHistory(params: {
       mergeConflictStrategy,
       smartConflictResolution,
       result,
+      resolveProjectNamespace(store),
     );
     if (!pickResult.landed) {
       skippedEmptyCount += 1;
@@ -7641,7 +7670,7 @@ export async function aiMergeTask(
 
   const aheadInfo = await resolveAheadCount();
   if (aheadInfo?.aheadCount === 0) {
-    const classification = await classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch: aheadInfo.baseRef });
+    const classification = await classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch: aheadInfo.baseRef, projectNamespace: resolveProjectNamespace(store) });
     if (classification.kind === "owned-commit") {
       const mergeCommitMessage = await regenerateBareMergeSubject({
         subject: classification.commit.subject,
@@ -7976,7 +8005,7 @@ export async function aiMergeTask(
       stdio: "pipe",
     });
   } catch {
-    const classification = await classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch: mergeTarget.branch });
+    const classification = await classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch: mergeTarget.branch, projectNamespace: resolveProjectNamespace(store) });
     if (classification.kind === "unproven") {
       result.error = `finalize-unproven: ${classification.reason}`;
       await store.updateTask(taskId, { error: result.error });
@@ -10538,7 +10567,7 @@ export async function executeMergeAttempt(
               signal: options.signal,
             });
             const authorArg = getCommitAuthorArg(settings);
-            const trailerArg = buildTaskTrailerArgs(taskId);
+            const trailerArg = buildTaskTrailerArgs(taskId, undefined, resolveProjectNamespace(store));
             const { subjectArg, bodyArg } = await buildDeterministicMergeMessage({
               taskId,
               branch,
@@ -10794,7 +10823,7 @@ export async function executeMergeAttempt(
         aiBody,
         aiSubject,
       });
-      const trailerArg = buildTaskTrailerArgs(taskId);
+      const trailerArg = buildTaskTrailerArgs(taskId, undefined, resolveProjectNamespace(store));
       await execAsync(
         `git commit --amend ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
         { cwd: rootDir, env: mergerCommitEnv() },
@@ -10975,7 +11004,7 @@ async function finalizeSideStrategyAttempt(
     signal: params.options.signal,
   });
   const authorArg = getCommitAuthorArg(settings);
-  const trailerArg = buildTaskTrailerArgs(taskId);
+  const trailerArg = buildTaskTrailerArgs(taskId, undefined, resolveProjectNamespace(store));
   const issueRefBodyArg = sourceIssueRef ? ` -m "Ref: ${sourceIssueRef}"` : "";
   const { subjectArg, bodyArg } = await buildDeterministicMergeMessage({
     taskId,
@@ -11442,7 +11471,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
           signal: options.signal,
         });
         const authorArg = getCommitAuthorArg(settings);
-        const trailerArg = buildTaskTrailerArgs(taskId);
+        const trailerArg = buildTaskTrailerArgs(taskId, undefined, resolveProjectNamespace(store));
         const issueRefBodyArg = sourceIssueRef ? ` -m "Ref: ${sourceIssueRef}"` : "";
         const { subjectArg, bodyArg } = await buildDeterministicMergeMessage({
           taskId,
@@ -11466,7 +11495,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     } else {
       // The agent committed. Idempotently ensure canonical task trailers are
       // present on HEAD for durable lineage attribution and fallback recovery.
-      await ensureTaskTrailersOnHead(rootDir, { id: taskId });
+      await ensureTaskTrailersOnHead(rootDir, { id: taskId }, resolveProjectNamespace(store));
     }
 
     return { success: true };

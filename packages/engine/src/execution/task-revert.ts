@@ -64,6 +64,7 @@ function undoRestoreSourceLabel(task: Pick<Task, "title" | "description">): stri
   return task.title?.trim() || deriveTaskLabelFromDescription(task.description ?? "", 80);
 }
 import { classifyCommitAttribution, collectOwnTaskCommitsForRange } from "./branch-attribution.js";
+import { FUSION_PROJECT_ID_TRAILER_KEY } from "../merge/commit-trailer-evidence.js";
 import { type IntegrationBranchSettings } from "../merge/integration-branch.js";
 import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "../worktree/workspace-base-branch.js";
 import { createRunAuditor, generateSyntheticRunId, type RunAuditor } from "../util/run-audit.js";
@@ -489,6 +490,14 @@ export interface PerformTaskRevertOptions {
   commitAssociationSource?: TaskCommitAssociationSource;
   /** Resolved effective project autoMerge setting (task.autoMerge overrides this when set). Defaults to true (autoMerge on) when omitted. */
   effectiveAutoMerge?: boolean;
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: `store.getProjectId()` of the calling route, stamped as
+  `Fusion-Project-Id` on the revert commit. Reverts are written straight into a checkout that has
+  no Fusion commit-msg hook, so without this the only identity they carry is a bare task id - the
+  exact shape that let two foreign commits count as this project's delivery (RUFU-394). Unknown
+  means omit the trailer, never emit it empty.
+  */
+  projectId?: string | null;
   /** Commit granularity for the real (committing) revert. Defaults to `"squash"` — omitting this option preserves FN-7523 behavior exactly. */
   granularity?: TaskRevertGranularity;
 }
@@ -622,10 +631,13 @@ export async function performTaskRevert(opts: PerformTaskRevertOptions): Promise
         const subject = `revert(${task.id}): ${shortSummary}`;
         const body1 = `Fusion-Task-Id: ${task.id}`;
         const body2 = `Reverts ${originalSubject || sha} @ ${sha.slice(0, 8)}.`;
+        const projectBodyArg = opts.projectId
+          ? ` -m ${quoteShellArg(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${opts.projectId}`)}`
+          : "";
 
         await runGit(
           execImpl,
-          `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)} -m ${quoteShellArg(body2)}`,
+          `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)}${projectBodyArg} -m ${quoteShellArg(body2)}`,
           worktreePath,
         );
         const { stdout: newHead } = await runGit(execImpl, "git rev-parse HEAD", worktreePath);
@@ -685,10 +697,13 @@ export async function performTaskRevert(opts: PerformTaskRevertOptions): Promise
     const referencedSha = resolved.shas[0] ?? "unknown";
     const body1 = `Fusion-Task-Id: ${task.id}`;
     const body2 = `Reverts work landed by task ${task.id} (${originalSubject || referencedSha} @ ${referencedSha.slice(0, 8)}).`;
+    const projectBodyArg = opts.projectId
+      ? ` -m ${quoteShellArg(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${opts.projectId}`)}`
+      : "";
 
     await runGit(
       execImpl,
-      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)} -m ${quoteShellArg(body2)}`,
+      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)}${projectBodyArg} -m ${quoteShellArg(body2)}`,
       worktreePath,
     );
 
@@ -731,6 +746,8 @@ async function applyAndCommitRevert(opts: {
   commits: string[];
   taskId: string;
   execAsyncImpl?: ExecAsyncImpl;
+  /** See `PerformTaskRevertOptions.projectId`. */
+  projectId?: string | null;
 }): Promise<
   | { applied: true; revertCommitSha: string }
   | { applied: false; alreadyReverted: true }
@@ -782,10 +799,13 @@ async function applyAndCommitRevert(opts: {
     const referencedSha = commits[0] ?? "unknown";
     const body1 = `Fusion-Task-Id: ${taskId}`;
     const body2 = `Reverts work landed by task ${taskId} (${originalSubject || referencedSha} @ ${referencedSha.slice(0, 8)}).`;
+    const projectBodyArg = opts.projectId
+      ? ` -m ${quoteShellArg(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${opts.projectId}`)}`
+      : "";
 
     await runGit(
       execImpl,
-      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)} -m ${quoteShellArg(body2)}`,
+      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)}${projectBodyArg} -m ${quoteShellArg(body2)}`,
       worktreePath,
     );
 
@@ -820,6 +840,8 @@ export interface PrepareRevertPrBranchOptions {
   revertBranch: string;
   execAsyncImpl?: ExecAsyncImpl;
   commitAssociationSource?: TaskCommitAssociationSource;
+  /** See `PerformTaskRevertOptions.projectId` - stamped on the prepared revert commit. */
+  projectId?: string | null;
 }
 
 /**
@@ -922,6 +944,7 @@ export async function prepareRevertPrBranch(opts: PrepareRevertPrBranchOptions):
       commits: resolved.shas,
       taskId: task.id,
       execAsyncImpl: execImpl,
+      projectId: opts.projectId,
     });
 
     if ("alreadyReverted" in applied) {
@@ -1116,6 +1139,8 @@ export interface RevertWorkspaceTaskOptions {
   commitAssociationSource?: TaskCommitAssociationSource;
   /** Resolved effective project autoMerge setting (task.autoMerge overrides this when set). Defaults to true (autoMerge on) when omitted. */
   effectiveAutoMerge?: boolean;
+  /** See `PerformTaskRevertOptions.projectId` - stamped on every per-repo revert commit. */
+  projectId?: string | null;
   /** Optional observability sinks supplied by the route; decision breadcrumbs never affect reversion. */
   store?: TaskStore;
   audit?: Pick<RunAuditor, "git">;
@@ -1288,6 +1313,7 @@ export async function revertWorkspaceTask(opts: RevertWorkspaceTaskOptions): Pro
         commits: ctx.commits,
         taskId: task.id,
         execAsyncImpl: execImpl,
+        projectId: opts.projectId,
       });
 
       if (applied.applied) {
@@ -1370,6 +1396,8 @@ export interface PrepareWorkspaceRevertPrBranchesOptions {
   /** Optional observability sinks supplied by the route; decision breadcrumbs never affect PR preparation. */
   store?: TaskStore;
   audit?: Pick<RunAuditor, "git">;
+  /** See `PerformTaskRevertOptions.projectId` - stamped on every per-repo prepared revert commit. */
+  projectId?: string | null;
 }
 
 interface WorkspaceRepoRevertPrContext {
@@ -1405,6 +1433,8 @@ async function prepareOneWorkspaceRepoRevertBranch(opts: {
   revertBranch: string;
   commits: string[];
   taskId: string;
+  /** See `PerformTaskRevertOptions.projectId`. */
+  projectId?: string | null;
 }): Promise<PrepareOneWorkspaceRepoBranchOutcome> {
   const { execImpl, repoRootDir, integrationBranch, revertBranch, commits, taskId } = opts;
   let branchCreated = false;
@@ -1417,7 +1447,7 @@ async function prepareOneWorkspaceRepoRevertBranch(opts: {
     await runGit(execImpl, `git checkout -B ${quoteShellArg(revertBranch)} ${quoteShellArg(integrationBranch)}`, repoRootDir);
     branchCreated = true;
 
-    const applied = await applyAndCommitRevert({ worktreePath: repoRootDir, commits, taskId, execAsyncImpl: execImpl });
+    const applied = await applyAndCommitRevert({ worktreePath: repoRootDir, commits, taskId, execAsyncImpl: execImpl, projectId: opts.projectId });
 
     if ("alreadyReverted" in applied) {
       // Defensive: the branch moved between classify and apply — nothing to
@@ -1589,6 +1619,7 @@ export async function prepareWorkspaceRevertPrBranches(
         revertBranch,
         commits: ctx.commits,
         taskId: task.id,
+        projectId: opts.projectId,
       });
 
       if (outcome.kind === "already-reverted") {
@@ -1881,6 +1912,8 @@ export interface PerformTaskRevertRestoreOptions {
   execAsyncImpl?: ExecAsyncImpl;
   /** Resolved effective project autoMerge setting (task.autoMerge overrides this when set). Defaults to true. */
   effectiveAutoMerge?: boolean;
+  /** See `PerformTaskRevertOptions.projectId` - stamped on the restore commit. */
+  projectId?: string | null;
   scanLimit?: number;
 }
 
@@ -1993,10 +2026,13 @@ export async function performTaskRevertRestore(
     const subject = `restore(${task.id}): ${deriveRestoreSummary(revertSubject)}`;
     const body1 = `Fusion-Task-Id: ${task.id}`;
     const body2 = `Restores work reverted by task ${task.id} (undoes ${revertSubject || "revert commit"} @ ${referencedSha.slice(0, 8)}).`;
+    const projectBodyArg = opts.projectId
+      ? ` -m ${quoteShellArg(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${opts.projectId}`)}`
+      : "";
 
     await runGit(
       execImpl,
-      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)} -m ${quoteShellArg(body2)}`,
+      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body1)}${projectBodyArg} -m ${quoteShellArg(body2)}`,
       worktreePath,
     );
 

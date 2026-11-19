@@ -34,6 +34,13 @@ import { join } from "node:path";
    the class body the bare identifier resolves to this import. That collision
    pre-dates the move and is preserved exactly. */
 import { findAlreadyMergedTaskCommit, getCommitTaskOwnership } from "./merge/already-merged-detector.js";
+import {
+  COMMIT_BIRTH_CLOCK_SKEW_MS,
+  COMMIT_EPOCH_FORMAT_FIELD,
+  commitDeclaresForeignProject,
+  commitPredatesTaskBirth,
+  taskBirthMs,
+} from "./merge/commit-trailer-evidence.js";
 /* RUFU-293: the empty-land evidence gate is ONE classifier shared with the merge lane. The alias
    keeps the module function addressable next to the protected override seam below. */
 import {
@@ -223,8 +230,10 @@ export interface BaseStampedCommitProof {
  *
  * `git log --grep` proves only that a message contains a trailer. A squash merge stamps EVERY commit
  * message it concatenated, so a card whose work never landed can end up with another card's commits
- * stamped with its own id on the base branch — RUFU-391's two commits, whose subject lines describe
- * review-stall parks and whose declared-scope intersection is empty. Re-verification therefore has to
+ * stamped with its own id on the base branch — the two `main` commits stamped `RUFU-391` (`36a88363e2`,
+ * `65b0dec011`), whose subject lines describe review-stall parks and whose declared-scope intersection is
+ * empty; RUFU-394 measured that both were written 2h46m BEFORE this board issued that id, so the stamp
+ * names no author at all. Re-verification therefore has to
  * read the commit itself, not the search index: the ownership trailer must survive the same
  * `getCommitTaskOwnership` decision the branch tip is judged by, and the commit must be
  * content-bearing (`git show --name-only` non-empty) — a commit that changed no path delivered
@@ -289,7 +298,7 @@ export async function verifyBaseStampedCommits(input: {
  * Strict declared-scope cover test. Deliberately NOT `matchesScope` from `healing/self-healing-path-utils`:
  * that matcher is merge-arbitration lenient and treats a SIBLING file in a declared file's directory as a
  * hit (measured: declared `docs/cli-reference.md` matches `docs/run-audit.md`). For delivery proof that
- * leniency is exactly wrong — it would read RUFU-391's mis-stamped commits, which touch `docs/run-audit.md`,
+ * leniency is exactly wrong — it would read the commits mis-stamped `RUFU-391`, which touch `docs/run-audit.md`,
  * as delivery of a card that declared `docs/cli-reference.md`, and the rescue would never fire. Here a
  * declared path covers only itself, a directory prefix, or a glob it really matches (`**` spans directory
  * separators, `*` does not).
@@ -356,9 +365,10 @@ export interface CardScopeNeverDeliveredProof {
  *
  * A card is a promise about files: its `## File Scope` names the paths it intended to change. Those
  * paths cannot be forged by a concatenating squash, so intersecting them with the paths of the base
- * commits stamped for this card answers the delivery question directly. RUFU-391: its stamped commits
- * touch review-stall parks, `pre-merge-gate-reseed.ts`, and the changeset for that work — zero of its
- * declared CLI/core/dashboard files, and `defaultWorkflowId` is absent from `settings.ts` on main.
+ * commits stamped for this card answers the delivery question directly. The pair stamped `RUFU-391`:
+ * its commits touch review-stall parks, `pre-merge-gate-reseed.ts`, and the changeset for that work — zero
+ * of the CLI/core/dashboard files the card behind that id declared, and `defaultWorkflowId` is absent from
+ * `settings.ts` on main.
  *
  * `unknown` (never a rescue) is returned when the scope is undeclared, when there are no stamped
  * commits to examine, or when any examined commit's content could not be read.
@@ -492,7 +502,28 @@ export interface LandedTaskCommit {
   rebaseBaseSha?: string;
 }
 
-export function commitOwnedByTask(taskId: string, lineageId: string | undefined, subject: string, body: string): boolean {
+/*
+FNXC:CommitOwnership 2026-11-19-15:48: the ownership answer for a landed-proof lookup now includes
+the two identity refusals — a commit that declares another project's namespace, or that was
+committed before the card it claims was born, is not that card's delivery. Both checks SKIP when
+their fact is unknown, so a legacy commit or an unreadable `%ct` keeps today's behavior instead of
+being refused for the toolchain's own history.
+*/
+export function commitOwnedByTask(
+  taskId: string,
+  lineageId: string | undefined,
+  subject: string,
+  body: string,
+  facts: { committerEpochMs?: number | null; taskCreatedAtMs?: number | null; projectNamespace?: string | null } = {},
+): boolean {
+  if (commitDeclaresForeignProject(body, facts.projectNamespace ?? null)) return false;
+  if (commitPredatesTaskBirth(
+    facts.committerEpochMs ?? null,
+    facts.taskCreatedAtMs ?? null,
+    COMMIT_BIRTH_CLOCK_SKEW_MS,
+  )) {
+    return false;
+  }
   if (lineageId && new RegExp(`(?:^|\\n)Fusion-Task-Lineage: ${escapeRegex(lineageId)}\\s*(?:\\n|$)`).test(body)) {
     return true;
   }
@@ -539,11 +570,23 @@ export function parseShortstat(output: string): Pick<LandedTaskCommit, "filesCha
 export abstract class SelfHealingGitEvidence {
   protected abstract readonly options: SelfHealingOptions;
 
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: which project's namespace do these proofs ask in?
+  The base returns `null` (unknown ⇒ the foreign-project check skips, it never refuses), and
+  `SelfHealingManager` overrides it with its own store's id. A reader with no store to ask stays
+  exactly as permissive as it was before this existed.
+  */
+  protected projectNamespace(): string | null {
+    return null;
+  }
 
   protected async findLandedTaskCommit(
     task: Task,
     options?: { preferEarliestOwnedCommit?: boolean },
   ): Promise<LandedTaskCommit | null> {
+    const taskCreatedAtMs = taskBirthMs(task);
+    const projectNamespace = this.projectNamespace();
+
     // Search strategies, tried in order of reliability:
     //   1. mergeDetails.commitSha — already stored by the merger; verify it's
     //      reachable from HEAD before trusting it.
@@ -566,11 +609,16 @@ export abstract class SelfHealingGitEvidence {
           { cwd: this.options.rootDir },
         );
         const { stdout } = await execAsync(
-          `git log -1 --format=%H%x1f%s%x1f%b ${shellQuote(storedSha)}`,
+          `git log -1 --format=%H%x1f%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD} ${shellQuote(storedSha)}`,
           { cwd: this.options.rootDir, maxBuffer: 1024 * 1024 },
         );
-        const [sha, subject = "", body = ""] = stdout.trim().split("\x1f");
-        if (sha && commitOwnedByTask(task.id, task.lineageId, subject, body)) {
+        const [sha, subject = "", body = "", epochRaw = ""] = stdout.trim().split("\x1f");
+        const epochSeconds = Number(epochRaw.trim());
+        if (sha && commitOwnedByTask(task.id, task.lineageId, subject, body, {
+          committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
+          taskCreatedAtMs,
+          projectNamespace,
+        })) {
           const commit: LandedTaskCommit = { sha, subject, rebaseBaseSha };
           try {
             const shortstat = await this.readShortstatForSha(sha, rebaseBaseSha);
@@ -663,10 +711,16 @@ export abstract class SelfHealingGitEvidence {
       if (!candidateSha) continue;
       try {
         const { stdout: bodyOut } = await execAsync(
-          `git log -1 --format=%b ${shellQuote(candidateSha)}`,
+          `git log -1 --format=%b%x1f${COMMIT_EPOCH_FORMAT_FIELD} ${shellQuote(candidateSha)}`,
           { cwd: this.options.rootDir, maxBuffer: 1024 * 1024 },
         );
-        if (commitOwnedByTask(task.id, task.lineageId, candidateSubject, bodyOut)) {
+        const [candidateBody, epochRaw = ""] = bodyOut.split("\x1f");
+        const epochSeconds = Number(epochRaw.trim());
+        if (commitOwnedByTask(task.id, task.lineageId, candidateSubject, candidateBody, {
+          committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
+          taskCreatedAtMs,
+          projectNamespace,
+        })) {
           sha = candidateSha;
           subject = candidateSubject;
           break;
@@ -701,8 +755,21 @@ export abstract class SelfHealingGitEvidence {
     baseBranch: string;
     taskBranch?: string;
     baseCommitSha?: string;
+    ownership?: { projectNamespace?: string | null; taskCreatedAtMs?: number | null };
   }) {
-    return findAlreadyMergedTaskCommit(input);
+    /*
+    FNXC:CommitOwnership 2026-11-19-15:48: the recovery substrate's ONE gateway to the already-merged
+    lookup, so the project namespace is injected here rather than remembered at each of the seven
+    sweep call sites. A caller that also holds the card passes `taskCreatedAtMs`; a caller that does
+    not gets the foreign-project refusal only, never a guessed birth time.
+    */
+    return findAlreadyMergedTaskCommit({
+      ...input,
+      ownership: {
+        projectNamespace: this.projectNamespace(),
+        ...input.ownership,
+      },
+    });
   }
 
   protected async refreshRemoteBaseRef(baseBranch: string): Promise<string | null> {
@@ -728,14 +795,35 @@ export abstract class SelfHealingGitEvidence {
     }
   }
 
-  protected async readCommitTaskOwnership(sha: string, taskId: string, lineageId?: string) {
-    const { stdout } = await execAsync(`git show -s --format=%s%x1f%b ${shellQuote(sha)}`, {
-      cwd: this.options.rootDir,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
+  /*
+  FNXC:CommitOwnership 2026-11-19-17:20 (RUFU-394): the seam that decides whether a commit stamped for
+  this card is its OWN landed content, so it carries the same two refusals as every other delivery
+  proof. The namespace is the class's own (`null` ⇒ skipped, never refused); the card's birth time is
+  NOT in scope here, so the callers that hold the row pass it — `baseDeliveryEvidence` and the
+  tip-already-merged reclaim do, a caller holding only an id gets the project refusal alone. An
+  unreadable `%ct` keeps the pre-existing verdict rather than inventing a refusal.
+  */
+  protected async readCommitTaskOwnership(
+    sha: string,
+    taskId: string,
+    lineageId?: string,
+    ownership?: { taskCreatedAtMs?: number | null },
+  ) {
+    const { stdout } = await execAsync(
+      `git show -s --format=%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD} ${shellQuote(sha)}`,
+      {
+        cwd: this.options.rootDir,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const [subject = "", body = "", epochRaw = ""] = stdout.split("\x1f");
+    const epochSeconds = Number(epochRaw.trim());
+    return getCommitTaskOwnership(taskId, lineageId, subject, body, {
+      projectNamespace: this.projectNamespace(),
+      taskCreatedAtMs: ownership?.taskCreatedAtMs ?? null,
+      committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
     });
-    const [subject = "", body = ""] = stdout.split("\x1f");
-    return getCommitTaskOwnership(taskId, lineageId, subject, body);
   }
 
   protected async branchHasNoUniqueDiff(branchTip: string, baseBranch: string): Promise<boolean> {
@@ -808,9 +896,11 @@ export abstract class SelfHealingGitEvidence {
       "The base already carries this task's own commit" is the one condition that turns a harmless
       inherited foreign tip into a real misbinding, so it must be EVIDENCE and not a message grep. A
       squash merge concatenates commit messages, so a card that never landed can own stamps on the base
-      while every stamped byte of those commits belongs to another card — RUFU-391's two `main` commits
-      carry `Fusion-Task-Id: RUFU-391` with `Fusion-Task-Id: RUFU-388` in their bodies and touch none of
-      its declared files, and the grep read that as delivery, refused the tip forever (`reason=foreign-task-tip`
+      while every stamped byte of those commits belongs to another card — the two `main` commits stamped
+      `RUFU-391` (`36a88363e2`, `65b0dec011`) carry `Fusion-Task-Id: RUFU-391` alone (RUFU-396's first read
+      claimed a second `RUFU-388` trailer in their bodies; `git show -s --format=%B` on both carries exactly
+      one ownership trailer) and touch none of that card's declared files, and the grep read that as delivery,
+      refused the tip forever (`reason=foreign-task-tip`
       every sweep) and burned the recovery budget to a terminal park.
 
       With the proof supplied, both halves must hold to count as delivered: an ownership re-verification
@@ -880,7 +970,7 @@ export abstract class SelfHealingGitEvidence {
         lineageId: task.lineageId,
         declaredScope: input.declaredScope,
         approvedReviewEvidence: input.approvedReviewEvidence ?? hasApprovedContentReviewEvidence(task.workflowStepResults),
-        readCommitTaskOwnership: (sha) => this.readCommitTaskOwnership(sha, task.id, task.lineageId),
+        readCommitTaskOwnership: (sha) => this.readCommitTaskOwnership(sha, task.id, task.lineageId, { taskCreatedAtMs: taskBirthMs(task) }),
         readCommitTouchedPaths: input.readCommitTouchedPaths,
         readBaseStampedCommitShas: input.readBaseStampedCommitShas,
       });

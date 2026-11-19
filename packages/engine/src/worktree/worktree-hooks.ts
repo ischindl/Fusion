@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createLogger } from "../logger.js";
+import { FUSION_PROJECT_ID_TRAILER_KEY } from "../merge/commit-trailer-evidence.js";
 
 const log = createLogger("worktree-hooks");
 const execAsync = promisify(exec);
@@ -223,6 +224,22 @@ function shellSingleQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
+/*
+FNXC:CommitOwnership 2026-11-19-15:48:
+This hook is the ONE surface that every executor commit passes through, so it is where project
+identity has to be stamped. Two commits landed on `main` on 2026-09-28 stamped `RUFU-391`, an id
+that named no card at emit time and an unrelated card 2h46m later, because a bare task id carries
+no evidence of WHICH project's board minted it. `Fusion-Project-Id` gives the shared ownership
+anchor a second axis: `getCommitTaskOwnership` refuses `foreign-project` when a commit declares a
+different namespace, so an id that happens to exist on this board can no longer claim another
+project's work as delivery here.
+
+The trailer is OMITTED when the caller cannot name the project, never emitted empty: an empty
+`Fusion-Project-Id:` would read back as "declares nothing" and be skipped exactly like the
+absence, so the two states must stay distinguishable. An existing project trailer is left alone
+(`--if-exists doNothing`) for the same reason the task trailer is: silently rewriting declared
+identity is the failure mode this change exists to remove.
+*/
 export function buildCommitMsgTrailerHook(
   taskId: string,
   options: {
@@ -231,6 +248,8 @@ export function buildCommitMsgTrailerHook(
     commitAuthorEnabled?: boolean;
     commitAuthorName?: string;
     commitAuthorEmail?: string;
+    /** `store.getProjectId()`; null/undefined/blank omits the project trailer. */
+    projectId?: string | null;
   } = {}
 ): string {
   // Derive the strip prefix from the task id itself so per-mission prefixes
@@ -244,6 +263,19 @@ export function buildCommitMsgTrailerHook(
   const trailerName = (options.trailerName ?? "Fusion-Task-Id").trim() || "Fusion-Task-Id";
   const commitAuthorName = (options.commitAuthorName ?? DEFAULT_COMMIT_AUTHOR_NAME).trim() || DEFAULT_COMMIT_AUTHOR_NAME;
   const commitAuthorEmail = (options.commitAuthorEmail ?? DEFAULT_COMMIT_AUTHOR_EMAIL).trim() || DEFAULT_COMMIT_AUTHOR_EMAIL;
+  const projectId = (options.projectId ?? "").trim();
+  const projectInjection = projectId
+    ? `
+
+# FNXC:CommitOwnership 2026-11-19-15:48:
+# Project-scoped commit identity. Written only when the installing lane can name its project.
+git interpret-trailers \\
+  --in-place \\
+  --if-exists doNothing \\
+  --trailer ${shellSingleQuote(`${FUSION_PROJECT_ID_TRAILER_KEY}: ${projectId}`)} \\
+  "$1"`
+    : "";
+
   const coAuthorInjection = options.commitAuthorEnabled === false
     ? ""
     : `
@@ -279,7 +311,7 @@ git interpret-trailers \
   --in-place \
   --if-exists doNothing \
   --trailer "$TRAILER_NAME: $TASK_ID" \
-  "$1"${coAuthorInjection}
+  "$1"${projectInjection}${coAuthorInjection}
 `;
 }
 
@@ -302,6 +334,7 @@ async function installCommitMsgHook(input: {
   taskId: string;
   taskPrefix: string;
   trailerName: string;
+  projectId?: string | null;
   commitAuthorEnabled?: boolean;
   commitAuthorName?: string;
   commitAuthorEmail?: string;
@@ -316,6 +349,7 @@ async function installCommitMsgHook(input: {
   const hook = buildCommitMsgTrailerHook(input.taskId, {
     taskPrefix: input.taskPrefix,
     trailerName: input.trailerName,
+    projectId: input.projectId,
     commitAuthorEnabled: input.commitAuthorEnabled,
     commitAuthorName: input.commitAuthorName,
     commitAuthorEmail: input.commitAuthorEmail,
@@ -341,6 +375,15 @@ async function installPrepareCommitMsgEmptyGuard(input: {
 export async function installTaskWorktreeIdentityGuard(input: {
   worktreePath: string;
   taskId: string;
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48:
+  REQUIRED, and typed `string | null` rather than optional, so a new call site cannot silently
+  forget commit project identity by omitting a key. Pass `store.getProjectId()` when the lane has
+  a store, and an explicit `null` where the lane genuinely cannot name the project (a remove-only
+  backend built for `prune`, which commits nothing). The installer then omits the trailer, which
+  readers treat as unknown identity, never as a refusal.
+  */
+  projectId: string | null;
   allowedBranchPatterns?: readonly string[];
   expectedBranch?: string;
   commitMsgHookEnabled?: boolean;
@@ -369,6 +412,7 @@ export async function installTaskWorktreeIdentityGuard(input: {
       taskId: input.taskId,
       taskPrefix: input.taskPrefix ?? "FN",
       trailerName: input.taskAttributionTrailerName ?? "Fusion-Task-Id",
+      projectId: input.projectId,
       commitAuthorEnabled: input.commitAuthorEnabled,
       commitAuthorName: input.commitAuthorName,
       commitAuthorEmail: input.commitAuthorEmail,

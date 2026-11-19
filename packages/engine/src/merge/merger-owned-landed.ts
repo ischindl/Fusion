@@ -7,6 +7,13 @@ import { promisify } from "node:util";
 import * as childProcess from "node:child_process";
 import { parseDiffStat } from "./merger-file-scope.js";
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
+import {
+  COMMIT_BIRTH_CLOCK_SKEW_MS,
+  COMMIT_EPOCH_FORMAT_FIELD,
+  commitDeclaresForeignProject,
+  commitPredatesTaskBirth,
+  taskBirthMs,
+} from "./commit-trailer-evidence.js";
 
 const execFileAsync: (file: string, args: string[], opts?: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string; stderr: string }> = (file, args, opts) =>
   (promisify(childProcess.execFile) as (f: string, a: string[], o?: object) => Promise<{ stdout: string; stderr: string }>)(file, args, opts);
@@ -48,8 +55,25 @@ function escapeRegexForOwnership(value: string): string {
  * Decide whether a git commit belongs to a given task. Line-anchored trailers
  * and subject-anchored conventional commits only — prose mentions never count.
  * Mirrors `commitOwnedByTask` in self-healing.ts (FN-5441/FN-5446 regression).
+ *
+ * FNXC:CommitOwnership 2026-11-19-15:48: the two identity refusals ride along, because this
+ * function decides "is this commit the card's delivery?" — the exact question a commit stamped with
+ * a not-yet-issued task id answered wrongly on 2026-09-28. Both skip when their fact is unknown.
  */
-function commitOwnedByTask(taskId: string, subject: string, body: string): boolean {
+function commitOwnedByTask(
+  taskId: string,
+  subject: string,
+  body: string,
+  facts: { committerEpochMs?: number | null; taskCreatedAtMs?: number | null; projectNamespace?: string | null } = {},
+): boolean {
+  if (commitDeclaresForeignProject(body, facts.projectNamespace ?? null)) return false;
+  if (commitPredatesTaskBirth(
+    facts.committerEpochMs ?? null,
+    facts.taskCreatedAtMs ?? null,
+    COMMIT_BIRTH_CLOCK_SKEW_MS,
+  )) {
+    return false;
+  }
   if (new RegExp(`(?:^|\\n)${escapeRegexForOwnership(FUSION_TASK_ID_TRAILER_KEY)}: ${escapeRegexForOwnership(taskId)}\\s*(?:\\n|$)`).test(body)) {
     return true;
   }
@@ -59,16 +83,32 @@ function commitOwnedByTask(taskId: string, subject: string, body: string): boole
   return subjectAnchor.test(subject);
 }
 
-async function findOwnedLandedCommitForTask(rootDir: string, task: Task): Promise<OwnedLandedCommit | null> {
+async function findOwnedLandedCommitForTask(
+  rootDir: string,
+  task: Task,
+  projectNamespace?: string | null,
+): Promise<OwnedLandedCommit | null> {
+  const taskCreatedAtMs = taskBirthMs(task);
   const tryHydrate = async (sha: string): Promise<OwnedLandedCommit | null> => {
     try {
       await execFileAsync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: rootDir });
-      const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%H%x1f%s%x1f%b", sha], {
+      /*
+      FNXC:CommitOwnership 2026-11-19-15:48: `%ct` joins the read so the hydration step — the only
+      place this file turns a grep hit into an owned landed commit — can answer the birth-order
+      question instead of trusting the id match.
+      */
+      const { stdout } = await execFileAsync("git", ["log", "-1", `--format=%H%x1f%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD}`, sha], {
         cwd: rootDir,
         encoding: "utf-8",
       });
-      const [resolvedSha, subject = "", body = ""] = stdout.trim().split("\x1f");
-      if (!resolvedSha || !commitOwnedByTask(task.id, subject, body)) return null;
+      const [resolvedSha, subject = "", body = "", epochRaw = ""] = stdout.trim().split("\x1f");
+      const epochSeconds = Number(epochRaw.trim());
+      const committerEpochMs = Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null;
+      if (!resolvedSha || !commitOwnedByTask(task.id, subject, body, {
+        committerEpochMs,
+        taskCreatedAtMs,
+        projectNamespace,
+      })) return null;
       const owned: OwnedLandedCommit = { sha: resolvedSha, subject };
       try {
         const { stdout: statsOut } = await execFileAsync("git", ["show", "--shortstat", "--format=", resolvedSha], {
@@ -120,12 +160,12 @@ export function toTaskToken(value: string): string {
 export async function classifyOwnedLandedEvidence(
   rootDir: string,
   task: Task,
-  opts: { mergeTargetBranch: string },
+  opts: { mergeTargetBranch: string; projectNamespace?: string | null },
 ): Promise<OwnedLandedClassification> {
   const branch = resolveTaskWorkingBranch(task);
   const mergeTargetBranch = opts.mergeTargetBranch;
 
-  const ownedCommit = await findOwnedLandedCommitForTask(rootDir, task);
+  const ownedCommit = await findOwnedLandedCommitForTask(rootDir, task, opts.projectNamespace);
   if (ownedCommit) {
     try {
       await execFileAsync("git", ["merge-base", "--is-ancestor", ownedCommit.sha, mergeTargetBranch], { cwd: rootDir });

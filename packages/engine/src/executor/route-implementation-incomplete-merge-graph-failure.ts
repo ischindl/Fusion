@@ -14,6 +14,7 @@ import { hasNonTerminalWorkflowSteps } from "./workflow-step-satisfaction.js";
 import { MERGE_BOUNDARY_RECOVERY_VALUE } from "../workflows/workflow-merge-nodes.js";
 import type { MergeBoundaryRecoveryEvidence } from "./workflow-merge-boundary.js";
 import { hasLandedEmptyStepApprovedCodeReview } from "./evaluate-workflow-merge-boundary.js";
+import { resolveProjectNamespace, taskBirthMs } from "../merge/commit-trailer-evidence.js";
 
 export const IMPLEMENTATION_INCOMPLETE_NO_RESUME_MESSAGE = "implementation incomplete with no executable proof to resume — failing instead of retrying merge";
 
@@ -102,7 +103,11 @@ export async function routeImplementationIncompleteMergeGraphFailure(
 ): Promise<boolean> {
   if (
     !deps.hasLiveTaskSessionSurface(live.id)
-    && await hasLandedEmptyStepApprovedCodeReview(live, deps.rootDir)
+    && await hasLandedEmptyStepApprovedCodeReview(live, deps.rootDir, {
+      // FNXC:CommitOwnership 2026-11-19-15:48: the landed-commit exception is a delivery claim.
+      projectNamespace: resolveProjectNamespace(deps.store),
+      taskCreatedAtMs: taskBirthMs(live),
+    })
   ) {
     let recoveryCandidate = false;
     let sessionClaimedBeforeCommit = false;

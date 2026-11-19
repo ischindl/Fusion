@@ -285,4 +285,90 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     expect(subject).toContain("FN-AMD-3");
     expect(result!.ownershipProof).toBe("subject-anchor");
   });
+
+  /*
+  FNXC:CommitOwnership 2026-11-19-16:55 (RUFU-394):
+  Real-git half of the anchor widening. The fast paths used to return the FIRST grep hit, so a
+  candidate that named the id and was refused by project or clock ended the lookup instead of falling
+  through to the next one. RUFU-394's measured case is the single-candidate shape: `36a88363e2` on
+  `main` carried `Fusion-Task-Id: RUFU-391` and was committed 2h46m before that card existed, so the
+  trailer grep credited RUFU-391 with a delivery it never made and the executor's already-on-main
+  verdict released its branch, worktree and file-scope lease.
+  */
+  function commitDated(repo: string, name: string, messageArgs: string, committerDate: string): string {
+    writeFileSync(path.join(repo, name), `${name}\n`, "utf-8");
+    git(repo, `git add ${name}`);
+    execSync(`git commit -m "${messageArgs}"`, {
+      cwd: repo, encoding: "utf-8",
+      env: { ...process.env, GIT_AUTHOR_DATE: committerDate, GIT_COMMITTER_DATE: committerDate },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return git(repo, "git rev-parse HEAD");
+  }
+
+  it("refuses a task-trailer commit stamped before its card was created", async () => {
+    const repo = setupRepo();
+    const createdAt = new Date().toISOString();
+    commitDated(repo, "anachronistic.txt", "fix(RUFU-391): not this card's work\n\nFusion-Task-Id: RUFU-391", "2020-01-01T00:00:00Z");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "RUFU-391", repoDir: repo, baseBranch: "main",
+      ownership: { taskCreatedAtMs: Date.parse(createdAt) },
+    });
+
+    expect(result).toBeNull();
+    // Without a birth time the same commit is creditable: unknown means skip, never refuse.
+    expect(await findAlreadyMergedTaskCommit({ taskId: "RUFU-391", repoDir: repo, baseBranch: "main" })).not.toBeNull();
+  });
+
+  it("refuses a task-trailer commit that declares another project's identity", async () => {
+    const repo = setupRepo();
+    commitDated(repo, "foreign.txt", "fix(RUFU-391): written on another board\n\nFusion-Task-Id: RUFU-391\nFusion-Project-Id: proj_other", "2020-01-01T00:00:00Z");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "RUFU-391", repoDir: repo, baseBranch: "main",
+      ownership: { projectNamespace: "proj_us", taskCreatedAtMs: Date.parse("2019-01-01T00:00:00Z") },
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("does not let a refused candidate end the search for a real one", async () => {
+    const repo = setupRepo();
+    // Newest first in `git log` order: the refused commit is what the grep hits first.
+    const foreign = commitDated(repo, "foreign.txt", "fix(RUFU-391): another board\n\nFusion-Task-Id: RUFU-391\nFusion-Project-Id: proj_other", "2020-06-02T00:00:00Z");
+    const owned = commitDated(repo, "owned.txt", "fix(RUFU-391): our own landing\n\nFusion-Task-Id: RUFU-391\nFusion-Project-Id: proj_us", "2020-06-01T00:00:00Z");
+    expect(foreign).not.toBe(owned);
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "RUFU-391", repoDir: repo, baseBranch: "main",
+      ownership: { projectNamespace: "proj_us", taskCreatedAtMs: Date.parse("2019-01-01T00:00:00Z") },
+    });
+
+    expect(result?.sha).toBe(owned);
+  });
+
+  it("credits a card's own commit when the project matches and the card predates it", async () => {
+    const repo = setupRepo();
+    const sha = commitDated(repo, "ours.txt", "fix(RUFU-391): ours\n\nFusion-Task-Id: RUFU-391\nFusion-Project-Id: proj_us", "2020-06-01T00:00:00Z");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "RUFU-391", repoDir: repo, baseBranch: "main",
+      ownership: { projectNamespace: "proj_us", taskCreatedAtMs: Date.parse("2019-01-01T00:00:00Z") },
+    });
+
+    expect(result?.sha).toBe(sha);
+  });
+
+  it("still credits legacy commits that carry no project identity", async () => {
+    const repo = setupRepo();
+    const sha = commitDated(repo, "legacy.txt", "fix(RUFU-391): pre-trailer history\n\nFusion-Task-Id: RUFU-391", "2020-06-01T00:00:00Z");
+
+    const result = await findAlreadyMergedTaskCommit({
+      taskId: "RUFU-391", repoDir: repo, baseBranch: "main",
+      ownership: { projectNamespace: "proj_us", taskCreatedAtMs: Date.parse("2019-01-01T00:00:00Z") },
+    });
+
+    expect(result?.sha).toBe(sha);
+  });
 });

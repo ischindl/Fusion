@@ -62,6 +62,12 @@ import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { reconcileSecretsEnvFingerprint, writeSecretsEnvFile } from "./secrets-env-writer.js";
 import { removeDesktopBuildArtifacts } from "./worktree-desktop-artifacts.js";
 import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
+// FNXC:CommitOwnership 2026-11-19-17:38 (RUFU-394): ask the store for its project id through the
+// defensive leaf accessor, never `store.getProjectId()` directly. Acquisition runs against
+// duck-typed store shapes (test doubles, partial picks) whose missing method would throw and take
+// down a worktree acquisition that was only trying to label its commits; unknown identity means
+// "omit the trailer", not "fail the checkout".
+import { resolveProjectNamespace } from "../merge/commit-trailer-evidence.js";
 import { copyConfiguredWorktreeFiles, type WorktreeCopyFileResult } from "./worktree-copy-files.js";
 import { resolveCapturedBaseCommitSha } from "../execution/base-commit-capture.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
@@ -592,7 +598,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
 
   let backend: WorktreeBackend;
   try {
-    backend = opts.backend ?? resolveWorktreeBackend(settings, { logger, audit });
+    backend = opts.backend ?? resolveWorktreeBackend(settings, { logger, audit, projectId: resolveProjectNamespace(store) });
   } catch (error) {
     if (
       settings.worktrunk?.enabled
@@ -943,7 +949,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     } catch (error) {
       if (backend.kind !== "worktrunk" || !(error instanceof WorktrunkOperationError)) throw error;
       // FNXC:WorktreeAcquisition 2026-07-16-00:00: FN-8132 requires native fallback collision dispositions to be audited just like direct native acquisition.
-      const nativeBackend = new NativeWorktreeBackend({ logger: logger ?? undefined, audit });
+      const nativeBackend = new NativeWorktreeBackend({ logger: logger ?? undefined, audit, projectId: resolveProjectNamespace(store) });
       const fallback = () => nativeBackend.create({
         rootDir,
         branch: createBranch,
@@ -1486,6 +1492,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
             throw new Error(`preserving ${pinnedPath}: task ownership changed during branch rebind`);
           await installTaskWorktreeIdentityGuard({
             worktreePath: pinnedPath, taskId: task.id, expectedBranch: proof.branch,
+            projectId: resolveProjectNamespace(store),
             commitMsgHookEnabled: settings.commitMsgHookEnabled, taskPrefix: settings.taskPrefix,
             taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
             commitAuthorEnabled: settings.commitAuthorEnabled, commitAuthorName: settings.commitAuthorName,
@@ -2362,6 +2369,7 @@ export async function acquireWorkspaceRepoWorktree(
         worktreePath: result.worktreePath,
         taskId: task.id,
         expectedBranch: result.branch,
+        projectId: resolveProjectNamespace(store),
         commitMsgHookEnabled: settings.commitMsgHookEnabled,
         taskPrefix: settings.taskPrefix,
         taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],

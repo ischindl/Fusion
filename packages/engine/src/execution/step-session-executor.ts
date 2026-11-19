@@ -57,6 +57,7 @@ import type { SkillSelectionContext } from "../cli-runtime/skill-resolver.js";
 import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
 import { canonicalStepInstanceBranchName } from "../worktree/worktree-names.js";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
+import { resolveProjectNamespace } from "../merge/commit-trailer-evidence.js";
 import { AgentSemaphore } from "../concurrency/concurrency.js";
 import { StuckTaskDetector } from "../healing/stuck-task-detector.js";
 import { AgentLogger, summarizeToolArgs } from "../agents/agent-logger.js";
@@ -2267,6 +2268,9 @@ export class StepSessionExecutor {
         worktreePath,
         taskId: this.options.taskDetail.id,
         expectedBranch: branchName,
+        // Unknown store (NOOP fallback) resolves to null, which omits the trailer rather than
+        // labelling the commit with an identity this lane cannot prove.
+        projectId: resolveProjectNamespace(this.store),
         commitMsgHookEnabled: settings.commitMsgHookEnabled,
         taskPrefix: settings.taskPrefix,
         taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],

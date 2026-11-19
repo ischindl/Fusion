@@ -360,6 +360,7 @@ imported it from merger-ai while merger-ai imports `MIN_TEMP_WORKTREE_REAP_AGE_M
 self-healing — a real import cycle. Importing from the predicate module breaks the cycle.
 */
 import { findProvenLandedCommit, isRepoLanded } from "./merge/workspace-land-predicate.js";
+import { COMMIT_EPOCH_FORMAT_FIELD, resolveProjectNamespace, taskBirthMs } from "./merge/commit-trailer-evidence.js";
 import { persistWorkspaceRepoLandFailure, clearWorkspaceRepoLandFailure } from "./merge/workspace-land-failure.js";
 import { getCommitTaskOwnership } from "./merge/already-merged-detector.js";
 import { getTaskCompletionBlockerForStore } from "./execution/task-completion.js";
@@ -1025,9 +1026,16 @@ import {
   isTaskWorkComplete,
 } from "./self-healing/step-progress.js";
 
-async function classifyOwnedLandedEvidenceForSelfHealing(rootDir: string, task: Task, mergeTargetBranch: string): Promise<OwnedLandedClassification> {
+async function classifyOwnedLandedEvidenceForSelfHealing(
+  rootDir: string,
+  task: Task,
+  mergeTargetBranch: string,
+  // FNXC:CommitOwnership 2026-11-19-15:48: the board's namespace, forwarded to the owned-commit
+  // proof so a foreign-project or anachronistic commit cannot be credited as this card's landing.
+  projectNamespace?: string | null,
+): Promise<OwnedLandedClassification> {
   const { classifyOwnedLandedEvidence } = await import("./merger.js");
-  return classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch });
+  return classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch, projectNamespace });
 }
 
 
@@ -2018,6 +2026,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   setChatGenerationRecoveredFromStaleInFlightHandler(handler?: (sessionId: string) => void | Promise<void>): void {
     this.options.onChatGenerationRecoveredFromStaleInFlight = handler;
+  }
+
+  /*
+  FNXC:CommitOwnership 2026-11-19-15:48: the recovery substrate asks "whose commit is this?" in
+  THIS board's namespace. Answering from the manager's own store means every landed/already-merged
+  proof below inherits the `foreign-project` refusal without each sweep having to remember it, and a
+  store that cannot answer yields `null` — the check skips rather than refusing every legacy commit.
+  */
+  protected override projectNamespace(): string | null {
+    return resolveProjectNamespace(this.store);
   }
 
   // ── Auto-unpause state ──────────────────────────────────────────────
@@ -6919,7 +6937,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               continue;
             }
             const branchName = task.branch;
-            const ownership = await this.readCommitTaskOwnership(inspection.tipSha, task.id, task.lineageId).catch(async () => {
+            const ownership = await this.readCommitTaskOwnership(inspection.tipSha, task.id, task.lineageId, { taskCreatedAtMs: taskBirthMs(task) }).catch(async () => {
               await this.rejectForeignAlreadyMergedCandidate({
                 task,
                 candidateSha: inspection.tipSha,
@@ -16947,7 +16965,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const ahead = await this.isBranchAheadOfBase(task, task.mergeDetails?.mergeTargetBranch || mergeTargetBranch);
         if (!ahead || ahead.aheadCount !== 0) continue;
 
-        const classification = await classifyOwnedLandedEvidenceForSelfHealing(this.options.rootDir, task, ahead.baseRef);
+        const classification = await classifyOwnedLandedEvidenceForSelfHealing(this.options.rootDir, task, ahead.baseRef, this.projectNamespace());
 
         if (classification.kind === "unproven") {
           // FN-4811 follow-up: dedupe across engine restarts. The in-memory Set only
@@ -17276,7 +17294,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       let reconciled = 0;
       for (const task of candidates) {
-        const classification = await classifyOwnedLandedEvidenceForSelfHealing(this.options.rootDir, task, mergeTargetBranch);
+        const classification = await classifyOwnedLandedEvidenceForSelfHealing(this.options.rootDir, task, mergeTargetBranch, this.projectNamespace());
         if (classification.kind === "owned-commit") {
           const mergeCommitMessage = await regenerateBareMergeSubject({
             subject: classification.commit.subject,
@@ -18445,6 +18463,11 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   operator hold (`userPaused`, or a pause whose reason is not the deadlock park) is never lifted. If a
   later pass terminalises the card again, the stall lane parks it again with fresh evidence — this
   clears a park, it does not disarm the detector.
+
+  FNXC:CommitOwnership 2026-11-19-16:51 (RUFU-394):
+  The `(RUFU-391)` above is the id as written on `36a88363e2` + `65b0dec011`, not this invariant's
+  owner: the card behind that id was created 2h46m after both commits and specifies an unrelated
+  surface. Read the id as a label on the message, and the commit pair as the evidence.
   */
   private async clearStallParkAfterNoVerdictSeed(task: Task, requiredPreMergeStepIds: ReadonlySet<string>): Promise<void> {
     if (!isEngineAuthoredInReviewStallPark(task)) return;
@@ -20978,7 +21001,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             branch-present retry path; FORK-A remains fail-closed when its branch is absent.
             */
             /* FNXC:Workspace 2026-08-15-07:05: Creation time bounds branch-gone trailer recovery against recycled task ids. */
-            if (await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, entry.branch, entry.revertBoundarySha, task.createdAt)) {
+            if (await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, entry.branch, entry.revertBoundarySha, task.createdAt, this.projectNamespace())) {
               landedRepos.push(repoRel);
               continue;
             }
@@ -21769,7 +21792,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
                       resolution: baseResolution,
                       stage: "self-heal",
                     });
-                    safe = await isRepoLanded(repoRootDir, baseResolution.branch, entry.landedSha, task.id, branch, entry.revertBoundarySha, task.createdAt);
+                    safe = await isRepoLanded(repoRootDir, baseResolution.branch, entry.landedSha, task.id, branch, entry.revertBoundarySha, task.createdAt, this.projectNamespace());
                   }
                   if (!safe && entry.baseCommitSha) {
                     const count = await this.execWorkspaceTeardownGit(`git rev-list --count ${shellQuote(entry.baseCommitSha)}..${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
@@ -22828,6 +22851,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             baseBranch,
             taskBranch: task.branch,
             baseCommitSha: task.baseCommitSha,
+            ownership: { taskCreatedAtMs: taskBirthMs(task) },
           });
           if (!landed) continue;
 
@@ -23074,6 +23098,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             baseBranch,
             taskBranch: task.branch,
             baseCommitSha: task.baseCommitSha,
+            ownership: { taskCreatedAtMs: taskBirthMs(task) },
           });
           if (!landed && getPrimaryPrInfo(task)) {
             // Fetch-then-prove: the LOCAL base ref can be stale. When a PR merged
@@ -23095,6 +23120,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
                 baseBranch: refreshedBaseRef,
                 taskBranch: task.branch,
                 baseCommitSha: task.baseCommitSha,
+                ownership: { taskCreatedAtMs: taskBirthMs(task) },
               });
             }
           }
@@ -23454,13 +23480,28 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         const strandedSha = headStdout.trim();
         if (!strandedSha || !this.matchesApprovedAiMergeSha(strandedSha, approvedShas)) continue;
 
-        const { stdout: showStdout } = await execAsync(`git show -s --format=%s%x1f%b ${shellQuote(strandedSha)}`, {
-          cwd: canonicalCandidate,
-          timeout: 30_000,
-          maxBuffer: 1024 * 1024,
+        const { stdout: showStdout } = await execAsync(
+          `git show -s --format=%s%x1f%b%x1f${COMMIT_EPOCH_FORMAT_FIELD} ${shellQuote(strandedSha)}`,
+          {
+            cwd: canonicalCandidate,
+            timeout: 30_000,
+            maxBuffer: 1024 * 1024,
+          },
+        );
+        const [subject = "", body = "", epochRaw = ""] = showStdout.split("\x1f");
+        const epochSeconds = Number(epochRaw.trim());
+        /*
+        FNXC:CommitOwnership 2026-11-19-17:20 (RUFU-394): this sweep LANDS the commit it accepts, so the
+        ownership verdict here is a delivery claim, not a filter. Both facts the sweep already holds —
+        this board's namespace and the card's own `createdAt` — must reach the anchor, or a stranded
+        clean-room commit stamped with an id this board issued after the commit was written gets
+        finalized onto the integration branch and recorded as this card's delivery.
+        */
+        const ownership = getCommitTaskOwnership(task.id, task.lineageId, subject, body, {
+          projectNamespace: this.projectNamespace(),
+          taskCreatedAtMs: taskBirthMs(task),
+          committerEpochMs: Number.isFinite(epochSeconds) && epochSeconds > 0 ? epochSeconds * 1_000 : null,
         });
-        const [subject = "", body = ""] = showStdout.split("\x1f");
-        const ownership = getCommitTaskOwnership(task.id, task.lineageId, subject, body);
         if (!ownership.owned) continue;
 
         const { stdout: tipStdout } = await execAsync(`git rev-parse --verify ${shellQuote(refName)}`, {
@@ -24724,6 +24765,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       isLanded: async ({ repo, repoRootDir, integrationBranch, entry }) => {
         const sha = await findProvenLandedCommit(
           repoRootDir, integrationBranch, entry.landedSha, task.id, entry.branch, entry.revertBoundarySha, task.createdAt,
+          this.projectNamespace(),
         ).catch(() => undefined);
         if (sha) landedProofShas[repo] = sha;
         return Boolean(sha);

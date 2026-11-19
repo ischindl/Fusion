@@ -25,6 +25,16 @@ A verdict-less target consumes a per-(task, gate) rerun budget counted from fixe
 entries (see `MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS`); a missing target stays idle-only and unbudgeted
 exactly as FN-9243 shipped it, so that lane's behavior is byte-stable.
 
+FNXC:CommitOwnership 2026-11-19-16:51 (RUFU-394):
+Every `(RUFU-391)` stamp in this file names the id AS WRITTEN on `36a88363e2` + `65b0dec011`, not an
+owner. RUFU-394 measured this board's id allocator: the last committed `RUFU` reservation at the first
+commit's committer time (2026-09-28T09:17:14Z) was `RUFU-390`, and the `RUFU-391` row was created at
+2026-09-28T12:03:28Z - the stamp named a count that had no card yet, and the card that eventually got
+that id specifies project-default workflow editing (its delivery is `b6ff490934`, CLI/core files) and
+owns none of the behavior below. The stamps stay as the history of what was written; the evidence for
+these guards is the commit pair, which is what `AGENTS.md` and `docs/run-audit.md` now cite. A commit
+that predates the card it names is refused by `getCommitTaskOwnership` (`anachronistic`).
+
 FNXC:VerdictlessRerunEpisode 2026-10-22-17:13:
 That budget is scoped to one review EPISODE, not to the card's lifetime. The original wording said
 "persistent", and persistent-without-a-boundary is what left 10 of 14 rtm3 `in-review` cards dead after
