@@ -1,4 +1,5 @@
 import { isRemediationStep } from "../tasks/remediation-steps.js";
+import { resolveStepRole } from "../tasks/step-role.js";
 import { evaluatePreMergeApprovals } from "./pre-merge-approval.js";
 import {
   evaluateZeroCommitLandingProof,
@@ -80,8 +81,17 @@ export interface NoCommitsNoOpFinalizeEvaluation {
  * `empty-review-input:v1` Code Review). It stands unchanged for remediation provenance and for every card that
  * cannot show its delivery. The clause was the defect RUFU-292 measured: a lexical match on a step TITLE became
  * a gate verdict, and no amount of reviewer sign-off could answer it.
+ *
+ * FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): the regex those two clauses quote is now DELETED from
+ * this file, so they describe the removed classifier rather than shipped code. Step role is answered by
+ * `resolveStepRole` (`tasks/step-role.ts`): an anchored role label at the HEAD of the normalized name, or
+ * structural remediation provenance. RUFU-649 removed the consequence for one evidence shape; RUFU-659 removes
+ * the cause, so a prose implementation title such as "...deliberate and tested" is never in the blocking set at
+ * all and this guard no longer needs a reviewer sign-off to tell an implementation step from a gate. The
+ * blocking half is unchanged: a genuinely skipped verification or remediation step still refuses, and all three
+ * refusal sentences stay byte-identical - only WHICH set a skip lands in moved, which is what makes the
+ * operator-facing sentence true again instead of rewording it.
  */
-const VERIFICATION_STEP_NAME = /test|verif|qa|review/i;
 
 export function evaluateNoCommitsNoOpFinalize(
   task: Pick<Task, "noCommitsExpected" | "steps" | "workflowStepResults" | "repositoryScope">,
@@ -172,8 +182,15 @@ export function evaluateNoCommitsNoOpFinalize(
   }
 
   const skippedSteps = steps.filter((step) => step.status === "skipped");
+  /*
+  FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): the FN-6461 exception below needs POSITIVE evidence that
+  something checked the work, so a done step counts only when its role is the gate role. The deleted substring
+  test also accepted prose like "Add regression tests for the guard", letting a card cite an implementation step
+  as its verification. The tightening is deliberate and strictly narrower: a card whose only verification-looking
+  step is prose-named now falls to the ratio arm instead of `verifiedIntentionalNoOp`.
+  */
   const hasCompletedVerification = steps.some((step) =>
-    step.status === "done" && VERIFICATION_STEP_NAME.test(step.name ?? ""),
+    step.status === "done" && resolveStepRole(step) === "verification",
   );
   /*
   FNXC:NoCommitReviewSignoff 2026-09-30-04:56:
@@ -253,11 +270,18 @@ export function evaluateNoCommitsNoOpFinalize(
     }
 
     /*
-    (2) A step flagged ONLY by the wording of its title. It keeps blocking whenever either proof is missing -
-    no reviewer sign-off, an unproven or dirty tree, an unreadable ahead-count, or commits still ahead - so the
-    FN-8141 anti-laundering invariant is byte-for-byte intact for every card that cannot show its delivery.
+    (2) A step whose declared ROLE is a gate: verification identity, or remediation provenance that arm (1) did
+    not already claim. RUFU-659 replaced the title-word lexicon here, so an implementation step is absent from
+    this set by construction whatever its prose says. The set is strictly SMALLER than the old one and the
+    names that left it are exactly the fix: prose titles that merely contain a gate word mid-sentence
+    ("...deliberate and tested", "Add regression tests for the guard", "Reviewed findings"). Anchored gate names
+    - Testing & Verification, Testing, Verify, QA sign-off, Review - are all still here, so the blocking half is
+    not narrowed. `!reviewedEmptyNoOp` is RUFU-649's landed policy, left in force unchanged: a gate-named skip
+    is excused only for a card whose delivery the single authority proved AND whose reviewer approved the
+    canonical empty input, so the FN-8141 anti-laundering invariant stays byte-for-byte intact for every card
+    that cannot show its delivery.
     */
-    const verificationSkipped = skippedSteps.filter((step) => VERIFICATION_STEP_NAME.test(step.name ?? ""));
+    const verificationSkipped = skippedSteps.filter((step) => resolveStepRole(step) !== "implementation");
     if (verificationSkipped.length > 0 && !reviewedEmptyNoOp) {
       const names = verificationSkipped.map((step) => step.name).join(", ");
       return block(`skipped verification step(s) with no net branch changes: ${names}`);

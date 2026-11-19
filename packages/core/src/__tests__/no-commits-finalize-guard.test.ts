@@ -521,30 +521,47 @@ describe("RUFU-292 symptom: a landed card refused for the wording of a skipped s
       .toMatchObject({ blocked: false, doneCount: 7, incompleteCount: 2 });
   });
 
-  it("blocks the name-flagged skip when the reviewer never signed the empty input", () => {
-    // FN-8141 anti-laundering stays closed: no sign-off, no relaxation, the exact old sentence.
+  it("blocks the implementation skips when the reviewer never signed the empty input", () => {
+    /*
+    FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): the FN-8141 door is unchanged - no sign-off, no pass -
+    but RUFU-659 moved WHICH sentence names it. Both skipped steps here are implementation work, so the refusal
+    states what is actually missing (an operator/reviewer sign-off) instead of asserting skipped verification on
+    a card whose own ledger shows the verification step done. That false sentence was the card's blocker.
+    */
     const result = evaluate(rufu292Card([]));
     expect(result).toMatchObject({ blocked: true });
-    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("no net branch changes and no operator/reviewer sign-off");
     expect(result.reason).toContain("deliberate and tested");
+    expect(result.reason).not.toContain("skipped verification step(s)");
   });
 
   it("blocks when the code review approved a non-empty input, or approved with notes", () => {
+    // Same blocking half, now named by the honest sentence: see the RUFU-659 note on the case above.
     const nonEmpty = evaluate(rufu292Card([emptyInputReview({ reviewInputFingerprint: "a1b2c3d4e5f6" })]));
     expect(nonEmpty).toMatchObject({ blocked: true });
-    expect(nonEmpty.reason).toContain("skipped verification step(s)");
+    expect(nonEmpty.reason).toContain("no operator/reviewer sign-off");
 
     // APPROVE_WITH_NOTES is a real verdict the reviewer emits; FN-9422's sign-off is the bare APPROVE.
     const withNotes = evaluate(rufu292Card([emptyInputReview({ verdict: "APPROVE_WITH_NOTES" })]));
     expect(withNotes).toMatchObject({ blocked: true });
-    expect(withNotes.reason).toContain("skipped verification step(s)");
+    expect(withNotes.reason).toContain("no operator/reviewer sign-off");
   });
 
-  it("blocks a name-flagged skip with commits still ahead", () => {
-    // The delivery authority answers `proven` / `commits-ahead`, so there is no proven legitimate no-op.
-    const result = evaluate(rufu292Card(), evidence({ aheadCommitCount: 1, landingProof: verifyProof() }));
-    expect(result).toMatchObject({ blocked: true });
-    expect(result.reason).toContain("skipped verification step(s)");
+  it("decides a commits-ahead card by its sign-off, never by a word in a step title", () => {
+    /*
+    FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): this case asserted the gate-word title made the card
+    refuse with "skipped verification step(s)" while commits were ahead. That was the lexer deciding. The
+    delivery authority answers `proven` (commits-ahead) for this evidence, so no-op finalization is not this
+    card's question at all, and the sign-off rule decides the skips - the identical answer RUFU-649 already
+    gave a plain-titled card. The blocking half is asserted beside it: the same ledger with no reviewer row
+    still refuses, so nothing here widened a door.
+    */
+    const ahead = evidence({ aheadCommitCount: 1, landingProof: verifyProof() });
+    expect(evaluate(rufu292Card(), ahead)).toMatchObject({ blocked: false });
+
+    const unsigned = evaluate(rufu292Card([]), ahead);
+    expect(unsigned).toMatchObject({ blocked: true });
+    expect(unsigned.reason).toContain("deliberate and tested");
   });
 
   it("blocks a dirty worktree even with the empty-input sign-off", () => {
@@ -684,5 +701,160 @@ describe("RUFU-292 symptom: a landed card refused for the wording of a skipped s
 
     expect(gated).toEqual(plain);
     expect(gated).toMatchObject({ blocked: false });
+  });
+});
+
+/*
+FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659):
+The classifier half of the same wedge. RUFU-649 taught the guard to distrust its own regex when a card can
+show two proofs; RUFU-659 removed the regex, so the sign-off is no longer needed to forgive an
+implementation title. Both halves are pinned here: the symptom passes, and every gate-named skip still
+refuses for the reason the sentence states.
+*/
+describe("RUFU-659: skipped work is classified by step role, never by a substring of its title", () => {
+  const approvedEmptyReview = (): WorkflowStepResult => ({
+    workflowStepId: "code-review",
+    reviewKind: "code",
+    status: "passed",
+    verdict: "APPROVE",
+    reviewInputFingerprint: "empty-review-input:v1",
+  });
+
+  it("finalizes a landed card whose skipped implementation step is named like a gate", () => {
+    // The exact reproduction from the card: refused today with "skipped verification step(s) with no net
+    // branch changes: Destructive reclaim sweeps - make the activation deliberate and tested".
+    const result = evaluateNoCommitsNoOpFinalize({
+      noCommitsExpected: false,
+      steps: namedSteps([
+        ["Plan the reclaim sweep", "done"],
+        ["Wire the guard", "done"],
+        ["Destructive reclaim sweeps - make the activation deliberate and tested", "skipped"],
+        ["Testing & Verification", "done"],
+      ]),
+      workflowStepResults: [approvedEmptyReview()],
+    }, evidence({ aheadCommitCount: 0, worktreeContent: CLEAN_TREE, landingProof: null }));
+
+    expect(result).toMatchObject({ blocked: false });
+    expect(result.reason).toBeUndefined();
+    expect(result).toEqual({ blocked: false, doneCount: 3, incompleteCount: 1 });
+  });
+
+  it("finalizes the same prose-named skip on an ops card with no reviewer row at all", () => {
+    /*
+    This case isolates the classifier from RUFU-649's relaxation. The card is the legacy `noCommitsExpected`
+    ops shape with every non-skipped step done and NO workflowStepResults, so neither proof the RUFU-649 arm
+    cites exists. Under the removed substring test the title's "tested" put this skip in the verification
+    bucket, where that arm refused it unconditionally; under the role vocabulary the step is implementation
+    work and the long-standing ops signature rule answers. Before: "skipped verification step(s) with no net
+    branch changes". After: finalized.
+    */
+    expect(evaluate({
+      noCommitsExpected: true,
+      steps: namedSteps([
+        ["Preflight", "done"],
+        ["Destructive reclaim sweeps - make the activation deliberate and tested", "skipped"],
+        ["Testing & Verification", "done"],
+      ]),
+    })).toEqual({ blocked: false, doneCount: 2, incompleteCount: 1 });
+  });
+
+  it("still refuses every anchored verification name that is skipped", () => {
+    // The half that must NOT soften: each of these is the trailing gate the engine lanes also assert on.
+    for (const name of ["Testing & Verification", "Testing", "Verify", "QA sign-off", "Review"]) {
+      const result = evaluate({
+        noCommitsExpected: false,
+        steps: namedSteps([
+          ["Implement the reclaim sweep", "done"],
+          ["Wire the guard", "done"],
+          [name, "skipped"],
+        ]),
+      });
+      expect(result, name).toMatchObject({ blocked: true });
+      expect(result.reason, name).toContain("skipped verification step(s)");
+      expect(result.reason, name).toContain(name);
+    }
+  });
+
+  it("still refuses a structurally remediation-marked skip whose name carries no gate word", () => {
+    const result = evaluate({
+      noCommitsExpected: false,
+      steps: [
+        { name: "Implement the reclaim sweep", status: "done" as const },
+        {
+          name: "Fix: inverted emptiness proof",
+          status: "skipped" as const,
+          remediation: { wave: 1, gate: "Code Review", gateStepId: "code-review", findingId: "F-1" },
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("Fix: inverted emptiness proof");
+  });
+
+  it("keeps the FN-8141 reverted shape refused under the role vocabulary", () => {
+    const result = evaluate({
+      noCommitsExpected: false,
+      steps: namedSteps([
+        ["Update pi SDK", "done"],
+        ["Wire runtime", "done"],
+        ["Verify Kimi K3", "done"],
+        ["Testing & Verification", "skipped"],
+        ["Documentation & Delivery", "skipped"],
+      ]),
+    });
+
+    expect(result).toMatchObject({ blocked: true, doneCount: 3, incompleteCount: 2 });
+    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("Testing & Verification");
+  });
+
+  it("records the tightening: a prose-named done step no longer buys the verified-no-op exception", () => {
+    /*
+    Stated consequence, not silent collateral. `verifiedIntentionalNoOp` needs POSITIVE completed verification,
+    and the old substring test granted it to "Add regression tests for the guard", an implementation step. The
+    same ledger with the canonical gate name keeps the exception; the prose name now falls to the FN-6461 ratio
+    arm. Stricter is allowed; the reverse would be the FN-8141 laundering shape.
+    */
+    const proseVerification = evaluate({
+      noCommitsExpected: true,
+      steps: namedSteps([
+        ["Preflight", "done"],
+        ["Add regression tests for the guard", "done"],
+        ["Deploy", "skipped"],
+        ["Announce", "skipped"],
+      ]),
+    });
+    expect(proseVerification).toMatchObject({ blocked: true, doneCount: 2, incompleteCount: 2 });
+    expect(proseVerification.reason).toContain("no-commits task skipped/incomplete work outweighs completed work");
+
+    const namedGate = evaluate({
+      noCommitsExpected: true,
+      steps: namedSteps([
+        ["Preflight", "done"],
+        ["Testing & Verification", "done"],
+        ["Deploy", "skipped"],
+        ["Announce", "skipped"],
+      ]),
+    });
+    expect(namedGate).toMatchObject({ blocked: false });
+  });
+
+  it("refuses nothing extra for a card whose only done gate is prose-named but whose skips are benign", () => {
+    /*
+    Boundary of that tightening, measured rather than assumed: the ratio arm only fires when incomplete work
+    ties or outweighs completed work AND the card is `noCommitsExpected`. A commit-expected card with one
+    skipped implementation step and a prose-named done step is unaffected by the narrower role set.
+    */
+    expect(evaluate({
+      noCommitsExpected: false,
+      steps: namedSteps([
+        ["Add regression tests for the guard", "done"],
+        ["Wire the guard", "done"],
+        ["Package the release notes", "skipped"],
+      ]),
+      workflowStepResults: [approvedEmptyReview()],
+    })).toMatchObject({ blocked: false });
   });
 });

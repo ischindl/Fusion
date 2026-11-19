@@ -1023,6 +1023,17 @@ export {
 } from "./tasks/remediation-steps.js";
 export type { RemediationStepInput } from "./tasks/remediation-steps.js";
 /*
+FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): mirrored into BOTH barrels — the engine-core gate
+project resolves `@fusion/core` through THIS file, so an omission here TypeErrors the finalize guard in
+the merge gate. Same named list as index.ts.
+*/
+export {
+  isVerificationRoleStep,
+  normalizeStepName,
+  resolveStepRole,
+  type StepRole,
+} from "./tasks/step-role.js";
+/*
 FNXC:ReviewRevisionWait 2026-09-30-07:57 (RUFU-280 code-review remediation, P1): mirrored into BOTH barrels — `getInReviewStallReason` imports this predicate from `@fusion/core`, which the engine-core gate project resolves through THIS file, so an omission here TypeErrors the stall classifier in the merge gate.
 FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` joined the list with the predicate's broadened clause; the two barrels must carry the identical symbol set or the gate lane diverges from the default one.
 */

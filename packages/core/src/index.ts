@@ -1335,6 +1335,17 @@ export {
 } from "./tasks/remediation-steps.js";
 export type { RemediationStepInput } from "./tasks/remediation-steps.js";
 /*
+FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659): the ONE step-role vocabulary, mirrored into BOTH
+barrels — the engine-core gate project resolves `@fusion/core` through index.gate.ts, so an omission there
+makes every zero-diff finalize lane TypeError. Same named list in both files.
+*/
+export {
+  isVerificationRoleStep,
+  normalizeStepName,
+  resolveStepRole,
+  type StepRole,
+} from "./tasks/step-role.js";
+/*
 FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the authored-REVISE-with-pending-remediation predicate, exported beside the remediation helpers it consumes so the narrow-vs-broad predicate pair stays adjacent.
 FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): the defer horizon is exported because it is the bound a reader needs to interpret the predicate's absence — without it, "this card stopped being deferred" is unanswerable. Same named list in BOTH barrels.
 */

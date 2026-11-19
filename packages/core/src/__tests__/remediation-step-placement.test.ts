@@ -120,4 +120,46 @@ describe("remediation step placement", () => {
     expect(resolveTrailingVerificationStepIndex([step("Step 4: Testing and Verification")])).toBe(0);
     expect(resolveTrailingVerificationStepIndex([])).toBeUndefined();
   });
+
+  /*
+  FNXC:StepRoleVocabulary 2026-11-18-14:53 (RUFU-659):
+  The three cases below pin what converged and what deliberately did not. The predicate above is now the same
+  `resolveStepRole` the finalize guard asks; the selection rule (final step only) is untouched, because
+  `packages/engine/src/execution/step-session-executor.ts` calls it with ONE step and reads `=== 0`.
+  */
+  it("keeps the final-step-only contract after the role convergence", () => {
+    // The resolver never scans backwards: a gate-named step that is not the tail resolves to undefined.
+    expect(resolveTrailingVerificationStepIndex([
+      step("Testing & Verification"),
+      step("Documentation & Delivery"),
+    ])).toBeUndefined();
+    expect(resolveTrailingVerificationStepIndex([
+      step("Implement"),
+      step("Testing & Verification"),
+      step("Fix: wave one", "pending"),
+    ])).toBeUndefined();
+  });
+
+  it("resolves the trailing gate for every anchored role label, not only the two words it knew", () => {
+    // The one deliberate widening the predicate swap causes, named as a consequence: the removed
+    // /(?:testing|verification)/i ignored all five, so these tails never got the executor's
+    // "Run a fresh verification pass after the preceding fixes:" prompt line. They do now.
+    for (const name of ["QA sign-off", "Verify", "Review", "Testing", "Optional Testing & Verification"]) {
+      expect(resolveTrailingVerificationStepIndex([step("Implement"), step(name)]), name).toBe(1);
+    }
+  });
+
+  it("no longer reads a prose implementation tail as the verification occurrence", () => {
+    // "...testing" matched the removed substring pattern; anchored role labels do not match it.
+    expect(resolveTrailingVerificationStepIndex([
+      step("Implement"),
+      step("Add regression testing for the guard"),
+    ])).toBeUndefined();
+  });
+
+  it("still appends the canonical remediation occurrence as the trailing verification step", () => {
+    const plan = planRemediationPlacement([step("Implement"), step("Add regression testing for the guard")], [fix]);
+    expect(resolveTrailingVerificationStepIndex(plan.steps)).toBe(plan.verificationStepIndex);
+    expect(plan.steps.at(-1)).toEqual({ name: REMEDIATION_VERIFICATION_STEP_NAME, status: "pending" });
+  });
 });
