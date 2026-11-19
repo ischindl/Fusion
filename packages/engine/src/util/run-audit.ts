@@ -223,6 +223,22 @@ export type GitMutationType =
   | "merge:auto-prerebase:failed"
   | "merge:layer3:foreign-file-skipped"
   | "merge:layer3:scope-override-bypass"
+  /**
+   * Metadata shape:
+   * ```ts
+   * {
+   *   taskId: string;
+   *   file: string;
+   *   attribution: "trailer" | "subject-prefix" | "bracketed-prefix" | "own-mention";
+   *   commits: string[];   // the own-commit SHAs touching `file` in the merge range
+   * }
+   * ```
+   * Emitted once per ACCEPTED widening — a refused candidate emits no row of this type, so every value
+   * of `attribution` here names an OWN commit and reports what was actually observed. RUFU-669 adds
+   * `own-mention` (a mid-subject id the pre-canonical classifier in this gate answered as foreign) and
+   * fixes the collapse of disagreeing sources, which used to report a literal `"trailer"` nobody had
+   * seen. The key set is unchanged: `{ taskId, file, attribution, commits }`.
+   */
   | "merge:scope:auto-widen"
   | "merge:ai-clean-room"
   | "merge:ai-no-branch"
@@ -1196,7 +1212,26 @@ export type DatabaseMutationType =
      refinement priority nudge with the priority system, so no live engine path emits this event;
      the union member is kept so persisted rows remain readable. */
   | "task:auto-recover-starved-refinement"
-  /** Metadata: { rawDiffFileCount: number; attributedFileCount: number; foreignCommitCount: number; foreignCommitShas: string[]; source: string } */
+  /**
+   * Metadata shape:
+   * ```ts
+   * {
+   *   rawDiffFileCount: number;
+   *   attributedFileCount: number;
+   *   foreignCommitCount: number;
+   *   foreignCommitShas: string[];   // capped at 5; positively-attributed FOREIGN cards only
+   *   nonAttributedCommitCount: number;
+   *   source: "post-session" | "unspecified" | "scope-leak-guard";
+   * }
+   * ```
+   * RUFU-669 records the third bucket separately and pins what `foreignCommitShas` may hold: commits
+   * that name no card at all are counted in `nonAttributedCommitCount` and are NEVER listed in
+   * `foreignCommitShas`, because that array is the operator's answer to "whose work is on this branch".
+   * A card's own commits appear in neither — an own commit must never be reported as contamination, and
+   * when unattributed commits are the only non-own work the row still fires (the file gap is real) but
+   * reports `foreignCommitCount: 0`. The only array key stays `foreignCommitShas`, capped at 5 items and
+   * holding commit SHAs, never subjects.
+   */
   | "task:worktree-contamination-detected"
   /** Metadata: { taskId, pausedAgeMs, blockedFollowerIds: string[], previousPausedReason: string | null } */
   | "task:auto-rebound-paused-scope-decay"

@@ -63,7 +63,7 @@ like the label the operator saw on the source card.
 function undoRestoreSourceLabel(task: Pick<Task, "title" | "description">): string {
   return task.title?.trim() || deriveTaskLabelFromDescription(task.description ?? "", 80);
 }
-import { collectOwnTaskCommitsForRange } from "./branch-attribution.js";
+import { classifyCommitAttribution, collectOwnTaskCommitsForRange } from "./branch-attribution.js";
 import { type IntegrationBranchSettings } from "../merge/integration-branch.js";
 import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "../worktree/workspace-base-branch.js";
 import { createRunAuditor, generateSyntheticRunId, type RunAuditor } from "../util/run-audit.js";
@@ -95,12 +95,16 @@ function quoteShellArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-// FNXC:TaskRevert 2026-07-04-00:00:
-// Reuse branch-attribution.ts's trailer/subject parsing so revert attribution
-// stays consistent with merge-time attribution. Duplicated locally (rather
-// than imported) because branch-attribution.ts's helpers are module-private;
-// the regex/precedence MUST stay identical to branch-attribution.ts's
-// `extractAttributedTaskId` / `extractTaskIdFromSubject` — update both together.
+/*
+FNXC:TaskRevert 2026-11-19-02:48 (RUFU-669):
+RUFU-669 collapses the duplicated SUBJECT parser: `branch-attribution.ts`'s helpers are module-private, so
+this file used to restate the trailer and subject regexes with a "MUST stay identical — update both
+together" note. The trailer parser stays (it is the one authority for the Fusion-authored revert-commit
+trailer below, and `isFusionTaskRevertCommit`/the restore scan must stay TRAILER-ONLY: their subject is
+`revert(fn-xxxx): …`, which a subject-prefix tier would match against the REVERTED card and mislabel), but
+subject attribution now calls the canonical three-way classifier, so revert attribution and merge-time
+attribution cannot drift again.
+*/
 function extractAttributedTaskId(body: string): string | null {
   const trailerPattern = /(?:^|\n)(?:Fusion-Task-Id|Task-Id):\s*(\S+)\s*(?:\n|$)/gim;
   let match: RegExpExecArray | null = null;
@@ -111,18 +115,6 @@ function extractAttributedTaskId(body: string): string | null {
     last = match;
   }
   return last?.[1] ?? null;
-}
-
-function extractTaskIdFromSubject(subject: string): string | null {
-  if (!subject) return null;
-  const conventional =
-    /^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\s*\(([A-Z]+-\d+)\)!?:/i.exec(subject);
-  if (conventional?.[1]) return conventional[1].toUpperCase();
-  const bracketed = /^\s*\[([A-Z]+-\d+)\]/i.exec(subject);
-  if (bracketed?.[1]) return bracketed[1].toUpperCase();
-  const colon = /^\s*([A-Z]+-\d+):/i.exec(subject);
-  if (colon?.[1]) return colon[1].toUpperCase();
-  return null;
 }
 
 function taskIdsMatch(a: string | null, b: string): boolean {
@@ -225,9 +217,9 @@ export async function resolveTaskRevertCommits(
       const [sha = "", subject = "", ...bodyParts] = record.split("\x00");
       if (!sha) continue;
       const body = bodyParts.join("\x00");
-      const trailerAttributedTaskId = extractAttributedTaskId(body);
-      const attributedTaskId = trailerAttributedTaskId ?? extractTaskIdFromSubject(subject);
-      if (taskIdsMatch(attributedTaskId, task.id)) {
+      // RUFU-669: the card's own work includes a commit that names it mid-subject, but a commit whose
+      // trailer names ANOTHER card stays out of the revert set even when its subject mentions this card.
+      if (classifyCommitAttribution({ subject, body, taskId: task.id }).kind === "own") {
         ownCommitShas.push(sha);
       }
     }
@@ -1856,6 +1848,12 @@ export async function resolveTaskRevertRestoreCommits(
     if (!sha) continue;
     if (!subject.trim().toLowerCase().startsWith(revertSubjectPrefix)) continue;
     const body = bodyParts.join("\x00");
+    /*
+    FNXC:TaskRevert 2026-11-19-02:48 (RUFU-669): deliberately TRAILER-ONLY, not the general classifier.
+    A Fusion-authored revert commit's subject is `revert(<reverted-card-id>): …`, so running the subject
+    tiers over it would attribute the revert to the card it REVERTS. This scan answers a narrower
+    question — "did Fusion author this revert commit, for this task" — and only a trailer can prove it.
+    */
     if (!taskIdsMatch(extractAttributedTaskId(body), task.id)) continue;
     shas.push(sha);
   }

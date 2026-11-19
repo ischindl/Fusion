@@ -680,7 +680,18 @@ async function restrictActiveCommittedFilesToOwnTask<T>(
       runGit: input.runGit,
     });
 
-    if (attribution.foreignCommitCount === 0 || attribution.ownCommitShas.length === 0 || attribution.files.length === 0) {
+    /*
+    FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669): hiding stays conservative and its boundary is
+    UNCHANGED — any commit that is not this card's own work (another card's, or labelled by nobody) keeps
+    the panel restricted to the card's own files. What changed is the label: this used to read
+    `foreignCommitCount`, which counted a card's OWN mid-subject commit as another card's work and then hid
+    the files that commit had produced.
+    */
+    if (
+      attribution.foreignCommitCount + attribution.nonAttributedCommitCount === 0 ||
+      attribution.ownCommitShas.length === 0 ||
+      attribution.files.length === 0
+    ) {
       return;
     }
 

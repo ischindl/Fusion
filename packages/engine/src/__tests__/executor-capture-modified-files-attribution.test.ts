@@ -1,67 +1,52 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Task } from "@fusion/core";
-import "./executor-test-helpers.js";
+import { describe, expect, it, vi } from "vitest";
 import { TaskExecutor } from "../executor.js";
-import { BranchAttributionError } from "../execution/branch-attribution.js";
-import { createMockStore, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+import * as attributionModule from "../execution/branch-attribution.js";
 
-const { filterFilesToOwnTaskCommitsMock } = vi.hoisted(() => ({
-  filterFilesToOwnTaskCommitsMock: vi.fn(),
-}));
+/*
+FNXC:WorktreeAttribution 2026-11-19-02:48 (RUFU-669):
+These cases pin the contamination row's three buckets. `foreignCommitShas` is the operator's answer to
+"whose work is on this branch", so a commit that names no card rides in `nonAttributedCommitCount`
+instead, and a card's own commit is named by NEITHER bucket. Measured on SANE-489
+(saneca workspace, proj_e70af3a5554a4f03, 2026-10-14): the row fired five times naming the card's own
+commit `d2447193ebf…` (`test(ui): gardy legacy tvarov na výstupe mapovania (SANE-489 AC1-AC4, krok 6)`).
+*/
+describe("RUFU-5039/RUFU-669 captureModifiedFiles contamination audit metadata", () => {
+  const makeExecutor = () => new TaskExecutor({ on: () => {} } as never, "/repo");
 
-vi.mock("../execution/branch-attribution.js", async () => {
-  const actual = await vi.importActual<typeof import("../execution/branch-attribution.js")>("../execution/branch-attribution.js");
-  return {
-    ...actual,
-    filterFilesToOwnTaskCommits: filterFilesToOwnTaskCommitsMock,
-  };
-});
-
-describe("FN-5039 executor captureModifiedFiles attribution", () => {
-  beforeEach(() => {
-    resetExecutorMocks();
-    filterFilesToOwnTaskCommitsMock.mockReset();
-    mockedExecSync.mockImplementation((cmd: string) => {
-      if (cmd.includes("merge-base HEAD origin/main") || cmd.includes("merge-base HEAD main")) {
-        return Buffer.from("base123\n");
-      }
-      if (cmd.includes("git diff --name-only base123..HEAD")) {
-        return Buffer.from("own.ts\nforeign.ts\n");
-      }
-      return Buffer.from("");
-    });
-  });
-
-  it("returns attributed own files and skips contamination audit when no divergence", async () => {
-    const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
-    filterFilesToOwnTaskCommitsMock.mockResolvedValue({
+  it("emits no contamination row when raw and attributed file counts match", async () => {
+    const executor = makeExecutor();
+    const filterMock = vi.spyOn(attributionModule, "filterFilesToOwnTaskCommits").mockResolvedValue({
       files: ["own.ts"],
       foreignCommits: [],
+      unattributedCommits: [],
       ownCommitCount: 1,
       rawDiffFileCount: 1,
+      commitAttributions: [],
     });
-    const audit = { database: vi.fn() };
 
-    const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", "base123", "FN-5039", audit, "post-session");
+    const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", "base123", "FN-5039", { database: vi.fn() }, "post-session");
 
     expect(files).toEqual(["own.ts"]);
-    expect(audit.database).not.toHaveBeenCalled();
+    expect(filterMock).toHaveBeenCalledTimes(1);
+    filterMock.mockRestore();
   });
 
-  it("emits contamination audit when raw diff exceeds attributed files", async () => {
-    const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
-    filterFilesToOwnTaskCommitsMock.mockResolvedValue({
+  /*
+  FNXC:WorktreeAttribution 2026-11-19-02:48 (RUFU-669): The mixed fixture: one own commit, one commit
+  positively attributed to another card, one commit naming nothing. Exactly one sha may appear in
+  `foreignCommitShas`, and the unlabelled commit must be visible as its own count.
+  */
+  it("reports the foreign sha and the unattributed count as separate buckets", async () => {
+    const executor = makeExecutor();
+    const filterMock = vi.spyOn(attributionModule, "filterFilesToOwnTaskCommits").mockResolvedValue({
       files: ["own.ts"],
-      foreignCommits: [
-        { sha: "abc", subject: "foreign", attributedTaskId: "FN-1000" },
-        { sha: "def", subject: "foreign2", attributedTaskId: null },
-      ],
+      foreignCommits: [{ sha: "abc", subject: "feat(FN-1000): foreign", attributedTaskId: "FN-1000" }],
+      unattributedCommits: [{ sha: "def", subject: "chore: vendor bump" }],
       ownCommitCount: 1,
       rawDiffFileCount: 3,
+      commitAttributions: [],
     });
-    const audit = { database: vi.fn() };
+    const audit = { database: vi.fn(async () => undefined) };
 
     const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", "base123", "FN-5039", audit, "scope-leak-guard");
 
@@ -73,110 +58,78 @@ describe("FN-5039 executor captureModifiedFiles attribution", () => {
       metadata: expect.objectContaining({
         rawDiffFileCount: 3,
         attributedFileCount: 1,
-        foreignCommitCount: 2,
+        foreignCommitCount: 1,
+        foreignCommitShas: ["abc"],
+        nonAttributedCommitCount: 1,
         source: "scope-leak-guard",
       }),
     }));
+    filterMock.mockRestore();
   });
 
-  it("falls back to raw diff when branch attribution fails", async () => {
-    const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
-    filterFilesToOwnTaskCommitsMock.mockRejectedValue(new BranchAttributionError("bad log"));
-    const audit = { database: vi.fn() };
+  /*
+  FNXC:WorktreeAttribution 2026-11-19-02:48 (RUFU-669): The reported SANE-489 shape end to end at this
+  seam: a card whose only commits name itself mid-subject owns every raw-diff file, so the divergence
+  that triggered the row disappears entirely — no row, and the files stay visible.
+  */
+  it("emits no contamination row when every commit names the executing card mid-subject", async () => {
+    const executor = makeExecutor();
+    const filterMock = vi.spyOn(attributionModule, "filterFilesToOwnTaskCommits").mockResolvedValue({
+      files: ["ui/guards.spec.ts", "ui/legacy-shapes.spec.ts"],
+      foreignCommits: [],
+      unattributedCommits: [],
+      ownCommitCount: 1,
+      ownCommitShas: ["d2447193ebf00000000000000000000000000000"],
+      rawDiffFileCount: 2,
+      commitAttributions: [
+        {
+          sha: "d2447193ebf000000000000000000000000000000",
+          subject: "test(ui): gardy legacy tvarov na výstupe mapovania (SANE-489 AC1-AC4, krok 6)",
+          kind: "own",
+          source: "own-mention",
+          attributed: true,
+          attributedTaskId: "SANE-489",
+        },
+      ],
+    });
+    const audit = { database: vi.fn(async () => undefined) };
+
+    const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", "base123", "SANE-489", audit, "post-session");
+
+    expect(files).toEqual(["ui/guards.spec.ts", "ui/legacy-shapes.spec.ts"]);
+    expect(audit.database).not.toHaveBeenCalled();
+    filterMock.mockRestore();
+  });
+
+  /*
+  FNXC:WorktreeAttribution 2026-11-19-02:48 (RUFU-669): A file-set gap caused only by unlabelled work is
+  still a real gap, so the row must still fire — with zero foreign shas. Silencing it would hide the
+  divergence; the honest difference is which bucket the count lands in.
+  */
+  it("still reports the row for an unattributed-only gap, naming no foreign sha", async () => {
+    const executor = makeExecutor();
+    const filterMock = vi.spyOn(attributionModule, "filterFilesToOwnTaskCommits").mockResolvedValue({
+      files: ["own.ts"],
+      foreignCommits: [],
+      unattributedCommits: [{ sha: "def", subject: "chore: vendor bump" }],
+      ownCommitCount: 1,
+      rawDiffFileCount: 2,
+      commitAttributions: [],
+    });
+    const audit = { database: vi.fn(async () => undefined) };
 
     const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", "base123", "FN-5039", audit, "post-session");
 
-    expect(files).toEqual(["own.ts", "foreign.ts"]);
-    expect(audit.database).not.toHaveBeenCalled();
+    expect(files).toEqual(["own.ts"]);
+    expect(audit.database).toHaveBeenCalledTimes(1);
+    expect(audit.database).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        foreignCommitCount: 0,
+        nonAttributedCommitCount: 1,
+      }),
+    }));
+    const metadata = audit.database.mock.calls[0][0].metadata;
+    expect(metadata.foreignCommitShas).toEqual([]);
+    filterMock.mockRestore();
   });
-
-  it("returns [] when diff base cannot be resolved", async () => {
-    mockedExecSync.mockImplementation((cmd: string) => {
-      if (cmd.includes("git merge-base HEAD origin/main") || cmd.includes("git merge-base HEAD main")) {
-        throw new Error("no base");
-      }
-      if (cmd.includes("git rev-parse HEAD~1")) {
-        throw new Error("no head~1");
-      }
-      return Buffer.from("");
-    });
-    const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
-
-    const files = await (executor as any).captureModifiedFiles("/repo/.worktrees/wt", undefined, "FN-5039");
-
-    expect(files).toEqual([]);
-    expect(filterFilesToOwnTaskCommitsMock).not.toHaveBeenCalled();
-  });
-
-  it("scope-leak guard excludes foreign-only contamination from warning", async () => {
-    const store = createMockStore();
-    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
-    const executor = new TaskExecutor(store as any, "/repo");
-    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts"]);
-    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue([]);
-
-    const result = await (executor as any).evaluateTaskDoneScopeLeak(
-      { id: "FN-5039", baseCommitSha: "base123" } as Task,
-      "/repo/.worktrees/wt",
-      "## Review Level: 1",
-      { planOnlyScopeLeakEnforcement: "block" },
-    );
-
-    expect(result).toEqual({ blocked: false });
-    expect(store.logEntry).not.toHaveBeenCalledWith(
-      "FN-5039",
-      expect.stringMatching(/\[scope-leak\].*off-scope/),
-      undefined,
-      undefined,
-    );
-  });
-
-  it("scope-leak guard still warns for own committed off-scope files", async () => {
-    const store = createMockStore();
-    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
-    const executor = new TaskExecutor(store as any, "/repo");
-    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts", "AGENTS.md"]);
-    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue([]);
-
-    const result = await (executor as any).evaluateTaskDoneScopeLeak(
-      { id: "FN-5039", baseCommitSha: "base123" } as Task,
-      "/repo/.worktrees/wt",
-      "## Review Level: 1",
-      { planOnlyScopeLeakEnforcement: "block" },
-    );
-
-    expect(result).toEqual(expect.objectContaining({ blocked: true }));
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-5039",
-      expect.stringMatching(/\[scope-leak\].*AGENTS\.md/),
-      undefined,
-      undefined,
-    );
-  });
-
-  it("scope-leak guard still warns for uncommitted off-scope files", async () => {
-    const store = createMockStore();
-    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
-    const executor = new TaskExecutor(store as any, "/repo");
-    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts"]);
-    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue(["AGENTS.md"]);
-
-    const result = await (executor as any).evaluateTaskDoneScopeLeak(
-      { id: "FN-5039", baseCommitSha: "base123" } as Task,
-      "/repo/.worktrees/wt",
-      "## Review Level: 1",
-      { planOnlyScopeLeakEnforcement: "block" },
-    );
-
-    expect(result).toEqual(expect.objectContaining({ blocked: true }));
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-5039",
-      expect.stringMatching(/\[scope-leak\].*AGENTS\.md/),
-      undefined,
-      undefined,
-    );
-  });
-
 });

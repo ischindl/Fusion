@@ -654,6 +654,13 @@ export default defineConfig({
       Server-lane tests reach the engine logger through the `@fusion/engine` source alias, and that logger imports the NUL-marker emission gate by subpath. Ordered before the broader `@fusion/core` alias, which Vite would otherwise apply by prefix and fail to resolve.
       */
       "@fusion/core/log-severity-markers": resolve(__dirname, "../core/src/process/log-severity-markers.ts"),
+      /*
+      FNXC:CommitAttribution 2026-11-19-03:57 (RUFU-669):
+      The done-range attribution route takes the task-id grammar through this leaf instead of the barrel,
+      so the tests resolve the same module production ships. Ordered before the broader `@fusion/core`
+      alias, which Vite would otherwise apply by prefix and fail to resolve.
+      */
+      "@fusion/core/task-id-token": resolve(__dirname, "../core/src/tasks/task-id-token.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),
       "@fusion/engine": resolve(__dirname, "../engine/src/index.ts"),
       "@fusion/plugin-sdk": resolve(__dirname, "../plugin-sdk/src/index.ts"),

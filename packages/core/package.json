@@ -24,6 +24,11 @@
       "source": "./src/cli/gh-cli.ts",
       "import": "./dist/cli/gh-cli.js"
     },
+    "./task-id-token": {
+      "types": "./src/tasks/task-id-token.ts",
+      "source": "./src/tasks/task-id-token.ts",
+      "import": "./dist/tasks/task-id-token.js"
+    },
     "./task-delete-attribution": {
       "types": "./src/task-delete-attribution.ts",
       "source": "./src/task-delete-attribution.ts",

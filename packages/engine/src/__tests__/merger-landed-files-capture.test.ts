@@ -65,6 +65,7 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 1,
       ownCommitShas: ["ownsha1"],
       rawDiffFileCount: 67,
+      unattributedCommits: [],
       commitAttributions: [],
     });
     mockedExecSync.mockImplementation((cmd: any) => {
@@ -100,6 +101,7 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 0,
       ownCommitShas: [],
       rawDiffFileCount: 66,
+      unattributedCommits: [],
       commitAttributions: [],
     });
     mockedExecSync.mockImplementation((cmd: any) => {
@@ -140,11 +142,13 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 0,
       ownCommitShas: [],
       rawDiffFileCount: 0,
+      unattributedCommits: [],
       commitAttributions: [],
     });
     vi.spyOn(attributionModule, "collectOwnTaskCommitsForRange").mockResolvedValue({
       ownCommitCount: sourceOwnCommitCount,
       ownCommitShas: sourceOwnCommitCount > 0 ? ["own1", "own2"] : [],
+      unattributedCommitCount: 0,
     });
 
     const capturePromise = mergerModule.captureRebaseLandedFilesForTask({
@@ -180,6 +184,7 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 0,
       ownCommitShas: [],
       rawDiffFileCount: 0,
+      unattributedCommits: [],
       commitAttributions: [],
     });
     vi.spyOn(attributionModule, "collectOwnTaskCommitsForRange").mockRejectedValue(new Error("missing ref"));
@@ -206,9 +211,10 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 0,
       ownCommitShas: [],
       rawDiffFileCount: 0,
+      unattributedCommits: [],
       commitAttributions: [],
     });
-    vi.spyOn(attributionModule, "collectOwnTaskCommitsForRange").mockResolvedValue({ ownCommitCount: 1, ownCommitShas: ["own1"] });
+    vi.spyOn(attributionModule, "collectOwnTaskCommitsForRange").mockResolvedValue({ ownCommitCount: 1, ownCommitShas: ["own1"], unattributedCommitCount: 0 });
     mockedExecSync.mockImplementation((cmd: any) => {
       const s = String(cmd);
       if (s.includes("rev-parse --verify")) return Buffer.from("abc123");
@@ -239,6 +245,7 @@ describe("FN-4646 aiMergeTask landedFiles capture", () => {
       ownCommitCount: 3,
       ownCommitShas: ["ownsha1", "ownsha2", "ownsha3"],
       rawDiffFileCount: 3,
+      unattributedCommits: [],
       commitAttributions: [],
     });
     mockedExecSync.mockImplementation((cmd: any) => {

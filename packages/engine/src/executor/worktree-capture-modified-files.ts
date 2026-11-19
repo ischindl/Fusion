@@ -34,6 +34,17 @@ export async function captureModifiedFiles(
       });
       const divergence = attributed.rawDiffFileCount - attributed.files.length;
       if (divergence > 0) {
+        /*
+        FNXC:WorktreeAttribution 2026-11-19-02:48 (RUFU-669):
+        Measured on SANE-489 (saneca workspace, proj_e70af3a5554a4f03, 2026-10-14): this row fired five
+        times whose `foreignCommitShas` named `d2447193ebf…`, a commit whose OWN subject names the card
+        (`test(ui): gardy legacy tvarov na výstupe mapovania (SANE-489 AC1-AC4, krok 6)`) — and an
+        untrailered commit with no id anywhere rode in the same array. Both buckets are now separate:
+        `foreignCommitShas` answers "whose work is on this branch" and `nonAttributedCommitCount` answers
+        "how much of it is simply unlabelled". The trigger, the emitted `files`, and the
+        warn-then-continue control flow are UNCHANGED — unattributed files stay hidden, they are just no
+        longer called another card's work.
+        */
         await audit?.database({
           type: "task:worktree-contamination-detected",
           target: taskId,
@@ -42,11 +53,12 @@ export async function captureModifiedFiles(
             attributedFileCount: attributed.files.length,
             foreignCommitCount: attributed.foreignCommits.length,
             foreignCommitShas: attributed.foreignCommits.slice(0, 5).map((commit) => commit.sha),
+            nonAttributedCommitCount: attributed.unattributedCommits.length,
             source,
           },
         });
         executorLog.warn(
-          `${taskId}: contamination detected — raw diff ${attributed.rawDiffFileCount} files, attributed ${attributed.files.length} (foreign commits: ${attributed.foreignCommits.length})`,
+          `${taskId}: contamination detected — raw diff ${attributed.rawDiffFileCount} files, attributed ${attributed.files.length} (foreign commits: ${attributed.foreignCommits.length}, unattributed commits: ${attributed.unattributedCommits.length})`,
         );
       }
       return attributed.files;

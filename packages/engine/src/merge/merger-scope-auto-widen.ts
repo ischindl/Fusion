@@ -6,12 +6,22 @@ import { promisify } from "node:util";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
 import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
 
-import { toTaskToken } from "../merger.js";
+import { classifyCommitAttribution } from "../execution/branch-attribution.js";
 
 const execAsync = promisify(exec);
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
 
-type Attribution = "subject-prefix" | "bracketed-prefix" | "trailer";
+/*
+FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669):
+The fourth value is what this gate was refusing SANE-489's own file for. `own-mention` names a commit
+whose subject carries the executing card's id outside prefix position — e.g. the measured
+`test(ui): gardy legacy tvarov na výstupe mapovania (SANE-489 AC1-AC4, krok 6)` — which the private
+classifier this file used to own answered `null`, and `null` was refused as `foreign-commit`, so Layer 3
+took MAIN'S BYTES for a file the card had itself written. The refusal vocabulary and the
+`merge:scope:auto-widen` metadata key set are deliberately UNCHANGED: the gate's decision changes, its
+contract does not.
+*/
+type Attribution = "subject-prefix" | "bracketed-prefix" | "trailer" | "own-mention";
 export type ScopeAutoWidenRefusalReason = "foreign-commit" | "claimed-by-other-task" | "ignored-path" | "no-attribution";
 
 export interface ScopeAutoWidenAccepted {
@@ -52,35 +62,25 @@ function quoteArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function attributedBySubjectPrefix(subject: string, taskToken: string): boolean {
-  const conventional = /^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\s*\(([A-Z]+-\d+)\)!?:/i.exec(subject);
-  if (conventional?.[1] && toTaskToken(conventional[1]) === taskToken) return true;
-  const legacyColon = /^\s*([A-Z]+-\d+):/i.exec(subject);
-  return !!legacyColon?.[1] && toTaskToken(legacyColon[1]) === taskToken;
-}
+/*
+FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669):
+Three private `attributedBy*` parsers and a private `classifyCommitAttribution` used to live here — the
+fourth copy of the attribution grammar in the product, and the only one whose `null` answer carried the
+weight of a merge refusal. They are gone; the canonical classifier in
+`packages/engine/src/execution/branch-attribution.ts` is the single authority, so a commit this gate calls
+foreign can never disagree with the contamination row written for the same commit.
+*/
 
-function attributedByBracketedPrefix(subject: string, taskToken: string): boolean {
-  const bracketed = /^\s*\[([A-Z]+-\d+)\]/i.exec(subject);
-  return !!bracketed?.[1] && toTaskToken(bracketed[1]) === taskToken;
-}
-
-function attributedByTrailer(body: string, taskToken: string): boolean {
-  const trailerPattern = /(?:^|\n)(?:Fusion-Task-Id|Task-Id):\s*(\S+)\s*(?:\n|$)/gim;
-  let match: RegExpExecArray | null = null;
-  let last: RegExpExecArray | null = null;
-  while (true) {
-    match = trailerPattern.exec(body);
-    if (!match) break;
-    last = match;
+/**
+ * RUFU-669: when a file's commits agree, report it; when they disagree, report the most authoritative
+ * source that was ACTUALLY observed. The collapsed value used to be a literal `"trailer"` nobody had
+ * seen, which made an own-mention-only range look like a trailer-attributed one in `merge:scope:auto-widen`.
+ */
+function collapseObservedAttribution(observed: Attribution[]): Attribution {
+  for (const candidate of ["trailer", "subject-prefix", "bracketed-prefix", "own-mention"] as const) {
+    if (observed.includes(candidate)) return candidate;
   }
-  return !!last?.[1] && toTaskToken(last[1]) === taskToken;
-}
-
-function classifyCommitAttribution(subject: string, body: string, taskToken: string): Attribution | null {
-  if (attributedByTrailer(body, taskToken)) return "trailer";
-  if (attributedBySubjectPrefix(subject, taskToken)) return "subject-prefix";
-  if (attributedByBracketedPrefix(subject, taskToken)) return "bracketed-prefix";
-  return null;
+  return observed[0]!;
 }
 
 async function isGitIgnored(file: string, rootDir: string, execImpl: typeof execAsync): Promise<boolean> {
@@ -114,7 +114,7 @@ export async function evaluateScopeAutoWiden(params: EvaluateScopeAutoWidenParam
   const execImpl = params.execAsyncImpl ?? execAsync;
   const widened: ScopeAutoWidenAccepted[] = [];
   const refused: ScopeAutoWidenRefused[] = [];
-  const taskToken = toTaskToken(task.id || taskId);
+  const attributionTaskId = task.id || taskId;
 
   const allTasks = typeof store.listTasks === "function"
     // FNXC:ListTasksExcludeLog 2026-10-12-16:20 (RUFU-615 tranche 4): this scan never reads task log or markers (no non-logger `.log` token in the file), so `slim` must not pay for hydrating the whole board's log. See list-tasks-slim-excludes-log.test.ts.
@@ -193,26 +193,38 @@ export async function evaluateScopeAutoWiden(params: EvaluateScopeAutoWidenParam
 
     const commits: string[] = [];
     const attributions: Attribution[] = [];
-    let isForeign = false;
+    /*
+    FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669): the gate's conservative direction is UNCHANGED —
+    a file widens only when EVERY commit touching it in the range is this card's own work. What changed
+    is which answers count as "not mine": a commit that names no card at all used to fall in here and
+    take `foreign-commit`, which both mis-accused the work and reported it as another card's. It now
+    refuses `no-attribution`, so the file stays out of the effective scope (main's bytes win, exactly as
+    before) while the audit row stops blaming a card that was never named. Foreign work still refuses
+    hard, and it wins over an unattributed commit in the same range.
+    */
+    let refusal: ScopeAutoWidenRefusalReason | null = null;
     for (const record of records) {
       const [sha = "", subject = "", ...bodyParts] = record.split("\x00");
       const body = bodyParts.join("\x00");
-      const attribution = classifyCommitAttribution(subject, body, taskToken);
-      if (!attribution) {
-        isForeign = true;
+      const verdict = classifyCommitAttribution({ subject, body, taskId: attributionTaskId });
+      if (verdict.kind === "foreign") {
+        refusal = "foreign-commit";
         break;
       }
+      if (verdict.kind === "unattributed") {
+        refusal = "no-attribution";
+        continue;
+      }
       commits.push(sha);
-      attributions.push(attribution);
+      attributions.push(verdict.source as Attribution);
     }
 
-    if (isForeign) {
-      refused.push({ file, reason: "foreign-commit" });
+    if (refusal) {
+      refused.push({ file, reason: refusal });
       continue;
     }
 
-    const attribution = attributions.every((value) => value === attributions[0]) ? attributions[0]! : "trailer";
-    widened.push({ file, attribution, commits });
+    widened.push({ file, attribution: collapseObservedAttribution(attributions), commits });
   }
 
   return { widened, refused };

@@ -109,7 +109,19 @@ function baseRefOf(dir: string): string {
  * (single `git log` enumeration + serial per-sha `git diff-tree --no-commit-id --name-only -r`).
  * The live module must keep returning exactly what this returns for every fixture below.
  * Do not "fix" anything here — it encodes the pre-batching contract byte-for-byte.
+ *
+ * FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669): the ONE thing that changed in this oracle is the
+ * attribution step, and it changed in lockstep with the route: the two-bucket `own | everything-else`
+ * split became the three-way `own | foreign | unattributed` contract, so an unlabelled commit is no
+ * longer counted as another card's work. The BATCHING contract (which files come from which sha, and how
+ * many git calls it costs) is untouched — that is still what this file exists to differential-test.
  */
+const FIXTURE_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+const FIXTURE_PROSE_TOKEN_SOURCE = `${FIXTURE_TOKEN_SOURCE}(?![\\w-])`;
+const FIXTURE_OWN_MENTION_RE = new RegExp(`(?<![\\w-])(${FIXTURE_PROSE_TOKEN_SOURCE})`, "gi");
+const FIXTURE_GENERATED_MERGE_SUBJECT_RE =
+  /^Merge (?:branch|remote-tracking branch|pull request|commit|refs\/heads|refs\/tags|tags?|heads?)\b/i;
+
 function extractAttributedTaskId(body: string): string | null {
   const trailerPattern = /(?:^|\n)(?:Fusion-Task-Id|Task-Id):\s*(\S+)\s*(?:\n|$)/gim;
   let match: RegExpExecArray | null = null;
@@ -129,16 +141,15 @@ function extractTaskIdFromSubject(subject: string): {
   if (!subject) {
     return { attributedTaskId: null, source: "none" };
   }
-  const conventional =
-    /^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\s*\(([A-Z]+-\d+)\)!?:/i.exec(subject);
+  const conventional = new RegExp(`^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\\s*\\((${FIXTURE_TOKEN_SOURCE})\\)!?:`, "i").exec(subject);
   if (conventional?.[1]) {
     return { attributedTaskId: conventional[1].toUpperCase(), source: "subject-prefix" };
   }
-  const bracketed = /^\s*\[([A-Z]+-\d+)\]/i.exec(subject);
+  const bracketed = new RegExp(`^\\s*\\[(${FIXTURE_TOKEN_SOURCE})\\]`, "i").exec(subject);
   if (bracketed?.[1]) {
     return { attributedTaskId: bracketed[1].toUpperCase(), source: "bracketed-prefix" };
   }
-  const colon = /^\s*([A-Z]+-\d+):/i.exec(subject);
+  const colon = new RegExp(`^\\s*(${FIXTURE_TOKEN_SOURCE}):`, "i").exec(subject);
   if (colon?.[1]) {
     return { attributedTaskId: colon[1].toUpperCase(), source: "subject-prefix" };
   }
@@ -149,16 +160,33 @@ function taskIdsMatch(a: string | null, b: string): boolean {
   return a !== null && a.toUpperCase() === b.toUpperCase();
 }
 
+function oracleClassifyCommitAttribution(subject: string, body: string, taskId: string): "own" | "foreign" | "unattributed" {
+  const trailerTaskId = extractAttributedTaskId(body);
+  if (trailerTaskId) return taskIdsMatch(trailerTaskId, taskId) ? "own" : "foreign";
+  const prefix = extractTaskIdFromSubject(subject);
+  if (prefix.attributedTaskId) return taskIdsMatch(prefix.attributedTaskId, taskId) ? "own" : "foreign";
+  if (subject && !FIXTURE_GENERATED_MERGE_SUBJECT_RE.test(subject)) {
+    // Fresh scan per call: a `g` RegExp carries mutable lastIndex state.
+    const scan = new RegExp(FIXTURE_OWN_MENTION_RE.source, "gi");
+    let match: RegExpExecArray | null = null;
+    while ((match = scan.exec(subject)) !== null) {
+      if (taskIdsMatch(match[1] ?? null, taskId)) return "own";
+    }
+  }
+  return "unattributed";
+}
+
 async function referenceFilterFilesToOwnTaskCommits(opts: AttributionOptions): Promise<AttributionResult> {
   const logOutput = await opts.runGit(["log", "--format=%H%x00%s%x00%B%x1e", `${opts.baseRef}..HEAD`]);
 
   if (!logOutput.trim()) {
-    return { files: [], ownCommitShas: [], foreignCommitCount: 0 };
+    return { files: [], ownCommitShas: [], foreignCommitCount: 0, nonAttributedCommitCount: 0 };
   }
 
   const fileSet = new Set<string>();
   const ownCommitShas: string[] = [];
   let foreignCommitCount = 0;
+  let nonAttributedCommitCount = 0;
 
   const records = logOutput
     .split("\x1e")
@@ -170,16 +198,13 @@ async function referenceFilterFilesToOwnTaskCommits(opts: AttributionOptions): P
     if (!sha) continue;
     const body = bodyParts.join("\x00");
 
-    const trailerAttributedTaskId = extractAttributedTaskId(body);
-    const subjectAttribution = trailerAttributedTaskId
-      ? { attributedTaskId: null, source: "none" as const }
-      : extractTaskIdFromSubject(subject);
-    const attributedTaskId = trailerAttributedTaskId ?? subjectAttribution.attributedTaskId;
-
-    if (taskIdsMatch(attributedTaskId, opts.taskId)) {
+    const kind = oracleClassifyCommitAttribution(subject, body, opts.taskId);
+    if (kind === "own") {
       ownCommitShas.push(sha);
-    } else {
+    } else if (kind === "foreign") {
       foreignCommitCount += 1;
+    } else {
+      nonAttributedCommitCount += 1;
     }
   }
 
@@ -197,6 +222,7 @@ async function referenceFilterFilesToOwnTaskCommits(opts: AttributionOptions): P
     files: [...fileSet].sort((a, b) => a.localeCompare(b)),
     ownCommitShas,
     foreignCommitCount,
+    nonAttributedCommitCount,
   };
 }
 
@@ -247,10 +273,12 @@ describe("filterFilesToOwnTaskCommits differential oracle (RUFU-207)", () => {
     // git renders non-ASCII paths quoted-octal by default (core.quotePath); accept either
     // rendering — the point is both sides of the oracle produce the same string.
     expect(result.files.some((f) => f === "sp ace/unié.md" || f.startsWith('"sp ace/uni'))).toBe(true);
-    // Foreign commits contribute nothing.
+    // Foreign commits contribute nothing, and neither do the unlabelled ones: the FILE set is
+    // unchanged by RUFU-669, only the bucket these two vendor commits are counted in.
     expect(result.files).not.toContain("vendor.ts");
     expect(result.files).not.toContain("side.ts");
-    expect(result.foreignCommitCount).toBe(2);
+    expect(result.foreignCommitCount).toBe(0);
+    expect(result.nonAttributedCommitCount).toBe(2);
   });
 
   it("matches the oracle when a merge commit in the own set has a single-parent sibling with the same file", async () => {
@@ -297,7 +325,13 @@ describe("filterFilesToOwnTaskCommits differential oracle (RUFU-207)", () => {
     expect(result.files).toEqual(["dupe.ts", "other.ts"]);
   });
 
-  it("short-circuits a foreign-only range with one call and no file enumeration", async () => {
+  /*
+  FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669): renamed from "short-circuits a foreign-only range".
+  The fixture commit names no card, so it is unattributed rather than another card's work; the short-circuit
+  itself (one enumeration call, zero name-resolution calls, no files) is the RUFU-207 economy contract and
+  stays exactly as it was. A genuinely FOREIGN-only range is asserted next to it.
+  */
+  it("short-circuits a no-own-commit range with one call and no file enumeration", async () => {
     const dir = makeRepo();
     commitFiles(dir, "unrelated upstream commit", { "foreign.ts": "1\n" });
     const runner = makeRecordingRunner(dir);
@@ -307,9 +341,23 @@ describe("filterFilesToOwnTaskCommits differential oracle (RUFU-207)", () => {
       taskId: "T-7",
       runGit: runner.runGit,
     });
-    expect(result).toEqual({ files: [], ownCommitShas: [], foreignCommitCount: 1 });
+    expect(result).toEqual({ files: [], ownCommitShas: [], foreignCommitCount: 0, nonAttributedCommitCount: 1 });
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls.some((args) => args.includes("--name-only"))).toBe(false);
+  });
+
+  it("short-circuits a range holding only another card's commits, counted foreign", async () => {
+    const dir = makeRepo();
+    commitFiles(dir, "feat(FN-1000): upstream import", { "foreign.ts": "1\n" });
+    const runner = makeRecordingRunner(dir);
+    const result = await filterFilesToOwnTaskCommits({
+      worktreePath: dir,
+      baseRef: "HEAD~1",
+      taskId: "T-7",
+      runGit: runner.runGit,
+    });
+    expect(result).toEqual({ files: [], ownCommitShas: [], foreignCommitCount: 1, nonAttributedCommitCount: 0 });
+    expect(runner.calls).toHaveLength(1);
   });
 
   it("short-circuits an empty range with one call", async () => {
@@ -321,7 +369,7 @@ describe("filterFilesToOwnTaskCommits differential oracle (RUFU-207)", () => {
       taskId: "T-7",
       runGit: runner.runGit,
     });
-    expect(result).toEqual({ files: [], ownCommitShas: [], foreignCommitCount: 0 });
+    expect(result).toEqual({ files: [], ownCommitShas: [], foreignCommitCount: 0, nonAttributedCommitCount: 0 });
     expect(runner.calls).toHaveLength(1);
   });
 
@@ -570,5 +618,125 @@ describe("filterFilesToOwnTaskCommits attribution cache (RUFU-207 Step 3)", () =
     expect(pairRunner.calls).toHaveLength(2);
     const oracleRunner = makeRecordingRunner(dir);
     expect(first).toEqual(await referenceFilterFilesToOwnTaskCommits(attributionOpts(dir, oracleRunner.runGit, baseRef)));
+  });
+});
+
+/*
+FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669):
+Shared attribution fixture table — the SAME table text lives in
+`packages/engine/src/__tests__/branch-attribution.test.ts` over the canonical `classifyCommitAttribution`.
+Here it runs through this route's real-git seam, because the route keeps a LOCAL copy of the contract (its
+spawn economy is route-local) and a copy is exactly what needs a second witness. Change one side and the
+other stops describing the same contract; keep both tables byte-identical.
+*/
+type AttributionFixture = {
+  name: string;
+  subject: string;
+  body: string;
+  taskId: string;
+  kind: "own" | "foreign" | "unattributed";
+};
+
+const ATTRIBUTION_FIXTURES: AttributionFixture[] = [
+  {
+    name: "own-mention",
+    subject: "test(ui): gardy legacy tvarov na výstupe mapovania (SANE-489 AC1-AC4, krok 6)",
+    body: "",
+    taskId: "SANE-489",
+    kind: "own",
+  },
+  {
+    name: "own-prefix",
+    subject: "feat(SANE-489): x",
+    body: "",
+    taskId: "SANE-489",
+    kind: "own",
+  },
+  {
+    name: "unattributed",
+    subject: "chore: vendor bump",
+    body: "",
+    taskId: "SANE-489",
+    kind: "unattributed",
+  },
+  {
+    name: "foreign",
+    subject: "feat(OTHER-9): x",
+    body: "",
+    taskId: "SANE-489",
+    kind: "foreign",
+  },
+  {
+    name: "trailer-names-own-card-under-a-foreign-subject",
+    subject: "feat(OTHER-9): x",
+    body: "Fusion-Task-Id: SANE-489",
+    taskId: "SANE-489",
+    kind: "own",
+  },
+  {
+    name: "trailer-beats-mention",
+    subject: "test(ui): zdieľané tvary (SANE-489 AC2, krok 3)",
+    body: "Fusion-Task-Id: OTHER-9",
+    taskId: "SANE-489",
+    kind: "foreign",
+  },
+  {
+    name: "longer-number",
+    subject: "chore: bump vendored SANE-4890 shim",
+    body: "",
+    taskId: "SANE-489",
+    kind: "unattributed",
+  },
+  {
+    name: "merge-subject",
+    subject: "Merge branch 'main' into fusion/sane-489",
+    body: "",
+    taskId: "SANE-489",
+    kind: "unattributed",
+  },
+];
+
+function commitFilesWithBody(dir: string, subject: string, body: string, files: Record<string, string>): string {
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(dir, rel);
+    const parent = dirname(abs);
+    if (parent !== dir) mkdirSync(parent, { recursive: true });
+    writeFileSync(abs, content);
+    git(dir, ["add", "--", rel]);
+  }
+  git(dir, ["commit", "-qm", subject, "-m", body]);
+  return git(dir, ["rev-parse", "HEAD"]);
+}
+
+describe("RUFU-669 done-range attribution buckets (shared fixture table)", () => {
+  it("classifies every table row through the real-git route seam", async () => {
+    const dir = makeRepo();
+    const baseRef = baseRefOf(dir);
+    for (const [index, fixture] of ATTRIBUTION_FIXTURES.entries()) {
+      const files = { [`fixture-${index}.ts`]: `export const n = ${index};\n` };
+      if (fixture.body) commitFilesWithBody(dir, fixture.subject, fixture.body, files);
+      else commitFiles(dir, fixture.subject, files);
+    }
+
+    const runner = makeRecordingRunner(dir);
+    const result = await filterFilesToOwnTaskCommits({
+      worktreePath: dir,
+      baseRef,
+      taskId: "SANE-489",
+      runGit: runner.runGit,
+    });
+
+    const countOf = (kind: AttributionFixture["kind"]) => ATTRIBUTION_FIXTURES.filter((f) => f.kind === kind).length;
+    expect(result.ownCommitShas).toHaveLength(countOf("own"));
+    expect(result.foreignCommitCount).toBe(countOf("foreign"));
+    expect(result.nonAttributedCommitCount).toBe(countOf("unattributed"));
+    // Only the card's own commits contribute files, so the foreign and unattributed fixture files stay
+    // hidden — the conservative file set RUFU-669 deliberately did NOT change.
+    expect(result.files).toEqual(["fixture-0.ts", "fixture-1.ts", "fixture-4.ts"]);
+
+    const oracleRunner = makeRecordingRunner(dir);
+    expect(result).toEqual(
+      await referenceFilterFilesToOwnTaskCommits({ worktreePath: dir, baseRef, taskId: "SANE-489", runGit: oracleRunner.runGit }),
+    );
   });
 });

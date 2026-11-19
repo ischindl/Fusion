@@ -1,4 +1,14 @@
-type AttributionSource = "trailer" | "subject-prefix" | "bracketed-prefix" | "none";
+/*
+FNXC:CommitAttribution 2026-11-19-03:57 (RUFU-669):
+This route takes core's task-id grammar through its `@fusion/core/task-id-token` LEAF export rather than
+the package barrel. The route's whole design is spawn economy (see below), and the barrel would drag
+core's full module initialisation into the API server for the sake of two string constants; the leaf
+imports nothing at all. Same single dictionary either way — a second grammar literal is what RUFU-292 /
+RUFU-352 / RUFU-730 forbid.
+*/
+import { TASK_ID_TOKEN_PROSE_SOURCE, TASK_ID_TOKEN_SOURCE } from "@fusion/core/task-id-token";
+
+type AttributionSource = "trailer" | "subject-prefix" | "bracketed-prefix" | "own-mention" | "none";
 
 /*
 FNXC:TaskDiffAttribution 2026-09-09-22:05:
@@ -106,7 +116,39 @@ export interface DoneRangeAttributionResult {
   files: string[];
   ownCommitShas: string[];
   foreignCommitCount: number;
+  /**
+   * RUFU-669: commits in the range that name no card at all. Kept apart from `foreignCommitCount`
+   * because the count drives a display decision (hide what is not the card's own work) and only the
+   * foreign count used to exist — which made a card's own mid-subject commit look like another card's
+   * work and hid the card's own files from the Changes panel.
+   */
+  nonAttributedCommitCount: number;
 }
+
+/*
+FNXC:CommitAttribution 2026-11-19-02:48 (RUFU-669):
+This file is a DELIBERATE local copy of the engine's canonical attribution contract — its master is
+`packages/engine/src/execution/branch-attribution.ts` (`classifyCommitAttribution`), and
+`packages/engine/src/__tests__/branch-attribution.test.ts` holds the shared fixture table this route must
+keep answering identically. It stays local because the route's spawn economy is its own (one `git log`
+enumeration plus one batched name-resolution call, cached on the own-sha set — see RUFU-207 above) and
+importing the engine lane here would drag that module graph into the dashboard's route registrar. The
+classification itself adds ZERO git spawns: it is pure string work over the enumeration already taken.
+
+Ordered contract, first match wins: trailer -> subject prefix/bracket -> word-bounded mention of THIS
+card (may only rescue into own, never accuse another card) -> unattributed. A commit that names no card is
+NEVER counted foreign; git-generated merge subjects are never rescued, because the branch name they quote
+carries the card id.
+*/
+const OWN_MENTION_SCAN_SOURCE = `(?<![\\w-])(${TASK_ID_TOKEN_PROSE_SOURCE})`;
+const CONVENTIONAL_SUBJECT_SCOPE_RE = new RegExp(
+  `^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\\s*\\((${TASK_ID_TOKEN_SOURCE})\\)!?:`,
+  "i",
+);
+const BRACKETED_SUBJECT_PREFIX_RE = new RegExp(`^\\s*\\[(${TASK_ID_TOKEN_SOURCE})\\]`, "i");
+const LEGACY_COLON_PREFIX_RE = new RegExp(`^\\s*(${TASK_ID_TOKEN_SOURCE}):`, "i");
+const GENERATED_MERGE_SUBJECT_RE =
+  /^Merge (?:branch|remote-tracking branch|pull request|commit|refs\/heads|refs\/tags|tags?|heads?)\b/i;
 
 function extractAttributedTaskId(body: string): string | null {
   const trailerPattern = /(?:^|\n)(?:Fusion-Task-Id|Task-Id):\s*(\S+)\s*(?:\n|$)/gim;
@@ -128,23 +170,65 @@ function extractTaskIdFromSubject(subject: string): {
     return { attributedTaskId: null, source: "none" };
   }
 
-  const conventional =
-    /^(?:feat|fix|test|chore|docs|refactor|perf|build|ci|style|revert)\s*\(([A-Z]+-\d+)\)!?:/i.exec(subject);
+  const conventional = CONVENTIONAL_SUBJECT_SCOPE_RE.exec(subject);
   if (conventional?.[1]) {
     return { attributedTaskId: conventional[1].toUpperCase(), source: "subject-prefix" };
   }
 
-  const bracketed = /^\s*\[([A-Z]+-\d+)\]/i.exec(subject);
+  const bracketed = BRACKETED_SUBJECT_PREFIX_RE.exec(subject);
   if (bracketed?.[1]) {
     return { attributedTaskId: bracketed[1].toUpperCase(), source: "bracketed-prefix" };
   }
 
-  const colon = /^\s*([A-Z]+-\d+):/i.exec(subject);
+  const colon = LEGACY_COLON_PREFIX_RE.exec(subject);
   if (colon?.[1]) {
     return { attributedTaskId: colon[1].toUpperCase(), source: "subject-prefix" };
   }
 
   return { attributedTaskId: null, source: "none" };
+}
+
+/** Tier 3: a word-bounded mention of THIS card elsewhere in the subject. Rescue-only. */
+function findOwnMentionInSubject(subject: string, taskId: string): boolean {
+  if (!subject || !taskId) return false;
+  if (GENERATED_MERGE_SUBJECT_RE.test(subject)) return false;
+  // Fresh instance per call: a `g` RegExp carries mutable lastIndex state.
+  const scan = new RegExp(OWN_MENTION_SCAN_SOURCE, "gi");
+  let match: RegExpExecArray | null = null;
+  while ((match = scan.exec(subject)) !== null) {
+    if (taskIdsMatch(match[1] ?? null, taskId)) return true;
+  }
+  return false;
+}
+
+/**
+ * The three-way verdict, mirroring `classifyCommitAttribution` in
+ * `packages/engine/src/execution/branch-attribution.ts`. Returns `"own"`, `"foreign"`, or `"unattributed"`.
+ */
+function classifyCommitAttribution(input: { subject: string; body: string; taskId: string }): {
+  kind: "own" | "foreign" | "unattributed";
+  source: AttributionSource;
+} {
+  const { subject, body, taskId } = input;
+
+  const trailerTaskId = extractAttributedTaskId(body);
+  if (trailerTaskId) {
+    return { kind: taskIdsMatch(trailerTaskId, taskId) ? "own" : "foreign", source: "trailer" };
+  }
+
+  const subjectPrefix = extractTaskIdFromSubject(subject);
+  if (subjectPrefix.attributedTaskId) {
+    return {
+      kind: taskIdsMatch(subjectPrefix.attributedTaskId, taskId) ? "own" : "foreign",
+      source: subjectPrefix.source,
+    };
+  }
+
+  if (findOwnMentionInSubject(subject, taskId)) {
+    return { kind: "own", source: "own-mention" };
+  }
+
+  return { kind: "unattributed", source: "none" };
 }
 
 function taskIdsMatch(a: string | null, b: string): boolean {
@@ -270,11 +354,12 @@ async function runAttribution(opts: DoneRangeAttributionOptions): Promise<DoneRa
   const logOutput = await opts.runGit(["log", "--format=%H%x00%s%x00%B%x1e", `${opts.baseRef}..HEAD`]);
 
   if (!logOutput.trim()) {
-    return { files: [], ownCommitShas: [], foreignCommitCount: 0 };
+    return { files: [], ownCommitShas: [], foreignCommitCount: 0, nonAttributedCommitCount: 0 };
   }
 
   const ownCommitShas: string[] = [];
   let foreignCommitCount = 0;
+  let nonAttributedCommitCount = 0;
 
   const records = logOutput
     .split("\x1e")
@@ -286,24 +371,21 @@ async function runAttribution(opts: DoneRangeAttributionOptions): Promise<DoneRa
     if (!sha) continue;
     const body = bodyParts.join("\x00");
 
-    const trailerAttributedTaskId = extractAttributedTaskId(body);
-    const subjectAttribution = trailerAttributedTaskId
-      ? { attributedTaskId: null, source: "none" as const }
-      : extractTaskIdFromSubject(subject);
-    const attributedTaskId = trailerAttributedTaskId ?? subjectAttribution.attributedTaskId;
-
-    if (taskIdsMatch(attributedTaskId, opts.taskId)) {
+    const verdict = classifyCommitAttribution({ subject, body, taskId: opts.taskId });
+    if (verdict.kind === "own") {
       ownCommitShas.push(sha);
-    } else {
+    } else if (verdict.kind === "foreign") {
       foreignCommitCount += 1;
+    } else {
+      nonAttributedCommitCount += 1;
     }
   }
 
   if (ownCommitShas.length === 0) {
-    // Foreign-only range: today's loop body never runs, so this short-circuit keeps the
+    // No-own-commit range: today's loop body never runs, so this short-circuit keeps the
     // exact old call pattern — one enumeration call, zero name-resolution calls. It also
-    // skips the value cache: the answer re-reads live foreign counts on every re-ask.
-    return { files: [], ownCommitShas, foreignCommitCount };
+    // skips the value cache: the answer re-reads live non-own counts on every re-ask.
+    return { files: [], ownCommitShas, foreignCommitCount, nonAttributedCommitCount };
   }
 
   // Content-addressed value cache: a re-ask of the SAME own-sha set returns cached files
@@ -312,12 +394,12 @@ async function runAttribution(opts: DoneRangeAttributionOptions): Promise<DoneRa
   const cacheKey = [opts.worktreePath, opts.baseRef, ...[...ownCommitShas].sort()].join("\u0000");
   const cached = readOwnFilesCache(cacheKey);
   if (cached) {
-    return { files: [...cached], ownCommitShas, foreignCommitCount };
+    return { files: [...cached], ownCommitShas, foreignCommitCount, nonAttributedCommitCount };
   }
 
   const fileSet = await collectFilesForOwnCommits(ownCommitShas, opts.runGit);
   const files = [...fileSet].sort((a, b) => a.localeCompare(b));
   writeOwnFilesCache(cacheKey, files);
 
-  return { files, ownCommitShas, foreignCommitCount };
+  return { files, ownCommitShas, foreignCommitCount, nonAttributedCommitCount };
 }
