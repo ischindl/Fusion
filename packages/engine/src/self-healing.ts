@@ -319,6 +319,12 @@ import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cl
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { reconcileReleasedOverlapWaits } from "./self-healing/released-overlap-waits.js";
 import { reconcileLaneCapabilityMisbinds } from "./self-healing/lane-capability-reconciliation.js";
+/*
+FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+One shared observation seam for every sweep that catches its own exception, so a crashed recovery pass
+is distinguishable from a healthy pass that found no work without opening the daemon console.
+*/
+import { emitSweepFailureAudit } from "./self-healing/sweep-failure-audit.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import {
   getTaskPlanningOrExecutionLivenessSignal,
@@ -2072,6 +2078,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   same card is reportable again.
   */
   private abandonedPlanningNoActionAudited = new Set<string>();
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+  Bounds the `sweep:pass-failure` / `sweep:candidate-failure` rows per (subject, 6-hour window). A pass
+  that dies every maintenance poll must stay COUNTABLE, not become a row per pass, and the bucket lives
+  inside the key (see `sweepPassFailureKey`) rather than in a separate expiry table. In-process, so a
+  restart inside a window may write one row per window per process — the same honest bound every memo
+  on this manager carries, including the one directly above.
+  */
+  private readonly sweepFailureAuditMemo = new Map<string, number>();
   /** Withheld reclaim reports already written this process, keyed by task/pid/outcome. */
   private planningLifecycleOrphanWithheldAudited = new Set<string>();
   /*
@@ -14062,6 +14077,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   async reconcileAbandonedPlanningSessions(): Promise<number> {
     const ceilingMs = SelfHealingManager.ABANDONED_PLANNING_CLAIM_CEILING_MS;
     const silenceMs = SelfHealingManager.ABANDONED_PLANNING_SESSION_SILENCE_MS;
+    /*
+    FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+    Declared OUTSIDE the try so the pass-level catch can report how many cards already died inside this
+    pass. It is observation only: the `return 0` and every admission condition below are untouched, and
+    a card whose repair threw is still neither reclaimed nor declined by the ladder — it is named.
+    */
+    let candidateFailures = 0;
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause === true || settings.enginePaused === true) return 0;
@@ -14107,6 +14129,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             if (evaluated) repaired += 1;
           } catch (error) {
             log.warn(`reconcileAbandonedPlanningSessions: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+            /*
+            FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+            Before this row a candidate that threw was neither recovered (`task:reconcile-abandoned-planning`)
+            nor declined (`-no-action`) — it produced NO row of any kind, only a console line. The nine-code
+            refusal vocabulary cannot name it either, because the ladder never reached a decision. The loop
+            continues to the next card, exactly as before.
+            */
+            candidateFailures += 1;
+            await emitSweepFailureAudit({
+              sweep: "reconcile-abandoned-planning-sessions",
+              stage: "candidate-repair",
+              taskId: snapshot.id,
+              error,
+              store: this.store,
+              memo: this.sweepFailureAuditMemo,
+            });
           }
         }
         if (tasks.length < 500) break;
@@ -14116,6 +14154,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return repaired;
     } catch (error) {
       log.warn(`reconcileAbandonedPlanningSessions failed: ${error instanceof Error ? error.message : String(error)}`);
+      /*
+      FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+      The pass-level abort. Without it this return `0` is byte-identical on the board to a healthy pass
+      that found no work, which is the defect RUFU-898 removes; the return value itself stays `0` because
+      the step runner consumes it (AC3). The next maintenance pass must still take any card that appeared
+      meanwhile as a candidate — nothing here records state that could poison a later rescue.
+      */
+      await emitSweepFailureAudit({
+        sweep: "reconcile-abandoned-planning-sessions",
+        error,
+        candidateFailureCount: candidateFailures,
+        store: this.store,
+        memo: this.sweepFailureAuditMemo,
+      });
       return 0;
     }
   }
@@ -17984,6 +18036,15 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     const recoverFn = this.options.recoverFailedPreMergeStep;
     if (!recoverFn) return 0;
 
+    /*
+    FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+    This sweep is the ONLY owner that can produce a missing pre-merge verdict (its own no-verdict admission
+    note says so), so a pass that died in its outer catch left the card in `park → no verdict → park`
+    forever with nothing but a console line to show for it. Declared outside the try so the pass-level
+    catch can report how many cards already died; observation only — every admission condition, the
+    `continue`s, and the `return recovered + noVerdictRecovered` / `return 0` shapes are unchanged (AC3).
+    */
+    let candidateFailures = 0;
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
@@ -18087,6 +18148,21 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           }
         } catch (error) {
           log.warn(`Failed no-verdict review recovery skipped for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+          /*
+          FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+          The card this arm failed is named on the board for the first time. It is not a refusal — the
+          ladder never reached a decision — so it is NOT folded into any `-no-action` vocabulary; the
+          console line keeps the exception sentence and the row keeps the card, the sweep, and the arm.
+          */
+          candidateFailures += 1;
+          await emitSweepFailureAudit({
+            sweep: "recover-review-tasks-with-failed-pre-merge-steps",
+            stage: "no-verdict-recovery",
+            taskId: task.id,
+            error,
+            store: this.store,
+            memo: this.sweepFailureAuditMemo,
+          });
         }
       }
 
@@ -18525,6 +18601,22 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           log.error(`Failed to revive ${task.id}: ${errorMessage}`);
+          /*
+          FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+          RUFU-351 already narrates a throwing revival on the card when nothing else did, and its
+          `code: "recovery-threw"` row fires only in that half; when the recovery owner had narrated its
+          own hand-off, this arm wrote no row at all. The `sweep:candidate-failure` row is unconditional
+          for the arm, so "which card's revival threw" is one query for every sweep in the family.
+          */
+          candidateFailures += 1;
+          await emitSweepFailureAudit({
+            sweep: "recover-review-tasks-with-failed-pre-merge-steps",
+            stage: "revive",
+            taskId: task.id,
+            error: err,
+            store: this.store,
+            memo: this.sweepFailureAuditMemo,
+          });
           if (!narrationWitness.narrated) {
             // The exception sentence stays in the engine log; the card only learns that recovery threw.
             await narrateReviewRemediationDecline(task, "recovery-threw", {
@@ -18546,6 +18638,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Failed pre-merge workflow step revival failed: ${errorMessage}`);
+      /*
+      FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+      The shape RUFU-405 already paid for: a missing store seam threw here, the whole pass collapsed into
+      this one console line, and three test assertions lost their meaning "with no visible cause". The
+      fix then repaired the fake and left this catch blind. The row names the pass and how many cards
+      died inside it before it died; the return value stays `0` because the step runner consumes it.
+      */
+      await emitSweepFailureAudit({
+        sweep: "recover-review-tasks-with-failed-pre-merge-steps",
+        error: err,
+        candidateFailureCount: candidateFailures,
+        store: this.store,
+        memo: this.sweepFailureAuditMemo,
+      });
       return 0;
     }
   }

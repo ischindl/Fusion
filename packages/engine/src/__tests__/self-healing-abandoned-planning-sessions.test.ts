@@ -20,6 +20,7 @@ exact shape of the bug being fixed.
 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentLogEntry, Settings, Task, TaskStore, WorkflowWorkItem } from "@fusion/core";
+import { WEDGE_RENOTIFY_COOLDOWN_MS } from "@fusion/core";
 
 const { resolveWorkflowIrForTaskMock } = vi.hoisted(() => ({
   resolveWorkflowIrForTaskMock: vi.fn(),
@@ -660,6 +661,117 @@ describe("reconcileAbandonedPlanningSessions — the reclaim is consumable", () 
     expect(local.store.updateTask.mock.calls).toHaveLength(writesByCompetitor);
     // The release still completed, so the other owner's signal is actually consumable.
     expect(local.processor.getPlanningTaskIds().has(local.task.id)).toBe(false);
+  });
+});
+
+/*
+FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+The second measured instance of the same shape, carried in by RUFU-470's own sweep a day after the first
+was reported: a candidate whose repair threw was neither recovered (`task:reconcile-abandoned-planning`)
+nor declined (`-session-no-action`), so it wrote NO row at all -- and that sweep's nine-code refusal
+vocabulary has no code meaning "this candidate threw", by design. These cases are why the family is
+general rather than one function's patch. The `sweep:` prefix is also deliberately disjoint from
+`task:reconcile-abandoned-planning` above, so a new row can never renumber `reclaimRows()`.
+*/
+const SWEEP_FAILURE_NAME = "reconcile-abandoned-planning-sessions";
+const sweepRows = (rows: Array<Record<string, unknown>>) =>
+  rows.filter((row) => String(row.mutationType).startsWith("sweep:"));
+
+describe("reconcileAbandonedPlanningSessions — a dead pass or a throwing candidate is named", () => {
+  it("names the card whose own repair threw, as neither a reclaim nor a refusal", async () => {
+    const local = harness({
+      releaseImpl: async () => { throw new Error("release seam refused"); },
+    });
+
+    await expect(local.manager.reconcileAbandonedPlanningSessions()).resolves.toBe(0);
+
+    const rows = sweepRows(local.auditRows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      mutationType: "sweep:candidate-failure",
+      agentId: "self-healing",
+      domain: "database",
+      target: "RUFU-470",
+      taskId: "RUFU-470",
+      metadata: { sweep: SWEEP_FAILURE_NAME, taskId: "RUFU-470", stage: "candidate-repair" },
+    }));
+    // The card is NOT counted as reclaimed and NOT counted as declined: it is a third fact.
+    expect(reclaimRows(local.auditRows)).toEqual([]);
+    expect(local.store.updateTask).not.toHaveBeenCalled();
+    expect(local.task.status).toBe("planning");
+    expect(JSON.stringify(rows[0])).not.toContain("release seam refused");
+  });
+
+  it("leaves a healthy sibling reclaim untouched when its neighbour throws", async () => {
+    const local = harness({
+      ir: TWO_FACE_IR,
+      taskOverrides: { column: "backlog" },
+      siblingColumns: ["on-hold"],
+      releaseImpl: async (taskId: string) => {
+        if (taskId === "RUFU-470-FACE-1") throw new Error("one face's release seam died");
+        return { taskId, verdict: "released", releasedEntryCount: 1, terminatedSessionCount: 1 };
+      },
+    });
+
+    // The healthy face is still reclaimed: a throwing candidate poisoned neither the pass nor the count.
+    await expect(local.manager.reconcileAbandonedPlanningSessions()).resolves.toBe(1);
+
+    expect(sweepRows(local.auditRows)).toHaveLength(1);
+    expect(sweepRows(local.auditRows)[0]).toEqual(expect.objectContaining({
+      mutationType: "sweep:candidate-failure",
+      taskId: "RUFU-470-FACE-1",
+    }));
+    expect(reclaimRows(local.auditRows)).toHaveLength(1);
+    expect(local.task.status).toBe("needs-replan");
+    // The refused face keeps its own abandoned status -- the throw reclaimed nothing.
+    expect(local.siblings[0]!.column).toBe("on-hold");
+    expect(local.siblings[0]!.status).toBe("planning");
+  });
+
+  it("names the pass when the settings read throws, and still returns zero", async () => {
+    const local = harness();
+    local.store.getSettings = vi.fn(async () => { throw new Error("settings read failed"); });
+
+    await expect(local.manager.reconcileAbandonedPlanningSessions()).resolves.toBe(0);
+
+    const rows = sweepRows(local.auditRows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      mutationType: "sweep:pass-failure",
+      target: SWEEP_FAILURE_NAME,
+      metadata: { sweep: SWEEP_FAILURE_NAME, outcome: "aborted", candidateFailureCount: 0 },
+    }));
+    expect("taskId" in rows[0]!).toBe(false);
+    expect(JSON.stringify(rows[0])).not.toContain("settings read failed");
+  });
+
+  it("collapses repeats into one row inside a window and re-opens after the cooldown", async () => {
+    const local = harness({ releaseImpl: async () => { throw new Error("sustained seam outage"); } });
+
+    await local.manager.reconcileAbandonedPlanningSessions();
+    await local.manager.reconcileAbandonedPlanningSessions();
+    expect(sweepRows(local.auditRows)).toHaveLength(1);
+
+    vi.setSystemTime(new Date(Date.now() + WEDGE_RENOTIFY_COOLDOWN_MS + 60_000));
+    await local.manager.reconcileAbandonedPlanningSessions();
+    expect(sweepRows(local.auditRows)).toHaveLength(2);
+  });
+
+  it("writes no sweep row for the two healthy shapes: an empty board and a declined candidate", async () => {
+    const empty = harness();
+    empty.store.listTasks = vi.fn(async () => [] as Task[]);
+    await expect(empty.manager.reconcileAbandonedPlanningSessions()).resolves.toBe(0);
+    expect(sweepRows(empty.auditRows)).toEqual([]);
+
+    /*
+    Same aged card with no processor claim: the ladder reaches a DECISION (`triage-owned-unpinned`) and
+    declines it. A refusal is a decision, so it grows no sweep row -- the two classes stay disjoint.
+    */
+    const declined = harness({ noClaim: true });
+    await expect(declined.manager.reconcileAbandonedPlanningSessions()).resolves.toBe(0);
+    expect(sweepRows(declined.auditRows)).toEqual([]);
+    expect(reclaimRows(declined.auditRows).some((row) => String(row.mutationType).endsWith("-no-action")))
+      .toBe(true);
   });
 });
 

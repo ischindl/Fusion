@@ -1744,3 +1744,77 @@ This event sits deliberately OUTSIDE the curated delivery-pipeline catalogue tha
 `run-audit-catalogue.test.ts` locks table-for-table: a planning-lane card is not expected to be refused, so
 a catalogue row would imply a step every card passes through. It is documented as prose here, declared in
 the engine's `DatabaseMutationType`, and emitted under the synthetic `self-healing` agent and run id.
+
+### The self-healing pass that died silently (RUFU-898)
+
+`sweep:pass-failure` records one pass-level abort of a self-healing maintenance sweep, and
+`sweep:candidate-failure` records one card whose own repair threw inside a sweep that carried on. Both are
+authored by `emitSweepFailureAudit` (`packages/engine/src/self-healing/sweep-failure-audit.ts`), a thin
+wrapper over the FN-9175 bounded seam (`emitBoundedRunAudit`, never `createRunAuditor`), so telemetry can
+never become a recovery pass's lifecycle dependency: an absent, throwing, rejecting, or hanging sink leaves
+the pass's return value, its card writes, and its History lines identical.
+
+A sweep that catches its own exception logs one console line and returns `0`. On the board that is
+byte-identical to a healthy pass that found no work, so the only thing an operator could observe was "the
+cards never moved", and the only way to learn a recovery pass had died was to open the daemon console. Two
+instances were measured before this was written, and both were already documented as *fixed* — as test
+failures. RUFU-405's own note in `no-verdict-review-stall-park.test.ts` records that a missing store seam
+threw, this sweep's outer catch collapsed the whole pass into one log line, and three assertions silently
+lost their meaning "with no visible cause"; the card repaired the test fake and left the product's silence
+in place. RUFU-470's sweep then arrived with the same shape one day later: a card whose release seam threw
+was neither recovered (`task:reconcile-abandoned-planning`) nor declined (`-session-no-action`), because
+that family's nine-code refusal vocabulary has no code meaning "this candidate threw" — by design, a
+throwing candidate never reaches a decision.
+
+The two events stay separate because the two states are not interchangeable. A pass-level abort means zero
+cards were reached; a candidate failure means the pass is still working and exactly one named card is not.
+`sweep:pass-failure` therefore carries `sweep`, `outcome: "aborted"`, and `candidateFailureCount` — the
+count of candidate rows this same pass already wrote, which is what distinguishes an early abort (`0`) from
+a pass that died after doing damage. Its `target` is the sweep name and it carries **no** `taskId`: a pass
+spans every card on the board, so naming one card would be a false claim about which one died. A retention
+reader that skips a row with no task is the correct reading of that row, and no card is the subject of a
+whole-board crash. `sweep:candidate-failure` carries `sweep`, `taskId`, and `stage`, with `target` equal to
+the card id.
+
+`sweep` is keyed on the **method** name (`recover-review-tasks-with-failed-pre-merge-steps`), not the
+maintenance-batch registration name (`reconcile-review-revival`), because the method name is the string a
+reader greps. It is a closed literal union (`SWEEP_FAILURE_SWEEPS`) rather than a free string, as is
+`stage` (`SWEEP_FAILURE_STAGES`: `candidate-repair`, `revive`, `no-verdict-recovery`); the metadata builder
+accepts neither field as a free string, so a call site cannot coin a code by typos.
+
+Error class, message, stack, filesystem paths, and SQL fragments never enter either row. The seam accepts
+the caught value as `unknown` and reads nothing from it — a structural claim, so it is proven behaviorally:
+`sweep-failure-audit.test.ts` injects an error whose sentence contains a plausible path, an SQL fragment,
+and a token, then asserts the emitted row deep-equals the three-key shape and that none of those substrings
+appears anywhere in the serialized row. The console line keeps the sentence, exactly as RUFU-273's
+`recovery-threw` precedent does.
+
+Dedup is RUFU-318's bucket, keyed by the shared core `WEDGE_RENOTIFY_COOLDOWN_MS` (6 hours) and not by a
+copy of that constant: the window's bucket is part of the key, so an expired entry expires by key shape
+rather than needing an expiry table. Claim order is prune-then-check — a pass that dies every maintenance
+poll for a week stays bounded at four records a day rather than growing the memo forever — and the memo is
+in-process per `SelfHealingManager`, the same honest bound the neighbouring refusal dedupe carries.
+`sweep:candidate-failure` is keyed by `(card, window)`, so two broken cards produce two rows and one broken
+card produces one per window, never one per pass.
+
+These events are a **third fact** and are deliberately added to no existing `-no-action` reason vocabulary.
+That vocabulary means "this card was examined and a decision was reached"; these rows mean "the examination
+or its repair died", and folding a death into a decision is precisely the laundering this file keeps
+refusing. The nearest neighbour is `reviewRemediationDeclineCode`'s `recovery-threw`, which narrates the
+CARD — and fires only in the half where no other owner narrated its own hand-off, which is exactly the half
+that left the arm with no row at all. That is why the sweep-level row is unconditional for the arm.
+
+To extend the family: any other self-healing pass with a swallow-and-continue catch calls the same two
+helpers, and the whole job is adding its method name to `SWEEP_FAILURE_SWEEPS` and its arm to
+`SWEEP_FAILURE_STAGES`. A new sweep never joins an existing sweep's vocabulary, and the window bound is a
+property of the family, so it is not re-measurable per sweep — the property `sweep-failure-audit.test.ts`
+proves is that a third sweep joining the family inherits the bound without restating it.
+
+Both rows sit deliberately OUTSIDE the curated delivery-pipeline catalogue that `run-audit-catalogue.test.ts`
+locks table-for-table against the category tables above (47 documentation rows, 47 catalogue events — a
+48th documentation row without a catalogue entry breaks that test): a pass that died is not a step every
+card is expected to pass through, and a catalogue row would imply one. They are declared in the engine's
+`DatabaseMutationType` because their emitter reaches the sink through the engine's bounded seam. The `sweep:`
+prefix is also disjoint from every prefix already in use, which is what lets a harness that counts *all*
+audit rows for a sweep keep its expectations — RUFU-405 had to annotate exactly such a count (`reclaimRows`)
+because a new row inside `reconcileAbandonedPlanningSessions` renumbered it.

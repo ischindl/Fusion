@@ -265,8 +265,15 @@ TaskStore surface (no isWatching, audit sink present) so the sweep runs its true
 */
 const sweepSettings = { autoMerge: true, globalPause: false, enginePaused: false };
 
-const createSweepStore = (task: Task) => {
+/*
+FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+Accepts one card or several — a second admitted card is what proves a throwing candidate stops neither
+the pass nor its siblings. `getTask` became id-aware for the same reason.
+*/
+const createSweepStore = (taskOrTasks: Task | Task[]) => {
   const auditRows: Array<Record<string, any>> = [];
+  const rows = Array.isArray(taskOrTasks) ? taskOrTasks : [taskOrTasks];
+  const task = rows[0]!;
   return {
     auditRows,
     task,
@@ -283,8 +290,8 @@ const createSweepStore = (task: Task) => {
     */
     workflowDefinitionEpoch: vi.fn(() => 0),
     workflowSelectionEpoch: vi.fn(() => 0),
-    listTasks: vi.fn(async () => [task]),
-    getTask: vi.fn(async () => task),
+    listTasks: vi.fn(async () => rows),
+    getTask: vi.fn(async (id: string) => rows.find((row) => row.id === id) ?? task),
     getSettings: vi.fn(async () => ({ ...sweepSettings })),
     getConfig: vi.fn(async () => null),
     getProject: vi.fn(async () => null),
@@ -407,6 +414,75 @@ describe("recoverReviewTasksWithFailedPreMergeSteps — declined remediation is 
     // The exception sentence stays in the engine log; the card never carries it.
     expect(store.logEntry.mock.calls[0][2]).not.toContain("synthetic recovery crash");
     expect(declineRows(store)[0]?.metadata).toEqual(expect.objectContaining({ code: "recovery-threw" }));
+  });
+
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+  RUFU-351 narrates a throwing revival on the CARD, and its `recovery-threw` row fires in that half alone.
+  When the recovery owner had already narrated its own hand-off, this arm wrote NO row anywhere, and
+  "which card's revival threw" stayed a console question. The `sweep:candidate-failure` row is
+  unconditional for the arm, so the answer is one query for every sweep in the family — and a throwing
+  candidate still neither moves the pass's return value nor costs its sibling the attempt.
+  */
+  it("names the card whose revival threw, and still attempts its sibling", async () => {
+    const crashing = declinedTask({ id: "RUFU-898-A" });
+    const sibling = declinedTask({ id: "RUFU-898-B" });
+    const store = createSweepStore([crashing, sibling]);
+    const recoverDetailed = vi.fn(async (task: Task) => {
+      if (task.id === "RUFU-898-A") throw new Error("appender refused");
+      return { kind: "skipped" as const };
+    });
+    const manager = new SelfHealingManager(store as never, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+      recoverFailedPreMergeStepDetailed: recoverDetailed,
+    });
+
+    // A `skipped` sibling contributes nothing to the count, so the return value stays 0 (AC3).
+    await expect(manager.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+    // The throw cost the SECOND card nothing.
+    expect(recoverDetailed).toHaveBeenCalledTimes(2);
+    expect(recoverDetailed.mock.calls.map(([t]) => (t as Task).id)).toEqual(["RUFU-898-A", "RUFU-898-B"]);
+
+    const sweepRows = store.auditRows.filter((row) => String(row.mutationType).startsWith("sweep:"));
+    expect(sweepRows).toHaveLength(1);
+    expect(sweepRows[0]).toEqual(expect.objectContaining({
+      mutationType: "sweep:candidate-failure",
+      agentId: "self-healing",
+      target: "RUFU-898-A",
+      taskId: "RUFU-898-A",
+      metadata: {
+        sweep: "recover-review-tasks-with-failed-pre-merge-steps",
+        taskId: "RUFU-898-A",
+        stage: "revive",
+      },
+    }));
+    expect(JSON.stringify(sweepRows[0])).not.toContain("appender refused");
+  });
+
+  it("still names a revival that threw AFTER narrating its own decline", async () => {
+    const store = createSweepStore(declinedTask());
+    const manager = new SelfHealingManager(store as never, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+      recoverFailedPreMergeStepDetailed: vi.fn(async (_task, options) => {
+        options?.narrationWitness && (options.narrationWitness.narrated = true);
+        throw new Error("narrated, then unwound");
+      }),
+    });
+
+    await expect(manager.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+    // RUFU-351's card-level sentence is suppressed for this half, so the row is the ONLY evidence left.
+    expect(declineRows(store)).toHaveLength(0);
+    const sweepRows = store.auditRows.filter((row) => String(row.mutationType).startsWith("sweep:"));
+    expect(sweepRows).toHaveLength(1);
+    expect(sweepRows[0]).toEqual(expect.objectContaining({
+      mutationType: "sweep:candidate-failure",
+      taskId: "RUFU-351",
+      metadata: expect.objectContaining({ stage: "revive" }),
+    }));
   });
 
   /*

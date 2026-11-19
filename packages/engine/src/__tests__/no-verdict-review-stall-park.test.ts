@@ -17,6 +17,10 @@ import {
 import { resolvePreMergeGateForTask } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import { rerouteFailedNoVerdictPreMergeGateToReview } from "../merge/pre-merge-gate-reseed.js";
+import {
+  SWEEP_CANDIDATE_FAILURE_EVENT,
+  SWEEP_PASS_FAILURE_EVENT,
+} from "../self-healing/sweep-failure-audit.js";
 
 const IR = getBuiltinWorkflow("builtin:coding")!.ir;
 const REQUIRED = resolveRequiredPreMergeStepIds(IR, ["plan-review", "code-review"]);
@@ -64,7 +68,15 @@ function parkedWorkspaceCard(overrides: Partial<Task> = {}): Task {
 }
 
 function sweepStore(cards: Task[]): EventEmitter & Record<string, any> {
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+  Rows are now CAPTURED, not just accepted, because the symptom RUFU-898 removes is only assertable
+  against a row: "the pass died" must be a query, and the existing `toHaveBeenCalledWith` assertions
+  here keep working unchanged.
+  */
+  const auditRows: Array<Record<string, unknown>> = [];
   const store = Object.assign(new EventEmitter(), {
+    auditRows,
     getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false })),
     listTasks: vi.fn(async (options?: { column?: string }) => (options?.column === "in-review" ? cards : [])),
     getTask: vi.fn(async (id: string) => cards.find((card) => card.id === id)),
@@ -105,7 +117,7 @@ function sweepStore(cards: Task[]): EventEmitter & Record<string, any> {
     workflowSelectionEpoch: vi.fn(() => 0),
     logEntry: vi.fn(async () => undefined),
     getAgentLogs: vi.fn(async () => []),
-    recordRunAuditEvent: vi.fn(async () => undefined),
+    recordRunAuditEvent: vi.fn(async (row: Record<string, unknown>) => { auditRows.push(row); }),
     listWorkflowWorkItemsForTask: vi.fn(async () => []),
     seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async () => ({ seeded: true })),
   }) as unknown as EventEmitter & Record<string, any>;
@@ -212,5 +224,138 @@ describe("no-verdict review recovery admits the engine's own stall park", () => 
     const drifted = parkedWorkspaceCard({ error: "Unrelated later failure" });
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(baseStore(drifted) as never, drifted, options))
       .resolves.toMatchObject({ rerouted: false, reason: "operator-held" });
+  });
+});
+
+/*
+FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+The symptom half of this card, on the file whose own FNXC note (WorkflowPassCacheFixture
+2026-11-06-02:36) IS the recorded price: a missing store seam threw, this sweep's outer catch collapsed
+the entire pass into one console line, and all three assertions above silently lost their meaning "with
+no visible cause". RUFU-405 repaired the fake; these cases are the product-side half it left undone.
+Each case asserts the row, not a grep: an audit row that leaked the exception sentence would still
+satisfy a source read.
+*/
+const SWEEP_NAME = "recover-review-tasks-with-failed-pre-merge-steps";
+const sweepRows = (rows: Array<Record<string, unknown>>) =>
+  rows.filter((row) => String(row.mutationType).startsWith("sweep:"));
+
+describe("recoverReviewTasksWithFailedPreMergeSteps — a dead pass is queryable, not mute", () => {
+  it("names the pass when a store seam throws before any candidate is reached", async () => {
+    const card = parkedWorkspaceCard();
+    const store = sweepStore([card]);
+    // The exact RUFU-405 shape: a product store read the fake never grew.
+    store.workflowDefinitionEpoch = vi.fn(() => { throw new Error("store.workflowDefinitionEpoch is not a function"); });
+    const reroute = vi.fn(async () => "rerouted" as const);
+
+    const recovered = await new SelfHealingManager(store, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+      rerouteFailedNoVerdictPreMergeReview: reroute,
+    } as never).recoverReviewTasksWithFailedPreMergeSteps();
+
+    // AC3: the return value the step runner consumes is unchanged by the added observation.
+    expect(recovered).toBe(0);
+    expect(reroute).not.toHaveBeenCalled();
+    const rows = sweepRows(store.auditRows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      mutationType: SWEEP_PASS_FAILURE_EVENT,
+      agentId: "self-healing",
+      domain: "database",
+      target: SWEEP_NAME,
+      metadata: { sweep: SWEEP_NAME, outcome: "aborted", candidateFailureCount: 0 },
+    }));
+    expect("taskId" in rows[0]!).toBe(false);
+    // The pass poisoned nothing: no card write, and no re-seed/park-lift row for the card it never reached.
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalled();
+    expect(store.auditRows.some((row) => row.mutationType === "task:review-no-verdict-park-repaired")).toBe(false);
+    // The exception sentence stays in the console line and appears nowhere in the row.
+    expect(JSON.stringify(rows[0])).not.toContain("is not a function");
+  });
+
+  it("names the pass when the board read itself throws", async () => {
+    const store = sweepStore([parkedWorkspaceCard()]);
+    store.listTasks = vi.fn(async () => { throw new Error("connection terminated"); });
+
+    await expect(new SelfHealingManager(store, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+    } as never).recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+    const rows = sweepRows(store.auditRows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.mutationType).toBe(SWEEP_PASS_FAILURE_EVENT);
+    expect(JSON.stringify(rows[0])).not.toContain("connection terminated");
+  });
+
+  it("names the card and the arm when the no-verdict re-seed seam throws", async () => {
+    const card = parkedWorkspaceCard();
+    const store = sweepStore([card]);
+    const reroute = vi.fn(async () => { throw new Error("continuation insert refused"); });
+
+    const recovered = await new SelfHealingManager(store, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+      rerouteFailedNoVerdictPreMergeReview: reroute,
+    } as never).recoverReviewTasksWithFailedPreMergeSteps();
+
+    expect(recovered).toBe(0);
+    const rows = sweepRows(store.auditRows);
+    // One candidate row and no pass row: the arm died, the pass finished.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      mutationType: SWEEP_CANDIDATE_FAILURE_EVENT,
+      target: "SANE-454",
+      taskId: "SANE-454",
+      metadata: { sweep: SWEEP_NAME, taskId: "SANE-454", stage: "no-verdict-recovery" },
+    }));
+    expect(card.paused).toBe(true);
+    expect(JSON.stringify(rows[0])).not.toContain("continuation insert refused");
+  });
+
+  it("reports a zero row for a healthy pass, which is the point of the whole change", async () => {
+    const store = sweepStore([]);
+
+    await expect(new SelfHealingManager(store, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+    } as never).recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+    expect(sweepRows(store.auditRows)).toEqual([]);
+  });
+
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898) — AC4:
+  A pass that died must poison nothing: the sweep is a maintenance step, so the NEXT pass has to take
+  the same card as a candidate and rescue it exactly as the healthy case above does. Run on the SAME
+  manager, so a memo left behind by the failed pass would be visible here.
+  */
+  it("rescues the card on the next pass once the throwing seam is repaired", async () => {
+    const card = parkedWorkspaceCard();
+    const store = sweepStore([card]);
+    const reroute = vi.fn(async () => "rerouted" as const);
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/tmp/rufu-898",
+      recoverFailedPreMergeStep: vi.fn(async () => false),
+      rerouteFailedNoVerdictPreMergeReview: reroute,
+    } as never);
+
+    store.workflowDefinitionEpoch = vi.fn(() => { throw new Error("transient seam failure"); });
+    await expect(manager.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+    expect(reroute).not.toHaveBeenCalled();
+    expect(sweepRows(store.auditRows)).toHaveLength(1);
+
+    store.workflowDefinitionEpoch = vi.fn(() => 0);
+    await expect(manager.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
+
+    // The rescue the healthy test asserts, byte-for-byte: same reroute, park lifted.
+    expect(reroute).toHaveBeenCalledTimes(1);
+    expect(card.paused).toBe(false);
+    expect(card.pausedReason).toBeNull();
+    expect(card.status).toBeNull();
+    // And the second pass added no new failure row — the healthy pass stays silent.
+    expect(sweepRows(store.auditRows)).toHaveLength(1);
   });
 });

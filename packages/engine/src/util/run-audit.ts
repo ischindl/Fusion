@@ -1690,7 +1690,34 @@ export type DatabaseMutationType =
   column; code; gate; scannedCount } — refusal sentences, findings and error text never enter it.
   A round that scheduled work emits nothing, so absence means remediation is running.
   */
-  | "task:review-remediation-declined";
+  | "task:review-remediation-declined"
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+  A self-healing pass that catches its OWN exception, logs one console line and returns `0` was
+  indistinguishable from a healthy pass that found no work — on the board, in every card's History, and
+  in every query. Measured twice, by two authors a day apart: `recoverReviewTasksWithFailedPreMergeSteps()`
+  (the only owner that can rescue a review card with no verdict) carried zero audit calls across its whole
+  body, and `reconcileAbandonedPlanningSessions()` arrived with the same defect in two arms (RUFU-470).
+  This row names the pass-level abort. Metadata (ids/counts/fixed enums only): { sweep; outcome:
+  "aborted"; candidateFailureCount } — no error class, message, stack, path, or card text; the console
+  line keeps the detail. `target` is the sweep name and `task_id` stays NULL because no card is
+  attributable (RUFU-430's NOT NULL lesson). Deliberately NOT a tenth `-no-action` reason: `-no-action`
+  means the ladder reached a decision, an abort means it never did. Deduped per 6-hour window, in-process.
+  Outside the curated delivery-pipeline catalogue by decision (a maintenance crash is not a
+  delivery-pipeline step), documented as prose in `docs/run-audit.md`.
+  */
+  | "sweep:pass-failure"
+  /*
+  FNXC:SweepFailureAudit 2026-11-18-17:29 (RUFU-898):
+  One card's repair threw inside a sweep and the pass continued, so the card is neither recovered nor
+  declined by the ladder — before this row existed it produced no row of any kind. Metadata (ids/fixed
+  enums only): { sweep; taskId; stage } where `stage` is `no-verdict-recovery` | `revive` for
+  `recover-review-tasks-with-failed-pre-merge-steps` and `candidate-repair` for
+  `reconcile-abandoned-planning-sessions`. `target` and `task_id` both carry the card id. Emitted through
+  the FN-9175 bounded seam and deduped per (sweep, card, stage, 6-hour window), in-process. Deliberately
+  NOT part of RUFU-470's nine-code refusal vocabulary — see `sweep:pass-failure` above.
+  */
+  | "sweep:candidate-failure";
 
 // ── Filesystem mutation types ─────────────────────────────────────────────────
 
