@@ -26,6 +26,18 @@ import { MemoryBackendError } from "./memory-backend-error.js";
 // types from this module (erased at build), so there is no ESM circular-init.
 import { StashMemoryBackend, DEFAULT_STASH_URL } from "./memory-backend-stash.js";
 import { resolveStashMemorySettings, type StashSecretsReader } from "./stash-settings.js";
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:35 (RUFU-1012): one tokenizer, one matcher, one window
+geometry for every deterministic memory lane. Static relative import (no dynamic import) so the
+module graph stays analyzable; memory-query-terms.ts itself imports nothing, so this cannot cycle.
+*/
+import {
+  MEMORY_SNIPPET_STRIDE_LINES,
+  MEMORY_SNIPPET_WINDOW_LINES,
+  countMemoryTermMatches,
+  deriveMemoryQueryTerms,
+  dropLineOverlappingMemoryHits,
+} from "./memory-query-terms.js";
 
 export const MEMORY_WORKSPACE_PATH = ".fusion/memory";
 export const MEMORY_LONG_TERM_FILENAME = "MEMORY.md";
@@ -523,7 +535,9 @@ export class QmdMemoryBackend implements MemoryBackend {
   async search(rootDir: string, options: MemorySearchOptions): Promise<MemorySearchResult[]> {
     const qmdResults = await searchWithQmd(rootDir, options);
     if (qmdResults.length > 0) {
-      return qmdResults.map((result) => ({ ...result, backend: this.type }));
+      // FNXC:MemoryWindowGeometry 2026-11-19-04:35 (RUFU-1012): the external `qmd` index authors
+      // these windows, so this lane drops line-overlapping ones rather than choosing a stride.
+      return dropLineOverlappingMemoryHits(qmdResults).map((result) => ({ ...result, backend: this.type }));
     }
     return searchMemoryFiles(rootDir, options, this.type);
   }
@@ -980,9 +994,42 @@ async function listMemoryFiles(rootDir: string): Promise<Array<{ absPath: string
   return files;
 }
 
-function scoreSnippet(snippet: string, queryTerms: string[]): number {
-  const normalized = snippet.toLowerCase();
-  return queryTerms.reduce((score, term) => score + (normalized.includes(term) ? 1 : 0), 0);
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:35 (RUFU-1012):
+Word-level scoring through the shared matcher. This lane had the identical defect the agent lane
+was reported for: its query was split on the ASCII class `/[^a-z0-9_-]+/i`, so a Slovak query lost
+or shredded every accented word, and `normalized.includes(term)` then let a 2-character fragment
+(`te`, `syst`) score against unrelated English prose. Terms and candidate text are now tokenized
+by the SAME core boundary, so a word means the same thing on both sides in any language the
+operator writes.
+*/
+function scoreSnippet(snippet: string, queryTerms: readonly string[]): number {
+  return countMemoryTermMatches(snippet, queryTerms);
+}
+
+/**
+ * Does this project have any readable layered memory content at all?
+ *
+ * FNXC:MemoryEmptyReason 2026-11-19-04:35 (RUFU-1012):
+ * `fn_memory_search` reported a bare "NONE" for three different states — no memory written, a query
+ * with no usable words, and a query whose words matched nothing — so an agent could not tell an
+ * empty store from a bad query and the operator could not tell either. This is the honest
+ * discriminator for the project lane: it reports whether there is content to score, never whether
+ * anything matched. Read-only (it uses the same file inventory the scorer walks), non-throwing, and
+ * whitespace-only files do not count as content.
+ */
+export async function hasProjectMemoryContent(rootDir: string): Promise<boolean> {
+  try {
+    for (const file of await listMemoryFiles(rootDir)) {
+      const content = await readFile(file.absPath, "utf-8");
+      if (content.trim().length > 0) return true;
+    }
+    return false;
+  } catch {
+    // Fail closed to "content may exist": claiming an empty store the reader could not read
+    // would be a false statement, so the caller keeps the neutral `no-token-match` reason.
+    return true;
+  }
 }
 
 /*
@@ -994,11 +1041,7 @@ layered memory corpus (write paths refresh only qmd), so the core read seams
 as a second lane when the resolved backend is `stash`. Behavior unchanged; only visibility widened.
 */
 export async function searchMemoryFiles(rootDir: string, options: MemorySearchOptions, backend: string): Promise<MemorySearchResult[]> {
-  const queryTerms = options.query
-    .toLowerCase()
-    .split(/[^a-z0-9_-]+/i)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2);
+  const queryTerms = deriveMemoryQueryTerms(options.query);
   if (queryTerms.length === 0) {
     return [];
   }
@@ -1008,8 +1051,14 @@ export async function searchMemoryFiles(rootDir: string, options: MemorySearchOp
 
   for (const file of await listMemoryFiles(rootDir)) {
     const lines = (await readFile(file.absPath, "utf-8")).split("\n");
-    for (let index = 0; index < lines.length; index += 8) {
-      const chunkLines = lines.slice(index, index + 12);
+    /*
+    FNXC:MemoryWindowGeometry 2026-11-19-04:35 (RUFU-1012):
+    Stride == window (both from the shared constant) instead of 8-over-12: the old geometry made
+    adjacent windows share four lines, so one result set carried e.g. `97-108` beside `105-116`.
+    The score sort, the limit clamp and MAX_MEMORY_SNIPPET_CHARS below are untouched.
+    */
+    for (let index = 0; index < lines.length; index += MEMORY_SNIPPET_STRIDE_LINES) {
+      const chunkLines = lines.slice(index, index + MEMORY_SNIPPET_WINDOW_LINES);
       const snippet = chunkLines.join("\n").trim();
       if (!snippet) continue;
       const score = scoreSnippet(snippet, queryTerms);

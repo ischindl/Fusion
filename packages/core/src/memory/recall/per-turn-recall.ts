@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import { MEMORY_PRE_STEERING_MARKER } from "../memory-pre-steering.js";
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:55 (RUFU-1012): one word rule for every memory lane. Static
+relative import; memory-query-terms.ts imports nothing, so this cannot create an ESM cycle.
+*/
+import { MEMORY_QUERY_TOKEN_BOUNDARY } from "../memory-query-terms.js";
 import { normalizeRecallContent } from "./recall-dedup.js";
 import { resolveMemoryBackend, type MemorySearchResult } from "../memory-backend.js";
 import { resolveStashMemorySettings } from "../stash-settings.js";
@@ -60,13 +65,18 @@ export const FOCUS_RECALL_QUERY_MAX_LENGTH = 96;
 /**
  * Unicode-aware focus tokenizer boundary: everything outside letters/digits/underscore/hyphen
  * (code-point class, `u` flag) splits a token, so hyphen-joined words stay ONE term and
- * Slovak/diacritic letters stay inside their word. Deliberately NOT deriveRecallKeywords's
- * ASCII-only `[a-z0-9_-]` split, which would chop `pamäťové` into ASCII fragments and hand
- * the vector lane mangled text.
+ * Slovak/diacritic letters stay inside their word. This is the ONE word rule for memory retrieval;
+ * the ASCII-only `[a-z0-9_-]` split it replaced chopped `pamäťové` into fragments and handed the
+ * vector lane mangled text — the defect RUFU-1012 removed from the scoring lanes as well.
  *
  * FNXC:MemoryFocusRecall 2026-09-03-00:21: RUFU-173.
+ *
+ * FNXC:MemoryQueryTerms 2026-11-19-04:55 (RUFU-1012): this boundary is now the shared constant
+ * rather than a second literal, because RUFU-1012 measured the cost of two opinions about one word
+ * rule — the lane that kept its own ASCII split is the lane that shredded Slovak queries. Same
+ * pattern class, same `u` flag, byte-identical behaviour.
  */
-const FOCUS_QUERY_TOKEN_BOUNDARY = /[^\p{L}\p{N}_-]+/u;
+const FOCUS_QUERY_TOKEN_BOUNDARY = MEMORY_QUERY_TOKEN_BOUNDARY;
 
 /**
  * Small built-in stopword set: common English function words plus the Slovak function words
@@ -88,8 +98,8 @@ const RECALL_STOPWORDS = new Set([
 ]);
 
 /**
- * Deterministic recall-query normalization: lowercase; tokenize on characters other than
- * [a-z0-9_-]; drop tokens shorter than 3 characters and the built-in stopword set; dedupe
+ * Deterministic recall-query normalization: lowercase; tokenize on the SHARED Unicode word
+ * boundary (anything outside letters/digits/underscore/hyphen, code-point class); drop tokens shorter than 3 characters and the built-in stopword set; dedupe
  * keeping first occurrence; rank by (length descending, first-occurrence index ascending);
  * take at most 3; truncate each term at 24 chars; then cap the joined (single-space) query
  * at 64 characters by dropping trailing keywords until it fits. Pure function — no I/O.
@@ -99,11 +109,20 @@ const RECALL_STOPWORDS = new Set([
  * The length-descending ranking keeps the most distinctive (longest) content words in the
  * Stash query; the 64-char cap mirrors the observed Stash q= behavior and, combined with the
  * AND-semantics keyword drop, bounds how much of a topic can degrade the hit rate.
+ *
+ * FNXC:MemoryQueryTerms 2026-11-19-04:55 (RUFU-1012):
+ * The split was an ASCII-only class with no `u` flag, so a diacritic word was chopped into ASCII
+ * fragments here too — "pamäti" reached the Stash query as "pam" plus "i", and the 3-char floor then
+ * dropped most of what was left. It now splits on the same boundary every other memory lane uses,
+ * so a word means the same thing in all of them. Only the boundary moved: the 3-char floor, the
+ * stopword set, the length-descending rank, the 3-term / 24-char / 64-char caps and the existing
+ * expectations are deliberately untouched, because this lane AND-narrows a Stash query and RUFU-172
+ * is what its suite pins.
  */
 export function deriveRecallKeywords(topic: string): string[] {
   if (typeof topic !== "string") return [];
   const lower = topic.toLowerCase();
-  const tokens = lower.split(/[^a-z0-9_-]+/).filter(Boolean);
+  const tokens = lower.split(MEMORY_QUERY_TOKEN_BOUNDARY).filter(Boolean);
 
   const seen = new Set<string>();
   const unique: string[] = [];

@@ -803,6 +803,38 @@ Runtime behavior:
 
 This layered behavior is shared by heartbeat agents and task-scoped sessions that inherit agent identity.
 
+### Memory retrieval: one word rule, non-overlapping windows, three empty answers
+
+`fn_memory_search` scores deterministic file lanes (agent memory and `.fusion/memory/`) through one
+shared helper in `@fusion/core` (`memory-query-terms.ts`), so the same definition of a word applies on
+both sides of every comparison:
+
+- **A word is a Unicode word.** Tokens split on anything outside letters, digits, underscore and
+  hyphen (code-point class), after NFC normalisation. An operator writing Slovak gets
+  `pamäte`, `operatívna`, `zlucovanie` as terms — not the ASCII fragments `pam`/`te`/`operat`/`vna`
+  that the previous ASCII-only split produced.
+- **A match is a whole word.** Relevance counts distinct query terms present as whole tokens in a
+  snippet; `syst` never scores against "system" and `te` never scores against "route", "delete" or
+  "template". One accidental substring used to be worth a point, and one point was enough to rank a
+  wholly unrelated block at the top.
+- **Windows tile, they do not overlap.** The walk advances by the window width (12 lines), so a result
+  set cannot spend two of the agent's limited slots on the same text. Producers whose geometry is not
+  ours to choose — the `qmd` search lanes, where an external binary authors the ranges — drop
+  line-overlapping hits before the limit is applied instead.
+- **An empty answer says which state it is.** `NONE` alone reported one fact for three situations.
+  `details.emptyReason` is `no-query-terms` (the query holds no usable word), `no-memory-content`
+  (nothing was written) or `no-token-match` (the words matched nothing), with `details.termCount`
+  beside it; the visible text keeps its literal `NONE` prefix and names the same code. An unreadable
+  memory inventory answers "content may exist", so the tool never reports an empty store it could not
+  read. Lane P (`deriveRecallKeywords`, the proactive per-turn recall cue) splits on the same boundary;
+  its ranking, stopwords and caps are its own and unchanged.
+
+Hyphen-joined compounds keep their meaning through all of this: `post-merge`, `file-scope` and
+`pg-gated` stay one term, and a `test` term no longer matches inside `latest`.
+
+See [`docs/solutions/reliability/memory-retrieval-unicode-tokenizer-and-window-geometry.md`](solutions/reliability/memory-retrieval-unicode-tokenizer-and-window-geometry.md)
+for the measured before/after and the RUFU-665 boundary.
+
 ## Research Tools in Planning/Execution Sessions
 
 Triage and executor runtime sessions include a bounded research tool surface only when `experimentalFeatures.researchView` is enabled for the project. Permanent/custom heartbeat sessions always register the governed research discovery/run/cancel tools (`fn_research_run`, `fn_research_list`, `fn_research_get`, `fn_research_cancel`) so permission policy and runtime setup responses govern use; `fn_research_run` and `fn_research_cancel` remain `network_api`-gated by `AgentPermissionPolicy`, and disabled or misconfigured research returns an actionable setup result instead of removing the tool.

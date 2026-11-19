@@ -23,7 +23,7 @@ The tool body below owns schema-shaped refusals only; candidacy, content proof, 
 import { HEARTBEAT_REVIEW_VERDICTS, recordHeartbeatReviewVerdict, type HeartbeatReviewVerdict } from "./review/record-review-verdict.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes, MEMORY_SNIPPET_STRIDE_LINES, MEMORY_SNIPPET_WINDOW_LINES, countMemoryTermMatches, deriveMemoryQueryTerms, dropLineOverlappingMemoryHits, hasProjectMemoryContent } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -862,6 +862,24 @@ type MemorySearchHit = {
   backend: string;
 };
 
+/*
+FNXC:MemoryEmptyReason 2026-11-19-05:15 (RUFU-1012):
+The empty answer of `fn_memory_search` used to be the four characters "NONE", which is one reportable
+fact out of three distinguishable states. Measured on the operator's own card, the tool returned
+"NONE" for a project whose memory was full of relevant Slovak prose — every token had shredded
+against it — and "NONE" is exactly what an empty store says too, so the agent concluded it had
+nothing to remember and stopped searching. RUFU-994 hit the same shape from the other side (a Stash
+401 reported as "NONE"). The reason code travels in `details`, which is where a caller can branch on
+it; the visible text keeps its "NONE" prefix so anything that only greps for emptiness still works.
+*/
+export type MemorySearchEmptyReason = "no-query-terms" | "no-memory-content" | "no-token-match";
+
+const MEMORY_EMPTY_HINTS: Record<MemorySearchEmptyReason, string> = {
+  "no-query-terms": "the query carries no usable word token (need at least one word of 2+ characters)",
+  "no-memory-content": "no memory file in scope holds any content yet",
+  "no-token-match": "every word token was searched and none matched a memory line; try fewer or different words",
+};
+
 const log = createLogger("agent-tools");
 
 const MAX_INSTRUCTIONS_TEXT_LENGTH = 50_000;
@@ -1008,10 +1026,45 @@ async function listAgentMemoryFiles(rootDir: string, agentMemory: AgentMemoryCon
   return files;
 }
 
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:35 (RUFU-1012):
+The scorer used to be `query.toLowerCase().split(/[^a-z0-9_-]+/i)` plus
+`normalized.includes(term)`. Measured consequences: `"zlucovanie dlhodobej pamäte"` became
+[pam, te] and `"pamätaj systémove pravidlo"` became [pam, taj, syst, move, pravidlo], and the
+substring test let those fragments score — `syst` inside "system", `te` inside "route"/"delete"/
+"template". One accidental substring earned a point, and one point was enough to put a wholly
+irrelevant 12-line block at the top of the result. Relevance now comes from the shared core
+helper: a word is a Unicode word, and a match is set membership over words. The `score === 0`
+filter stays as the relevance door and the `+ 1000` cross-scope offset below is untouched
+(RUFU-665 Step 6 owns that arithmetic).
+*/
 function scoreAgentMemorySnippet(snippet: string, query: string): number {
-  const terms = query.toLowerCase().split(/[^a-z0-9_-]+/i).filter((term) => term.length >= 2);
-  const normalized = snippet.toLowerCase();
-  return terms.reduce((score, term) => score + (normalized.includes(term) ? 1 : 0), 0);
+  return countMemoryTermMatches(snippet, deriveMemoryQueryTerms(query));
+}
+
+/**
+ * Does either memory scope in reach hold any content at all?
+ *
+ * FNXC:MemoryEmptyReason 2026-11-19-05:15 (RUFU-1012):
+ * This is what lets `fn_memory_search` say "nothing was written" instead of guessing from an empty
+ * result set. Two rules keep the claim honest: a blank/whitespace file is not content, and an
+ * inventory that cannot be read answers TRUE — reporting an empty store the tool could not actually
+ * read would be the same lie the reason codes exist to remove (RUFU-994's Stash 401 looked exactly
+ * like an empty memory store). Agent memory is checked after the sync every search already performs,
+ * so its scaffold heading counts as content and the code stays conservative.
+ */
+async function hasAnyMemoryContent(rootDir: string, agentMemory?: AgentMemoryContext): Promise<boolean> {
+  if (await hasProjectMemoryContent(rootDir)) return true;
+  if (!agentMemory?.agentId) return false;
+  try {
+    for (const file of await listAgentMemoryFiles(rootDir, agentMemory)) {
+      const content = await readFile(file.absPath, "utf-8");
+      if (content.trim().length > 0) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 async function searchAgentMemoryFile(rootDir: string, agentMemory: AgentMemoryContext, query: string, limit: number): Promise<MemorySearchHit[]> {
@@ -1024,15 +1077,23 @@ async function searchAgentMemoryFile(rootDir: string, agentMemory: AgentMemoryCo
   for (const file of await listAgentMemoryFiles(rootDir, agentMemory)) {
     const content = await readFile(file.absPath, "utf-8");
     const lines = content.split("\n");
-    for (let index = 0; index < lines.length; index += 8) {
-      const chunk = lines.slice(index, index + 12).join("\n").trim();
+    /*
+    FNXC:MemoryWindowGeometry 2026-11-19-04:35 (RUFU-1012):
+    The walk advanced by 8 lines on a 12-line window, so neighbouring windows shared 4 lines and
+    ONE result set legitimately carried `97-108` next to `105-116`; half of the agent's slots were
+    near-duplicates of the other half. Stride == window is now the shared constant, so the file is
+    tiled, not overlapped. The window WIDTH, the 1200-char snippet cap, the limit clamp and the
+    document-order return (no sort — ranking is RUFU-665's surface) are all deliberately unchanged.
+    */
+    for (let index = 0; index < lines.length; index += MEMORY_SNIPPET_STRIDE_LINES) {
+      const chunk = lines.slice(index, index + MEMORY_SNIPPET_WINDOW_LINES).join("\n").trim();
       if (!chunk) continue;
       const score = scoreAgentMemorySnippet(chunk, query);
       if (score === 0) continue;
       results.push({
         path: file.displayPath,
         lineStart: index + 1,
-        lineEnd: Math.min(index + 12, lines.length),
+        lineEnd: Math.min(index + MEMORY_SNIPPET_WINDOW_LINES, lines.length),
         snippet: chunk.slice(0, 1200),
         score: score + 1000,
         backend: "agent-memory",
@@ -1149,7 +1210,16 @@ async function searchAgentMemoryWithQmd(rootDir: string, agentMemory: AgentMemor
     });
     const parsed = JSON.parse(stdout);
     const rawResults = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.results) ? parsed.results : [];
-    return rawResults.slice(0, limit).map((result: Record<string, unknown>) => {
+    /*
+    FNXC:MemoryWindowGeometry 2026-11-19-04:35 (RUFU-1012):
+    These windows are authored by the external `qmd` binary, so this lane cannot choose a
+    non-overlapping stride the way the file walk does — it has to drop what came back. The guard
+    runs BEFORE the limit is applied (it used to slice first), because the defect is that one
+    result set spends two slots on the same text: dropping after the slice would keep spending
+    them and just return fewer rows. The `+ 1000` offset stays exactly where RUFU-665 Step 6
+    expects it.
+    */
+    const mapped: MemorySearchHit[] = rawResults.map((result: Record<string, unknown>) => {
       const rawPath = result.path ?? result.file;
       return {
         path: normalizeQmdAgentMemoryResultPath(rootDir, agentMemory.agentId, rawPath),
@@ -1160,6 +1230,7 @@ async function searchAgentMemoryWithQmd(rootDir: string, agentMemory: AgentMemor
         backend: "qmd-agent-memory",
       };
     }).filter((result: MemorySearchHit) => result.snippet.trim().length > 0);
+    return dropLineOverlappingMemoryHits(mapped).slice(0, limit);
   } catch (err) {
     log.warn(
       `QMD agent memory search failed for agent ${agentMemory.agentId}, falling back to file search: ${err instanceof Error ? err.message : String(err)}`,
@@ -5567,10 +5638,14 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
     label: "Search Memory",
     description:
       "Search durable project memory and this agent's own memory, returning small snippets with file paths and line ranges. " +
-      "Use this before fn_memory_get; do not read all memory by default.",
+      "Use this before fn_memory_get; do not read all memory by default. " +
+      "An empty answer says why: no-query-terms (the query has no usable word), no-memory-content (nothing written yet), or no-token-match (the words matched nothing) — an empty store and a bad query are different situations.",
     parameters: memorySearchParams,
     execute: async (_id: string, params: Static<typeof memorySearchParams>) => {
       const limit = params.limit ?? 5;
+      // FNXC:MemoryEmptyReason 2026-11-19-05:15 (RUFU-1012): derive the words once here so the
+      // empty answer can say how many words were searched, from the same tokenizer the lanes use.
+      const queryTerms = deriveMemoryQueryTerms(params.query);
       const agentResults = options?.agentMemory
         ? resolveMemoryBackend(settings).type === "qmd"
           ? await searchAgentMemoryWithQmd(rootDir, options.agentMemory, params.query, limit)
@@ -5602,9 +5677,22 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
         .slice(0, limit);
 
       if (results.length === 0) {
+        /*
+        FNXC:MemoryEmptyReason 2026-11-19-05:15 (RUFU-1012):
+        Three states, three codes, in the order that keeps each claim provable: a query with no words
+        is decided from the query alone; "nothing was written" is decided from the corpus, never from
+        an empty result set; and only then may the tool say "the words matched nothing". `details`
+        carries the machine-readable pair; the text keeps its literal NONE prefix plus the code so the
+        human-readable line and the branchable field can never disagree.
+        */
+        const emptyReason: MemorySearchEmptyReason = queryTerms.length === 0
+          ? "no-query-terms"
+          : await hasAnyMemoryContent(rootDir, options?.agentMemory)
+            ? "no-token-match"
+            : "no-memory-content";
         return {
-          content: [{ type: "text" as const, text: "NONE" }],
-          details: { results: [] },
+          content: [{ type: "text" as const, text: `NONE (${emptyReason}) — ${MEMORY_EMPTY_HINTS[emptyReason]}` }],
+          details: { results: [], emptyReason, termCount: queryTerms.length },
         };
       }
 

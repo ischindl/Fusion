@@ -729,9 +729,16 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
 
     const fileRow = hits.find((h) => h.path === ".fusion/memory/MEMORY.md");
     expect(fileRow, "durable project memory must be reachable by search under stash").toBeDefined();
-    // File-lane window math: 8-line stride, 12-line window -> the window covering line 621
-    // starts at line 617 and ends at the file's real end (621), with no off-by-one.
-    expect(fileRow?.lineStart).toBe(617);
+    /*
+    FNXC:MemoryWindowGeometry 2026-11-19-06:03 (RUFU-1012):
+    File-lane window math: RUFU-1010 pinned this window to line 617 because the walk advanced by 8
+    lines over a 12-line window, so windows started on 1+8k and adjacent ones shared four lines.
+    RUFU-1012 made the stride equal the window (`MEMORY_SNIPPET_STRIDE_LINES`), so the walk tiles from
+    1+12k and the window covering TOKEN_LINE begins at 613. The claim this case actually makes - the
+    window starts past line 600 and ends at the file's real end with no off-by-one - is unchanged;
+    only the stride constant moved.
+    */
+    expect(fileRow?.lineStart).toBe(613);
     expect(fileRow?.lineEnd).toBe(TOKEN_LINE);
     expect(fileRow?.snippet).toContain("rufu1010-quoll");
     // The remote lane still contributes its own rows — the lane union never swallows it.
@@ -802,7 +809,9 @@ describe("RUFU-1010 durable project memory is searchable under a stash-resolved 
       secretsReader: reader,
     });
 
-    expect(cue).toContain(".fusion/memory/MEMORY.md:617-621");
+    // Same geometry as the search case above: stride == window, so the window covering line 621
+    // begins at 613 (RUFU-1012; this read 617 while the stride was 8 over a 12-line window).
+    expect(cue).toContain(".fusion/memory/MEMORY.md:613-621");
     // The remote lane keeps its slot too (union, not replacement).
     expect(cue).toContain("stash://session/ses-1");
   });

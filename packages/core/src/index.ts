@@ -3152,7 +3152,29 @@ export {
   listAgentMemoryFiles,
   readAgentMemoryFile,
   writeAgentMemoryFile,
+  // FNXC:MemoryEmptyReason 2026-11-19-04:35 (RUFU-1012): the engine's fn_memory_search seam needs
+  // to tell "there is no memory to read" apart from "nothing matched the words", so the honest
+  // discriminator for the project file lane is exported rather than re-derived engine-side.
+  hasProjectMemoryContent,
 } from "./memory/memory-backend.js";
+
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:35 (RUFU-1012):
+The memory tokenizer, the word-level matcher and the window geometry constants are one source of
+truth in @fusion/core so the agent lane, the project lane and lane-P recall cannot disagree about
+what a word is. Static export only — the engine imports these, and @fusion/* imports must stay
+statically analyzable.
+*/
+export {
+  MEMORY_QUERY_TOKEN_BOUNDARY,
+  MEMORY_QUERY_MIN_TERM_LENGTH,
+  MEMORY_SNIPPET_WINDOW_LINES,
+  MEMORY_SNIPPET_STRIDE_LINES,
+  deriveMemoryQueryTerms,
+  countMemoryTermMatches,
+  dropLineOverlappingMemoryHits,
+} from "./memory/memory-query-terms.js";
+export type { MemoryHitLineRange } from "./memory/memory-query-terms.js";
 
 export {
   registerMemoryBackend,

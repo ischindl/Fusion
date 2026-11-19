@@ -2650,7 +2650,25 @@ export {
   MEMORY_BACKEND_SETTINGS_KEYS,
   DEFAULT_MEMORY_BACKEND,
   isQmdAvailable,
+  hasProjectMemoryContent,
 } from "./memory/memory-backend.js";
+
+/*
+FNXC:MemoryQueryTerms 2026-11-19-04:55 (RUFU-1012): mirrored into the gate barrel, which is what the
+engine-core merge-gate project aliases `@fusion/core` to. agent-tools.ts imports these at module
+scope, so a symbol missing here binds to `undefined` inside the gate bundle — the exact silent
+failure gate-barrel-run-audit-parity.test.ts documents for the run-audit family.
+*/
+export {
+  MEMORY_QUERY_MIN_TERM_LENGTH,
+  MEMORY_QUERY_TOKEN_BOUNDARY,
+  MEMORY_SNIPPET_STRIDE_LINES,
+  MEMORY_SNIPPET_WINDOW_LINES,
+  countMemoryTermMatches,
+  deriveMemoryQueryTerms,
+  dropLineOverlappingMemoryHits,
+} from "./memory/memory-query-terms.js";
+export type { MemoryHitLineRange } from "./memory/memory-query-terms.js";
 
 export {
   MemoryBackendError,
