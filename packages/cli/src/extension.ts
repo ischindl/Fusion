@@ -96,6 +96,10 @@ import {
   resolveFeatureRepairTargets,
   reconcileMissionState,
   storeErrorResult,
+  storeWriteFailure,
+  dependencyDomainRefusal,
+  dependencyRefusalResult,
+  recordDependencyRefusal,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
 import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
@@ -2627,7 +2631,28 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       if (Object.keys(updates).length > 0) {
-        await store.updateTask(params.id, updates);
+        /*
+        FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+        `depends` reaches this one combined write, and the store refuses a cyclic dependency list before it
+        writes anything. With no catch here the board's rule escaped as an exception, so the CLI agent got an
+        undiagnosed failure and the card kept no trace of the edge it had just proposed. Dependency refusals
+        resolve in band through the same composer the engine tools use; everything else keeps the store-outage
+        shape rather than pretending the board rejected on the merits.
+        */
+        try {
+          await store.updateTask(params.id, updates);
+        } catch (error) {
+          const refusedDependency = dependencyDomainRefusal(error);
+          if (refusedDependency) {
+            await recordDependencyRefusal(refusedDependency, {
+              taskId: params.id,
+              log: (id, action) => store.logEntry(id, action),
+              note: "Nothing was persisted; the dependency list still holds its previous value.",
+            });
+          }
+          return dependencyRefusalResult(`dependency list on ${params.id}`, error)
+            ?? storeWriteFailure(`fn_task_update on ${params.id}`, error);
+        }
       }
 
       return {

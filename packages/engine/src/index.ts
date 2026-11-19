@@ -1,5 +1,25 @@
 export { AgentLogger, type AgentLoggerOptions, summarizeToolArgs } from "./agents/agent-logger.js";
-export { storeErrorResult, STORE_RETRY_GUIDANCE } from "./tool-store-errors.js";
+/*
+FNXC:DependencyRefusal 2026-11-19-02:06 (RUFU-552):
+This is the refusal vocabulary for a dependency edge a board rule rejected, and the CLI pi-extension lane
+(`packages/cli/src/extension.ts`) consumes it from here rather than re-implementing a classifier: the
+planning lane runs with the host extension's tools, so an unguarded dependency write there was one of the
+producers measured on 2026-10-04. The exported classifier decides on the error's stable `code`, never on
+class identity, which is what lets this barrel carry the capability without carrying
+`SelfSpawnedDependencyError` - that class is absent from core's `index.gate.ts`, the barrel the engine-core
+gate bundle resolves, so importing it here would fail the merge gate while passing every local run.
+*/
+export {
+  storeErrorResult,
+  storeWriteFailure,
+  STORE_RETRY_GUIDANCE,
+  DEPENDENCY_REFUSAL_GUIDANCE,
+  dependencyDomainRefusal,
+  dependencyRefusalResult,
+  recordDependencyRefusal,
+  type DependencyRefusalCode,
+  type DependencyRefusalFacts,
+} from "./tool-store-errors.js";
 export { clearWorktreeDependencyDeterministicStop } from "./worktree/worktree-dependency-install.js";
 export { isPlanningResetHoldClearingUpdate, PlanningResetFence, PLANNING_RESET_HOLD_MS } from "./planning-reset-fence.js";
 /*

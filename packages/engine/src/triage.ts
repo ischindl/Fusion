@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as fusionCore from "@fusion/core";
-import { storeErrorResult } from "./tool-store-errors.js";
+import { dependencyDomainRefusal, storeErrorResult } from "./tool-store-errors.js";
 import type {
   TaskStore,
   Task,
@@ -5301,6 +5301,15 @@ export class TriageProcessor {
       */
       const planningFenceFailure = classifyWorkflowPrincipalFenceFailure(err, errorMessage);
       /*
+      FNXC:DependencyRefusal 2026-11-19-00:45 (RUFU-552):
+      Classify a dependency-domain refusal up front, beside the fence classification, and key it on the
+      error's stable `code` - never on message prose. Every tool boundary now refuses these in band, so a
+      refusal that reaches this catch came from a producer that lane did not reach; attributing it is still
+      required, because unclassified it falls to the generic path and a card whose ONLY defect was an
+      impossible dependency proposal ends up reading as a specification that failed to be written.
+      */
+      const dependencyRefusal = dependencyDomainRefusal(err);
+      /*
       FNXC:PlanningContinuationDispatch 2026-09-06-02:28:
       Recovery writes belong only to a planner that acquired the durable task-status claim. If the
       dispatch-claim read fails first, triage must fail closed and leave the dispatcher's running row
@@ -5595,6 +5604,26 @@ export class TriageProcessor {
             return false;
           });
           if (!persistedFencePark) return;
+          return;
+        } else if (dependencyRefusal) {
+          /*
+          FNXC:DependencyRefusal 2026-11-19-00:45 (RUFU-552):
+          A refused dependency is a board rule, not planner authoring, and the recovery shape matters more
+          here than the label. RUFU-768 measured why: a cadence budget that clears its own counter when it
+          returns `needs-replan` re-admits forever, because `needs-replan` always has an automatic planning
+          claimant, while the honest terminal shape is the SHARED re-seed ceiling - a `failed` card has no
+          claimant at all. So this arm charges `escalatePlanningReseed` and nothing else: the existing
+          `sourceMetadata.planningReseedCycles` counter, the existing `PLANNING_RESEED_CYCLE_EXHAUSTED:` park,
+          the existing `task:planning-reseed-cycle` row. It writes no `recoveryRetryCount`, no `nextRecoveryAt`
+          and no `error`, so an impossible dependency proposal can never spend the three authoring retries,
+          and it authors no new error prefix: production has no writer of `PLANNING_FAILED_EXHAUSTED` any more
+          and reviving one is the exact laundering this card removes. The refused edge rides the re-seed's
+          History line, where the operator reads it.
+          */
+          await this.escalatePlanningReseed(task, undefined, {
+            message: `Planning attempted a dependency the board refuses: ${dependencyRefusal.summary}`,
+            warn: true,
+          });
           return;
         } else if (isTransientError(errorMessage)) {
           // Transient network/infrastructure error — use bounded recovery policy

@@ -7,7 +7,14 @@ import { Type, type Static } from "@earendil-works/pi-ai";
 import { isTaskNotFoundError, type Task, type TaskStore } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { executorLog } from "../logger.js";
-import { storeErrorResult } from "../tool-store-errors.js";
+/*
+FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+See create-task-update-tool.ts for the full requirement. This boundary additionally owns the abort
+side effects: the write used to be the line before `deps.depAborted.add` and `session.dispose()`, so a
+store refusal threw out having aborted nothing while killing the agent turn. The refusal now returns
+before any of that runs.
+*/
+import { dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, storeErrorResult, storeWriteFailure } from "../tool-store-errors.js";
 
 const taskAddDepParams = Type.Object({
   task_id: Type.String({ description: "The ID of the task to depend on (e.g. \"KB-001\")" }),
@@ -103,8 +110,31 @@ export function createTaskAddDepTool(deps: TaskAddDepToolDeps, taskId: string): 
         };
       }
 
-      // Add the dependency
-      await store.updateTask(taskId, { dependencies: [...existing, targetId] });
+      /*
+      FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+      The store's cycle guard refuses before it writes, and everything below this line is destructive:
+      the success History line, `depAborted`, and the active session's disposal. Returning the refusal
+      here is what makes a cyclic edge proposal a plain "no" instead of either a dead run or a dead turn.
+      */
+      try {
+        await store.updateTask(taskId, { dependencies: [...existing, targetId] });
+      } catch (error) {
+        const refused = dependencyRefusalResult(`dependency declaration adding ${targetId}`, error);
+        if (refused) {
+          const facts = dependencyDomainRefusal(error);
+          if (facts) {
+            await recordDependencyRefusal(facts, {
+              taskId,
+              log: (id, action) => store.logEntry(id, action),
+              note: `Nothing was added and this run was not aborted, so no re-planning was triggered.`,
+              warn: (message) => executorLog.warn(message),
+            });
+          }
+          refused.content[0].text += ` ${targetId} was not added to ${taskId} and this run was not aborted.`;
+          return refused;
+        }
+        return storeWriteFailure(`dependency declaration adding ${targetId}`, error);
+      }
       await store.logEntry(taskId, `Added dependency on ${targetId} — stopping execution for re-planning`);
 
       // Trigger abort flow (same pattern as pausedAborted)

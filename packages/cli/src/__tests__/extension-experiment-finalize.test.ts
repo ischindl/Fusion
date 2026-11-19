@@ -97,6 +97,21 @@ vi.mock("@fusion/engine", () => ({
     details: { code: "STORE_UNAVAILABLE" },
     isError: true,
   })),
+  /*
+  FNXC:DependencyRefusal 2026-11-19-02:40 (RUFU-552):
+  `fn_task_update` now classifies a dependency-domain refusal before it falls back to the store-outage
+  shape, so the isolated mock must carry these names too. The defaults are faithful, not convenient:
+  an error with no dependency `code` classifies to `null`, which is what routes a real outage to
+  `storeWriteFailure's retry wording instead of a fabricated board refusal.
+  */
+  storeWriteFailure: vi.fn((what: string, error: unknown) => ({
+    content: [{ type: "text", text: `ERROR: ${what} did not reach the task store: ${String(error)}` }],
+    details: { code: "STORE_UNAVAILABLE" },
+    isError: true,
+  })),
+  dependencyDomainRefusal: vi.fn(() => null),
+  dependencyRefusalResult: vi.fn(() => null),
+  recordDependencyRefusal: vi.fn(async () => {}),
   ...workflowAuthoringEngineMock,
   // FNXC:ToolPermissionGates 2026-07-26-14:55: extension.ts now imports the agent action gate; mock completeness gate requires these names.
   evaluateAgentActionGate: vi.fn(() => ({ disposition: "allow", category: "exempt", toolName: "", operation: "", summary: "", resourceType: "other", approvalDedupeKey: "", metadata: {} })),

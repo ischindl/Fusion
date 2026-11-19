@@ -42,6 +42,14 @@ import { mergeEffectiveSettings } from "../project/effective-settings.js";
 import { generateSyntheticRunId, type EngineRunContext, type RunAuditor } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { executorLog } from "../logger.js";
+/*
+FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+An honest blocked exit is the most valuable thing this tool can produce, and until this card a cyclic
+`blockedBy` threw it away: the store refuses the merged dependency list before it writes, so the throw
+lost the `status`/`error` park too and the card reported nothing at all. The park is now non-negotiable
+and the edge is what degrades.
+*/
+import { dependencyRefusalResult } from "../tool-store-errors.js";
 import { resolveReboundColumnFor } from "./lifecycle-columns.js";
 import { evaluateTaskDoneRefusal } from "./task-done-refusal.js";
 import { skipBypassTaintUpdateForRefusal } from "./completion-predicates.js";
@@ -339,20 +347,58 @@ export function createTaskDoneTool(
             ? Array.from(new Set([...(blockedTask.dependencies ?? []), ...blockedByIds]))
             : undefined;
           const metaPatch = buildExternalBlockMetadataPatch(classification, thrashCount);
-          await store.updateTask(taskId, {
-            status: "failed",
+          const parkPatch = {
+            status: "failed" as const,
             error: parkError,
             paused: false,
             pausedByAgentId: null,
             ...(mergedDependencies ? { dependencies: mergedDependencies } : {}),
             sourceMetadataPatch: metaPatch,
-          }, deps.getRunContextFor(taskId));
+          };
+          /*
+          FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+          A refusal here is about ONE half of the patch, so it must not take the park down with it. The
+          retry drops the `dependencies` key and nothing else - one deterministic retry, no bisect and no
+          local cycle detection, because `assertNoDependencyCycleImpl` stays the single authority over
+          which edge closes a loop. The cost is stated to the agent rather than hidden: with no durable
+          edge, the dependency-completion requeue has nothing to read.
+          */
+          let droppedBlockedByIds: string[] = [];
+          try {
+            await store.updateTask(taskId, parkPatch, deps.getRunContextFor(taskId));
+          } catch (error) {
+            const refused = dependencyRefusalResult("blocked-by dependency edges", error);
+            // Not a board rule? Keep this exit's existing outage behavior, including propagation.
+            if (!refused) throw error;
+            droppedBlockedByIds = blockedByIds;
+            const { dependencies: _refusedEdge, ...parkWithoutDependencies } = parkPatch;
+            await store.updateTask(taskId, parkWithoutDependencies, deps.getRunContextFor(taskId));
+          }
+          /*
+          FNXC:DependencyRefusal 2026-11-19-03:05 (RUFU-552):
+          `blockedBy` in this row is read as "the durable edges this park recorded", which is what the
+          dependency-completion requeue will act on. Reporting the REQUESTED ids after the store refused
+          them would advertise an edge that does not exist on the row - the same invisible-state shape this
+          card removes everywhere else, and one an operator cannot distinguish from a real edge. So the
+          value is what persisted: the requested ids when the write took them, empty when the degradation
+          withheld the whole `dependencies` key. The key set itself is unchanged, so the documented
+          ids/outcomes-only contract for `task:execution-blocked-parked` still holds.
+          */
+          const recordedBlockedByIds = droppedBlockedByIds.length > 0 ? [] : blockedByIds;
+          const droppedEdgeNote = droppedBlockedByIds.length > 0
+            ? ` The blockedBy edge(s) ${droppedBlockedByIds.join(", ")} were refused because adding them would close a dependency cycle. `
+              + "The card is still parked blocked, but with no durable dependency edge the dependency-completion requeue has nothing to read, "
+              + "so this card may need a manual retry once the blocker finishes."
+            : "";
 
           await store.logEntry(
             taskId,
-            thrashExhausted
+            (thrashExhausted
               ? `${parkError} — durable external block thrash-exhausted (signature=${classification.thrashSignature}); parked failed, no auto-requeue`
-              : `${parkError} — recorded dependencies: ${blockedByIds.join(", ")} — parked failed (honest blocked exit; steps preserved)`,
+              : droppedBlockedByIds.length > 0
+                ? `${parkError} — parked failed (honest blocked exit; steps preserved); blockedBy dependency edge NOT recorded`
+                : `${parkError} — recorded dependencies: ${blockedByIds.join(", ")} — parked failed (honest blocked exit; steps preserved)`)
+              + droppedEdgeNote,
             undefined,
             deps.getRunContextFor(taskId),
           );
@@ -365,7 +411,7 @@ export function createTaskDoneTool(
             target: taskId,
             metadata: {
               taskId,
-              blockedBy: blockedByIds,
+              blockedBy: recordedBlockedByIds,
               hasReason: true,
               parkedAs: "failed",
               blockedClass: classification.class,
@@ -385,7 +431,9 @@ export function createTaskDoneTool(
               type: "text" as const,
               text: thrashExhausted
                 ? "Task parked as blocked (failed) after repeated identical durable blocks — no further automatic retries. Resolve the blocking tasks before retrying."
-                : `Task parked as blocked (failed). Recorded ${blockedByIds.length} blocking task dependency(ies); it will requeue once they complete. Steps left in their true statuses; no completion recorded.`,
+                : droppedBlockedByIds.length > 0
+                  ? `Task parked as blocked (failed). The blockedBy edge(s) ${droppedBlockedByIds.join(", ")} were refused: they would close a dependency cycle, so no durable dependency was recorded and the existing list is unchanged. The card stays parked blocked; because the durable edge is what requeues it, this card may need a manual retry once the blocker finishes. Steps left in their true statuses; no completion recorded.`
+                  : `Task parked as blocked (failed). Recorded ${blockedByIds.length} blocking task dependency(ies); it will requeue once they complete. Steps left in their true statuses; no completion recorded.`,
             }],
             details: {},
           };

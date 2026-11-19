@@ -23,7 +23,16 @@ import type { ToolDefinition, AgentSession } from "@earendil-works/pi-coding-age
 import type { ReviewVerdict } from "../execution/reviewer.js";
 import type { StuckTaskDetector } from "../healing/stuck-task-detector.js";
 import { executorLog } from "../logger.js";
-import { stepLifecycleNoopResult, storeErrorResult } from "../tool-store-errors.js";
+/*
+FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+The store's cycle guard refuses before it writes, and until this card that refusal escaped as a throw:
+the agent turn died, the run was charged a planning/execution attempt for a board rule, and because the
+throw happens before the write the refused edge left no trace anywhere - the agent log records tool
+names, never arguments. Both dependency writes in this file now catch it and answer with a refusal that
+names the loop, and record it on the card. `storeWriteFailure` is newly imported because the new catch
+arms must keep the store-outage shape for the rejections that genuinely are one.
+*/
+import { dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "../tool-store-errors.js";
 import { guardBoundWriteTarget } from "../task-write-target.js";
 
 const STEP_STATUSES: StepStatus[] = ["pending", "in-progress", "done", "skipped"];
@@ -283,7 +292,36 @@ export function createTaskUpdateTool(
                 details: {},
               };
             }
-            await store.updateTask(taskId, { dependencies });
+            /*
+            FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+            A refused edge is not a store outage. `storeWriteFailure` alone would have called this a
+            transient failure and told the agent to retry a deterministic refusal, so the dependency
+            codes are classified first and only the remaining rejections keep the retry guidance. A
+            rename earlier in this same call DID persist, so the refusal says so - otherwise the agent
+            re-sends the whole call and cannot tell which half already landed.
+            */
+            try {
+              await store.updateTask(taskId, { dependencies });
+            } catch (error) {
+              const refused = dependencyRefusalResult("dependencies", error);
+              if (refused) {
+                const facts = dependencyDomainRefusal(error);
+                if (facts) {
+                  await store
+                    .logEntry(
+                      taskId,
+                      `Dependency write refused by the board's dependency rule - ${facts.summary}. ` +
+                        "Nothing was persisted for that edge; the dependency list still holds its previous value.",
+                    )
+                    .catch((logErr: unknown) => executorLog.warn(`${taskId}: failed to record a refused dependency edge: ${logErr}`));
+                }
+                if (titleNote) refused.content[0].text += titleNote;
+                return refused;
+              }
+              const depsWriteFailed = storeWriteFailure("dependencies", error);
+              if (titleNote) depsWriteFailed.content[0].text += titleNote;
+              return depsWriteFailed;
+            }
             return {
               content: [{ type: "text" as const, text: `Dependencies updated.${titleNote}` }],
               details: {},
@@ -375,8 +413,35 @@ export function createTaskUpdateTool(
             };
           }
 
-          // Update dependencies
-          await store.updateTask(taskId, { dependencies });
+          /*
+          FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+          This write sits BEFORE the step transition on purpose: a dependency the board will refuse must
+          not leave the card mid-call with its step moved and its blockers unchanged. The refusal states
+          what persisted and what did not, because the title rename above already landed and an agent
+          reading only "refused" has no way to know how much to re-send.
+          */
+          try {
+            await store.updateTask(taskId, { dependencies });
+          } catch (error) {
+            const refused = dependencyRefusalResult("dependencies", error);
+            if (refused) {
+              const facts = dependencyDomainRefusal(error);
+              if (facts) {
+                await recordDependencyRefusal(facts, {
+                  taskId,
+                  log: (id, action) => store.logEntry(id, action),
+                  note: `Nothing was persisted for that edge and step ${step} was not transitioned.`,
+                  warn: (message) => executorLog.warn(message),
+                });
+              }
+              refused.content[0].text +=
+                ` Step ${step} → ${status} was NOT applied and the dependency list still holds its previous value.${titleNote}`;
+              return refused;
+            }
+            const depsWriteFailed = storeWriteFailure("dependencies", error);
+            if (titleNote) depsWriteFailed.content[0].text += titleNote;
+            return depsWriteFailed;
+          }
         }
 
         /*

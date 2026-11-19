@@ -22,7 +22,7 @@ The tool body below owns schema-shaped refusals only; candidacy, content proof, 
 */
 import { HEARTBEAT_REVIEW_VERDICTS, recordHeartbeatReviewVerdict, type HeartbeatReviewVerdict } from "./review/record-review-verdict.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
-import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
+import { STORE_RETRY_GUIDANCE, dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
@@ -4811,7 +4811,28 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
           if (invalidIds.length) {
             return { content: [{ type: "text" as const, text: `ERROR: Unknown dependency task(s): ${invalidIds.join(", ")}` }], details: {}, isError: true };
           }
-          await store.updateTask(taskId, { dependencies: params.dependencies });
+          /*
+          FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+          `assertNoDependencyCycleImpl` refuses BEFORE it writes, and this call had no catch, so the board's
+          own dependency rule escaped this tool as an exception - the agent saw an undiagnosed failure, the
+          card carried no trace of the proposed edge, and the planner's default response to an unexplained
+          failure was to spend another cycle retrying it. A refusal is an answer, so it resolves as one.
+          A store outage keeps the retry-shaped composer instead: the distinction IS the deliverable.
+          */
+          try {
+            await store.updateTask(taskId, { dependencies: params.dependencies });
+          } catch (error) {
+            const facts = dependencyDomainRefusal(error);
+            if (facts) {
+              await recordDependencyRefusal(facts, {
+                taskId,
+                log: (id, action) => store.logEntry(id, action),
+                note: "Nothing was persisted; the dependency list still holds its previous value.",
+              });
+            }
+            return dependencyRefusalResult(`dependency list on ${taskId}`, error)
+              ?? storeWriteFailure(`dependency list on ${taskId}`, error);
+          }
         }
         if (params.step !== undefined && params.status !== undefined) {
           let stepWrite: Task;
@@ -4921,7 +4942,27 @@ export function createTaskAddDepTool(store: TaskStore, taskId: string): ToolDefi
           };
         }
         if (depId === taskId) return { content: [{ type: "text" as const, text: "ERROR: cannot add self-dependency." }], details: {}, isError: true };
-        await store.updateTask(taskId, { dependencies: [...(task.dependencies || []), depId] });
+        /*
+        FNXC:DependencyRefusal 2026-11-19-00:30 (RUFU-552):
+        This file's generic catch below already answers with the store-outage retry shape, which is why a
+        cyclic edge proposal read as "the board is unreachable, retry" - a rule and an outage wore one face.
+        The dependency class is classified first, inside its own boundary, and records the refused edge on
+        the card before returning.
+        */
+        try {
+          await store.updateTask(taskId, { dependencies: [...(task.dependencies || []), depId] });
+        } catch (error) {
+          const facts = dependencyDomainRefusal(error);
+          if (facts) {
+            await recordDependencyRefusal(facts, {
+              taskId,
+              log: (id, action) => store.logEntry(id, action),
+              note: `Nothing was added: ${depId} is not in ${taskId}'s dependency list.`,
+            });
+          }
+          return dependencyRefusalResult(`dependency declaration adding ${depId}`, error)
+            ?? storeWriteFailure(`dependency declaration adding ${depId}`, error);
+        }
         return { content: [{ type: "text" as const, text: `Added dependency ${depId} to ${taskId}` }], details: { taskId, dependency: depId } };
       } catch (err: unknown) {
         return storeErrorResult("dependency declaration", err);
