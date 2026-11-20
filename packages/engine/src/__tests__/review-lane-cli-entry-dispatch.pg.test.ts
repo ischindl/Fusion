@@ -80,6 +80,65 @@ function reviewer(): Agent {
   } as unknown as Agent;
 }
 
+/*
+FNXC:ReviewLanePool 2026-11-20-03:13 (RUFU-530):
+Pool-shaped collaborators for the pass-level proof below. `reviewer()` above is single-reviewer by shape and is
+used by nine existing cases, so the pool case gets its own named reviewer rather than a widened signature that
+would silently change what those nine assert.
+*/
+function poolReviewer(id: string): Agent {
+  return {
+    id,
+    name: `Pool ${id}`,
+    roles: ["reviewer"],
+    metadata: {},
+    runtimeConfig: { enabled: true },
+  } as unknown as Agent;
+}
+
+/**
+ * A roster whose live-run answer is per agent and mutable, which is the only way to drive the pool's second
+ * routing arm through a real pass: the sweep reads `getActiveHeartbeatRun` once per member at the top of every
+ * tick, so mutating the map between ticks is what makes a reviewer busy for the next pass.
+ */
+function fakeAgentStoreWithRuns(
+  reviewers: Agent[],
+  runs: Map<string, AgentHeartbeatRun | null>,
+): AgentStore {
+  return {
+    listAgents: async () => reviewers,
+    getActiveHeartbeatRun: async (agentId: string) => runs.get(agentId) ?? null,
+  } as unknown as AgentStore;
+}
+
+/**
+ * Pin a card's review-entry time by COMMITTING a later `task:entered-review` event whose `occurred_at` is older.
+ * `latestTaskEnteredReviewAt` reads the newest row by `seq` and returns its `occurred_at`, so this is the
+ * sanctioned way to fix the queue order a tick will see: three cards moved back to back would otherwise carry
+ * millisecond-identical entries and "the two oldest" would be a coin flip.
+ */
+async function stampReviewEntryAt(
+  store: TaskStore,
+  projectId: string,
+  taskId: string,
+  fromColumn: string,
+  toColumn: string,
+  occurredAt: string,
+): Promise<void> {
+  const layer = store.asyncLayer;
+  expect(layer).toBeTruthy();
+  await layer!.transactionImmediate(async (tx) => {
+    await appendTaskLifecycleEventInTransaction(tx, {
+      projectId,
+      eventType: "task:entered-review",
+      taskId,
+      occurredAt,
+      payload: { taskId, previousColumn: fromColumn, toColumn, enteredAt: occurredAt, actor: "test-seed" },
+    });
+  });
+  store.taskCache.delete(taskId);
+}
+
 /**
  * The CLI's exact call shape (`moveSource: "user"`, nothing else), so the test cannot drift from
  * the production path it claims to prove. Step 1 measured the real CLI doing exactly this twice in
@@ -517,6 +576,157 @@ pgTest("a CLI-shaped move into the review lane gets reviewer work from one sweep
     const result = await sweep.tick(new Date(Date.now() + 1_000));
     expect(result.classes["awaiting-handoff"]).toBe(0);
     expect(result.dispatched).toEqual([taskId]);
+  });
+
+  /*
+  FNXC:ReviewLanePool 2026-11-20-03:13 (RUFU-530):
+  The positive control for the sentence the docs now carry: the POOL is the concurrency, the per-tick constant
+  (4) is only a ceiling above it. One enabled reviewer asked for ten dispatches still moves exactly one card,
+  because a reviewer holds one session at a time — the behaviour that must NOT have changed when the cap became
+  4. The existing single-reviewer cases each hold one card, so none of them could see a second card waiting.
+  */
+  it("CONTROL — one enabled reviewer still moves exactly one card per tick with the ceiling at 10 (PostgreSQL)", async () => {
+    const key = "pool_one_reviewer";
+    const { store, boardId } = await seedBoard(DEFAULT_VOCAB, key);
+    const only = poolReviewer("agent-pool-solo");
+
+    const older = await cardInWip(store, boardId, "pool solo older probe", DEFAULT_VOCAB);
+    const newer = await cardInWip(store, boardId, "pool solo newer probe", DEFAULT_VOCAB);
+    await moveLikeTheCli(store, older, DEFAULT_VOCAB.review);
+    await moveLikeTheCli(store, newer, DEFAULT_VOCAB.review);
+    const stampBase = Date.now();
+    for (const [taskId, minutesAgo] of [[older, 4], [newer, 2]] as const) {
+      await stampReviewEntryAt(
+        store,
+        `proj-${key}`,
+        taskId,
+        DEFAULT_VOCAB.wip,
+        DEFAULT_VOCAB.review,
+        new Date(stampBase - minutesAgo * 60_000).toISOString(),
+      );
+    }
+
+    const runs = new Map<string, AgentHeartbeatRun | null>([[only.id, null]]);
+    const calls: Array<{ agentId: string; taskId?: string }> = [];
+    const result = await new ReviewDispatchSweep({
+      store,
+      agentStore: fakeAgentStoreWithRuns([only], runs),
+      heartbeatMonitor: fakeHeartbeatMonitor(calls),
+      graceMs: 0,
+      maxDispatchesPerTick: 10,
+    }).tick(tickAfterEntry());
+
+    expect(result.dispatched).toEqual([older]);
+    expect(calls).toEqual([{ agentId: only.id, taskId: older }]);
+    // The waiting card is counted and untouched, not dispatched and not reported as a missing reviewer.
+    expect(result.classes["never-dispatched"]).toBe(2);
+    expect(result.classes["no-reviewer"]).toBe(0);
+    expect(await listReviewerRunsForTask(store, newer)).toHaveLength(0);
+    expect(await reviewDeclineRows(`proj-${key}`)).toHaveLength(0);
+  });
+
+  /*
+  FNXC:ReviewLanePool 2026-11-20-03:13 (RUFU-530):
+  The reachability gap the merged change left open. Before this case the pool's routing was proven only by the
+  pure resolver (`review-lane-pool-dispatch.test.ts` asserts `resolveReviewSlot` directly and reaches pool
+  resolution through a private cast), so nothing ever drove the SHIPPED `tick()` with two enabled reviewers. That
+  is the shape a mock cannot see: a two-reviewer pass has to survive the real `task_reviewer_runs` write, whose
+  live slot is per CARD (`task_reviewer_runs_live_unique`), and a routing bug that opened two live attempts for
+  ONE card would have read green in every pure-resolver test.
+
+  The contract under test is the one the old single-reviewer rule destroyed: pool size IS the lane's concurrency,
+  so with two enabled reviewers and three waiting cards the two OLDEST go to two DIFFERENT reviewers in one pass,
+  each with its own durable ledger attribution. The second pass pins the other half: a saturated pool is a
+  NAMED wait (`review-in-flight` for the card its reviewer is running, `reviewer-busy` for the card whose pool is
+  busy elsewhere, and the still-unattempted card stays counted as `never-dispatched` while the tick's `!free`
+  guard withholds the dispatch), never a silent skip and never E4. `no-reviewer` belongs to zero reviewers only
+  (RUFU-478), which is why it is asserted zero here rather than merely unmentioned.
+  */
+  it("two enabled reviewers dispatch the two oldest cards to two different reviewers, and a saturated pool names the wait (PostgreSQL)", async () => {
+    const key = "pool_two_reviewers";
+    const { store, boardId } = await seedBoard(DEFAULT_VOCAB, key);
+    const [first, second] = [poolReviewer("agent-pool-a"), poolReviewer("agent-pool-b")];
+
+    /*
+     * The fixture's WIP lane is capacity-gated by the `wip` trait's `limitSetting: "maxConcurrent"` and the
+     * store default is 2, so a THREE-card review queue cannot be assembled without raising it. This is the
+     * established writer for that limit (`workflow-lifecycle-live-e2e.pg.test.ts:708`), not a bypass: the moves
+     * still run the real admission judge, and nothing in the sweep reads `maxConcurrent`.
+     */
+    await store.updateSettings({ maxConcurrent: 5 });
+
+    const oldest = await cardInWip(store, boardId, "pool oldest probe", DEFAULT_VOCAB);
+    const middle = await cardInWip(store, boardId, "pool middle probe", DEFAULT_VOCAB);
+    const youngest = await cardInWip(store, boardId, "pool youngest probe", DEFAULT_VOCAB);
+    for (const taskId of [oldest, middle, youngest]) {
+      await moveLikeTheCli(store, taskId, DEFAULT_VOCAB.review);
+    }
+    // Entry order is fixed AFTER the moves, because the reader takes the highest-seq event per card.
+    const stampBase = Date.now();
+    for (const [taskId, minutesAgo] of [[oldest, 3], [middle, 2], [youngest, 1]] as const) {
+      await stampReviewEntryAt(
+        store,
+        `proj-${key}`,
+        taskId,
+        DEFAULT_VOCAB.wip,
+        DEFAULT_VOCAB.review,
+        new Date(stampBase - minutesAgo * 60_000).toISOString(),
+      );
+    }
+
+    const runs = new Map<string, AgentHeartbeatRun | null>([[first.id, null], [second.id, null]]);
+    const calls: Array<{ agentId: string; taskId?: string }> = [];
+    const sweep = new ReviewDispatchSweep({
+      store,
+      agentStore: fakeAgentStoreWithRuns([first, second], runs),
+      heartbeatMonitor: fakeHeartbeatMonitor(calls),
+      graceMs: 0,
+      maxDispatchesPerTick: 10,
+    });
+
+    const pass1 = await sweep.tick(tickAfterEntry());
+
+    // Oldest-first queue, and the pool — not the per-tick ceiling of 4 — is what let two cards move.
+    expect(pass1.dispatched).toEqual([oldest, middle]);
+    expect(calls.map((call) => call.taskId)).toEqual([oldest, middle]);
+    expect(new Set(calls.map((call) => call.agentId)).size).toBe(2);
+    expect(pass1.classes["no-reviewer"]).toBe(0);
+    // All three cards were CLASSIFIED even though only two moved: the third is counted, not dropped.
+    expect(pass1.classes["never-dispatched"]).toBe(3);
+
+    /*
+     * Durable attribution, not an in-memory one: one live attempt per dispatched card, naming two different
+     * reviewers. Two live rows for ONE card is the failure shape this file exists to catch, and only a real
+     * index can see it.
+     */
+    const rowsOldest = await listReviewerRunsForTask(store, oldest);
+    const rowsMiddle = await listReviewerRunsForTask(store, middle);
+    expect(rowsOldest).toHaveLength(1);
+    expect(rowsMiddle).toHaveLength(1);
+    expect(rowsOldest[0]!.status).toBe("running");
+    expect(rowsMiddle[0]!.status).toBe("running");
+    expect(rowsOldest[0]!.reviewerAgentId).not.toBe(rowsMiddle[0]!.reviewerAgentId);
+    expect([rowsOldest[0]!.reviewerAgentId, rowsMiddle[0]!.reviewerAgentId].sort()).toEqual([first.id, second.id].sort());
+    // The board the attempt was opened from still satisfies the NOT NULL column on the second routing arm.
+    expect(await ledgerBoardId(oldest)).toBe(boardId);
+    expect(await listReviewerRunsForTask(store, youngest)).toHaveLength(0);
+
+    // A pool of two is capacity, so RUFU-478's durable decline row must NOT be written for it.
+    expect(await reviewDeclineRows(`proj-${key}`)).toHaveLength(0);
+
+    // Saturate the pool: one reviewer runs THIS board's oldest card, the other works on another card entirely.
+    runs.set(first.id, { agentId: first.id, taskId: oldest, status: "active" } as unknown as AgentHeartbeatRun);
+    runs.set(second.id, { agentId: second.id, taskId: "OTHER-BOARD-CARD", status: "active" } as unknown as AgentHeartbeatRun);
+
+    const pass2 = await sweep.tick(tickAfterEntry());
+
+    expect(pass2.dispatched).toEqual([]);
+    expect(calls).toHaveLength(2); // no launcher call was added by a pass with no free slot
+    expect(pass2.classes["review-in-flight"]).toBe(1); // the oldest card keeps the session it already has
+    expect(pass2.classes["reviewer-busy"]).toBe(1); // the middle card waits on a busy pool, named as a wait
+    expect(pass2.classes["never-dispatched"]).toBe(1); // the youngest is still in the accounting
+    expect(pass2.classes["no-reviewer"]).toBe(0); // a busy pool is never reported as a missing reviewer
+    expect(await listReviewerRunsForTask(store, youngest)).toHaveLength(0);
   });
 });
 

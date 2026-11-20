@@ -432,7 +432,7 @@ first match wins: `E2 → E4 → E1 → E3 → B4 → E5 → B6 → B2 → B3 �
 | Bucket | Persisted state | Disposition |
 | --- | --- | --- |
 | E2 paused | `paused === true` | skip — no reviewer work is owed |
-| E4 no-reviewer | zero, or more than one, enabled reviewer | fail loud, never pick a substitute agent |
+| E4 no-reviewer | zero enabled reviewers | fail loud, never pick a substitute agent; the durable record is `task:review-dispatch-declined` |
 | E1 review-level exclusion | review level None/0, or Plan-only with plan review satisfied | skip |
 | E3 nothing-reviewable | in review with no reviewable step, or a recorded nothing-reviewable outcome | fail loud, invent no review |
 | B4 running-live | open attempt **corroborated** by a live reviewer session on this exact card | skip, healthy |
@@ -449,12 +449,43 @@ identity `review-lane total = B1+B2+B3+B4+B5+B6+E1+E2+E3+E4+E5` (each card ID ex
 under-count guard: a snapshot that does not reconcile is invalid, not merely incomplete. An empty
 actionable set is **not** proof of anything; record `NO LIVE CASE OBSERVED — NOT PROOF`.
 
+<!-- FNXC:ReviewLanePool 2026-11-20-03:13 (RUFU-530): RUFU-530 shipped review dispatch over a SET of reviewer
+slots. Before this edit the section stated the pre-change contract in two places: `E4` covered every pool size
+except exactly one enabled reviewer, and the lane cadence was justified by a sole reviewer whose single session
+could receive a single card each tick. Both asserted the opposite of the shipped code, and the second named a
+ceiling an operator could not raise. Requirement recorded here: the enabled-reviewer pool IS the lane's
+concurrency, `DEFAULT_MAX_DISPATCHES_PER_TICK` is only a ceiling above it, one live session per reviewer is
+the rule that survived the change, and `E4` means zero enabled reviewers only. -->
+
+**More than one enabled reviewer is capacity, not a refusal.** The pool is every enabled, non-ephemeral
+agent carrying the `reviewer` role (`resolveReviewerPool`), and each member is one dispatch slot, so two
+enabled reviewers review two cards at once. `E4` names zero enabled reviewers and nothing else; it is the
+only reviewer state that declines the lane, and its durable record is `task:review-dispatch-declined` with
+reason `no-enabled-reviewer` (RUFU-478) — named here as a pointer to that contract, not re-implemented by
+this section. A pool of two or more logs one rate-limited line naming the ceiling it makes available:
+`Review lane pool: N enabled reviewers, so up to N concurrent reviews (one session per reviewer).`
+
+**Reviewer-slot contract, in this order** (`resolveReviewSlot`, resolved before the bucket ladder sees a
+run). **(1)** A reviewer already running THIS card keeps it: its own run is handed to the classifier, so the
+card is `review-in-flight` and no second session opens. **(2)** Otherwise the first reviewer not already
+allocated earlier in this tick and holding no run takes the card, and it is handed `activeRun: null` — that
+null is what authorises a dispatch, so handing a busy run here would serialise the pool back to one.
+**(3)** A lane whose capability refusal is on record for this card is not re-offered it: arms 2 and 3 skip
+it, while arm 1 stays deliberately unfiltered because a lane running the card is a fact about a live session.
+**(4)** When every member is allocated or busy the card is counted, never dropped: a card with a live
+attempt is `reviewer-busy`, and a card with no attempt yet stays `never-dispatched` while the tick's own
+`!free` guard withholds the dispatch. Neither shape is ever `no-reviewer` — that bucket belongs to an empty
+pool alone.
+
 **Cadence and thresholds, all derived and none tunable to hide a problem:** one shared scheduler tick
 of 15,000 ms (`DEFAULT_REVIEW_TICK_MS`, equal to `pollIntervalMs`, not a competing timer); a 30,000 ms
 handoff-settle grace (two ticks, 2,880x below the 86,400,000 ms `inReviewStalledThresholdMs` gate
 `surfaceInReviewStalled` still owns with its observation-only contract intact); the 120,000 ms
-start-latency bound above; 3 attempts; and 1 dispatch per tick, because the reviewer is a
-single-session agent and `startRun` fails an existing active run before starting another. Eligibility
+start-latency bound above; 3 attempts; and at most `DEFAULT_MAX_DISPATCHES_PER_TICK` (4) dispatches per
+tick, which is a ceiling ABOVE the reviewer pool rather than the lane's concurrency — the pool of enabled
+reviewers is the concurrency, because a reviewer allocated earlier in the same tick or already holding a
+run is never given a second card, one live session per reviewer being the rule that survived the change
+(`startRun` fails an existing active run before starting another). Eligibility
 is re-derived from persisted state every tick — lane, `paused`, ledger, live run — never from process
 memory, so a restart re-derives the same decisions and the `task_reviewer_runs_live_unique` partial
 index makes a concurrent second dispatch a no-op.
@@ -462,22 +493,36 @@ index makes a concurrent second dispatch a no-op.
 ### Running these tests
 
 ```bash
-# classification + timing (20 tests; run by both engine projects, hence 40)
-pnpm --filter @runfusion/fusion exec vitest run src/__tests__/review-lane-dispatch-sweep.test.ts --silent=passed-only --reporter=dot
-# dispatch proof against a real PostgreSQL store, including entry-path attribution
-# identity via PGUSER/PGPASSWORD (both documented fallbacks to URL userinfo)
-PGUSER=postgres PGPASSWORD=<from your local test harness> \
+# classification + timing (38 tests per engine project, 76 across both engine projects)
+pnpm --filter @fusion/engine exec vitest run src/__tests__/review-lane-dispatch-sweep.test.ts --silent=passed-only --reporter=dot
+# pool routing rules: resolveReviewSlot arms and pool resolution (8 tests)
+pnpm --filter @fusion/engine exec vitest run src/__tests__/review-lane-pool-dispatch.test.ts --silent=passed-only --reporter=dot
+# dispatch proof against a real PostgreSQL store: entry-path attribution, the live-slot index,
+# and the two-reviewer pass that sends two cards to two reviewers (12 tests)
+# identity comes from the URL userinfo, else PGUSER/PGPASSWORD, else this OS user; a cluster
+# provisioned by `pnpm pg:test:up` answers as this OS user, so no PGUSER pair is needed here
 FUSION_PG_TEST_URL_BASE="postgresql://<host>:<port>" \
-  pnpm --filter @runfusion/fusion exec vitest run src/__tests__/review-lane-cli-entry-dispatch.pg.test.ts --silent=passed-only --reporter=dot
+  pnpm --filter @fusion/engine exec vitest run src/__tests__/review-lane-cli-entry-dispatch.pg.test.ts --silent=passed-only --reporter=dot
 pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/review-lane-entry-lifecycle.pg.test.ts --silent=passed-only --reporter=dot
 ```
 
+Every line above was observed to run the file it names. That is worth stating because these are
+`@fusion/engine` files: a `--filter @runfusion/fusion` run of the same paths matches **zero** files, since
+that package's vitest `include` only sees `src/**` inside `packages/cli`, and a zero-file run reports green.
+The engine's curated gate list carries `review-lane-dispatch-sweep.test.ts`, which is the confirmation that
+these paths belong to `@fusion/engine`.
+
 The two `.pg.test.ts` files follow the engine's Postgres convention: they skip when no server is
 reachable so the merge gate stays green headless, which means a headless `test:gate` pass is **not**
-evidence they ran. Prove the Postgres lanes executed by the reported test count (13 in
-`test:pg-gate`, 4 in each file above), never by a green check mark on a skipped file. Give
-`FUSION_PG_TEST_URL_BASE` a throwaway server with admin DDL — the machine's default `localhost:5432`
-refuses this OS user, and the engine's embedded instance is never a test database.
+evidence they ran. Prove the Postgres lanes executed by the reported test count — measured 13 across the
+three files of `test:pg-gate`, 12 in the engine entry-path file, 4 in the core entry-lifecycle file — never
+by a green check mark on a skipped file. Give
+`FUSION_PG_TEST_URL_BASE` a throwaway server with admin DDL: on Linux, **export**
+`FUSION_PG_TEST_URL_BASE=postgresql://localhost:<free port>` (a port nothing is listening on — `ss -ltn`
+answers that) with **no** database path appended and **then** run `pnpm pg:test:up`, which provisions that
+port and prints the same export line back. Passing `--port` without exporting first does not repoint the
+harness probe — it measures the default server and refuses. The machine's default `localhost:5432` refuses
+this OS user, and the engine's embedded instance is never a test database.
 
 **Three checks were already red at the deployed pin and are not this change's.** When this work
 landed, `schema-applier.test.ts` failed 7 assertions (FN-227 added migration `0071` without updating
