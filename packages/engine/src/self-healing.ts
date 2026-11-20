@@ -292,6 +292,8 @@ import { createCompleteLaneEvidenceNoticeSender } from "./notification/complete-
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { noteFinalizationPass } from "./merge/finalization-refusal-notice.js";
 import { diagnosticSignature, logDiagnosticOnce } from "./util/durable-diagnostic-log.js";
+import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
+import { probeRepoRootIsGitRepository, type RepoRootProbeResult } from "./self-healing/repo-root-probe.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { rerouteSingularStaleContentToReview } from "./merge/stale-content-review-reroute.js";
 import {
@@ -747,6 +749,31 @@ import {
 } from "./healing/self-healing-path-utils.js";
 
 const log = createLogger("self-healing");
+
+/*
+FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+The self-healing sweeps that use `rootDir` as the git working directory share ONE refusal vocabulary.
+`worktree:repo-root-refused` is a single event for the whole family (sweep identity is the fixed
+`sweep` metadata enum, the shape the orphaned-git-child pair already uses), so a second refusal event
+name cannot drift a reviewer's query away from the first. `project-repo-root` is the row's sentinel
+TARGET because the real project path is unrepresentable in run-audit by construction: the same defect
+that made the sweep invisible must not be re-committed as a path in the audit store.
+*/
+type RepoRootRefusalSweep = "stale-active-branch-reclaim" | "maintenance-worktree-prune";
+const REPO_ROOT_REFUSAL_RUN_ID = "repo-root-probe";
+const REPO_ROOT_REFUSAL_TARGET = "project-repo-root";
+/** Card-write bound for a refused pass: three named cards is the reviewable sample, not a full board write. */
+const REPO_ROOT_REFUSAL_CARD_CAP = 3;
+
+/*
+FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+The repeat-suppression seam offers only `log`/`warn` arms. The measured production sentence was
+error-level, and the task's own rule is that quieting the log may never mean downgrading the
+_diagnostic_ — so the transition is routed through the seam (which is what bounds it) while its
+news arm keeps ERROR severity. The `debug` arm stays inherited, which is the whole point: an
+unchanged repeat is not news on every 15-minute pass.
+*/
+const REPO_ROOT_REFUSAL_ERROR_LOGGER = { ...log, warn: (message: string) => log.error(message) };
 
 /*
 FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
@@ -2278,6 +2305,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private inFlightChatGenerationNoActionAudited = false;
   /* FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210): idle orphan-git reaps emit one no-action audit until a real reap re-arms the diagnostic (mirrors the symbol-lock memo). */
   private orphanedGitChildReapNoActionAudited = false;
+  /*
+  FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+  Latch for the zero-candidate repo-root refusal row, mirroring `orphanedGitChildReapNoActionAudited`
+  directly above: a pass that refuses while naming no card still has to be visible ONCE, and a sweep
+  that runs at the hourly churn cadence must not turn that visibility into an audit-row flood. It
+  re-arms whenever a pass proves the root, so a root that breaks again after working is news again.
+  This is deliberately NOT the only bound — in-process memory dies with the supervised restart
+  (RUFU-643's whole point); the durable per-card once-seam in `surfaceRepoRootRefusal` is.
+  */
+  /**
+   * Sweeps whose ZERO-CARD refusal already owns a refusal row in this manager lifetime. Keyed PER SWEEP:
+   * two sweeps refusing in one maintenance batch are two distinct facts, and a single shared latch made
+   * the second refusal of the batch silent again — the exact evidence gap this gate removes.
+   */
+  private readonly repoRootRefusalZeroCandidateAudited = new Set<RepoRootRefusalSweep>();
+  private readonly repoRootRefusalLog = createRepeatSuppressedLog();
   private maintenanceTickCounter = 0;
   private readonly taskLifecycleRetentionLastPrunedAt = new Map<string, number>();
   private readonly staleContentRerouteAuditKeys = new Set<string>();
@@ -7885,6 +7928,119 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return null;
   }
 
+  /**
+   * Prove the project root is a Git repository once for a sweep pass, and surface the refusal if not.
+   *
+   * FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+   * Measured on the production daemon (era pid 4051354 on :4040, boot 2026-10-28 09:31:39Z, 473,765
+   * lines read at 11:04Z): "Stale active branch reclaim sweep failed: Command failed: git branch
+   * --list 'fusion/*'" + "fatal: not a git repository (or any parent up to mount point /)" appeared 7
+   * times — exactly one per sweep invocation across the whole era — while the sweep's own success line
+   * "Reclaimed <n> stale active fusion branch(es) with no usable worktree" appeared 0 times, and
+   * "Worktree prune failed: Command failed: git worktree prune" appeared 2 times. Mechanism measured
+   * with a control: both git commands fail at the workspace root `saneca-ws` and succeed in its member
+   * `saneca-ws/lager-manager`. Because the whole per-card loop sat inside one try, a single unproven
+   * root abandoned the pass before any candidate was examined, writing no reclaim row and no History
+   * line — so "nothing to reclaim" and "cannot look" produced identical evidence.
+   *
+   * The invariant: a self-healing pass may not spawn git against a root it has not proven to be a
+   * repository. Cost is one bounded probe spawn per pass, with no memo — a memo would keep refusing
+   * (or keep allowing) across a repair the manager never re-reads.
+   *
+   * Lifecycle containment: the refusal arm writes no column, status, error, pause, stallReason or
+   * approval-hold reason. The card's stale pointer is preserved exactly as it was before this gate;
+   * the only card write is the bounded diagnostic History line.
+   *
+   * @param loadAffectedCards thunk so a healthy pass pays no extra store read; it runs only on refusal.
+   * @returns `true` when git may run for this pass.
+   */
+  private async proveRepoRootOrRefuse(
+    sweep: RepoRootRefusalSweep,
+    loadAffectedCards: () => Promise<Array<{ id: string }>> = async () => [],
+  ): Promise<boolean> {
+    const probe = await probeRepoRootIsGitRepository(this.options.rootDir);
+    if (probe.status === "repo") {
+      this.repoRootRefusalZeroCandidateAudited.delete(sweep);
+      return true;
+    }
+
+    let affected: Array<{ id: string }> = [];
+    try {
+      affected = await loadAffectedCards();
+    } catch (error: unknown) {
+      // The affected-card listing is a courtesy, not a precondition: a refusal the manager cannot
+      // attribute to cards is still a refusal, and it must still be reported.
+      log.debug(`[self-healing] ${sweep} could not enumerate affected cards for the repo-root refusal: ${String(error)}`);
+    }
+
+    await this.surfaceRepoRootRefusal(sweep, probe, affected);
+    return false;
+  }
+
+  /** Cards carrying a stale worktree/branch pointer — derived from the task row only, never from git. */
+  private async cardsHoldingRepoPointers(): Promise<Array<{ id: string }>> {
+    const tasks = await this.store.listTasks({ slim: true, includeArchived: false, excludeLog: true });
+    return tasks.filter((task) => Boolean(task.worktree) || Boolean(task.branch)).map((task) => ({ id: task.id }));
+  }
+
+  /**
+   * Report one refused pass: a bounded durable History line per affected card, one bounded refusal row,
+   * and one repeat-suppressed daemon sentence.
+   *
+   * FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+   * The deliverable here is the SURFACING, so none of the three arms may be dropped to make the log
+   * quiet. The per-card bound is the durable RUFU-643 once-seam (six-hour window), which is what
+   * survives the supervised dashboard restarts that defeat every in-process gate; it also means the
+   * refusal line cannot keep a card's liveness clocks open the way an unbounded `logEntry` would.
+   * The run-audit row is emitted when any durable card line actually landed — so the row and the card
+   * evidence appear together — and otherwise once per latch cycle for a refusal that names no card.
+   */
+  private async surfaceRepoRootRefusal(
+    sweep: RepoRootRefusalSweep,
+    refusal: Extract<RepoRootProbeResult, { status: "refused" }>,
+    affected: Array<{ id: string }>,
+  ): Promise<void> {
+    const signature = diagnosticSignature(`${sweep}:${refusal.reason}`);
+    let durableLinesAppended = 0;
+    for (const card of affected.slice(0, REPO_ROOT_REFUSAL_CARD_CAP)) {
+      const appended = await logDiagnosticOnce(this.store, card.id, {
+        action: `[self-healing] ${sweep} skipped: Fusion could not verify that the registered project directory is a Git repository, so this card's stale worktree/branch pointer was NOT reclaimed and no git command ran against that directory.`,
+        outcome: `repo-root-refused reason=${refusal.reason} rootState=${refusal.rootState}`,
+        dedupeKey: `repo-root-refused:${sweep}:${signature}`,
+        onWarn: (message) => log.debug(`[self-healing] repo-root refusal diagnostic could not be written for ${card.id}: ${message}`),
+      });
+      if (appended) durableLinesAppended++;
+    }
+
+    if (durableLinesAppended > 0 || !this.repoRootRefusalZeroCandidateAudited.has(sweep)) {
+      this.repoRootRefusalZeroCandidateAudited.add(sweep);
+      await emitBoundedRunAudit(this.store, {
+        agentId: "self-healing",
+        runId: REPO_ROOT_REFUSAL_RUN_ID,
+        domain: "git",
+        mutationType: "worktree:repo-root-refused",
+        target: REPO_ROOT_REFUSAL_TARGET,
+        metadata: {
+          sweep,
+          reason: refusal.reason,
+          rootState: refusal.rootState,
+          candidateTaskCount: affected.length,
+          outcome: "refused",
+        },
+      }, { log });
+    }
+
+    // Daemon sentence last and only here: the operator message may name the path, which is exactly what
+    // must never reach the audit store.
+    this.repoRootRefusalLog.logOnce(
+      REPO_ROOT_REFUSAL_ERROR_LOGGER,
+      `repo-root-refused:${sweep}`,
+      signature,
+      refusal.operatorMessage,
+      "warn",
+    );
+  }
+
   private async inspectOrphanedBranch(branch: string): Promise<{ tipSha: string; uniqueCommitCount: number } | null> {
     try {
       const tipSha = String(execSync(`git rev-parse --verify ${shellQuote(branch)}`, {
@@ -7914,6 +8070,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
+
+      /*
+      FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+      Prove the root BEFORE the first git spawn. Every command below this line runs with
+      `cwd: this.options.rootDir` — the branch listing, the per-card worktree status probe,
+      `inspectOrphanedBranch`, the branch delete, and the native prune — so on a root that is not a
+      repository the very first one threw, the broad catch at the bottom of this method turned that
+      into one error line, and the pass returned 0 without ever naming a card. The refusal verdict
+      replaces that crash-shaped outcome for THIS class only; the catch stays for genuinely
+      unexpected failures rather than being deleted to make the pass look clean.
+      */
+      if (!await this.proveRepoRootOrRefuse("stale-active-branch-reclaim", () => this.cardsHoldingRepoPointers())) {
+        return 0;
+      }
 
       const activeTaskIds = new Set<string>();
       if (this.options.agentStore) {
@@ -27992,6 +28162,21 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   private async pruneWorktrees(): Promise<void> {
     try {
       const settings = await this.store.getSettings();
+
+      /*
+      FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+      "Worktree prune failed: Command failed: git worktree prune" was measured 2 times in the same
+      production era as the reclaim abort, from the same missing precondition. The gate sits above
+      BOTH arms: a worktrunk spawn is still a git spawn for this pass, so gating only the native arm
+      would keep throwing the sentence this sweep is measured for. Prune owns no card set, so the
+      refusal names zero candidates and its row is bounded by the manager latch plus the
+      repeat-suppressed sentence — this pass runs at the hourly churn cadence and must not flood the
+      audit store with an identical refusal.
+      */
+      if (!await this.proveRepoRootOrRefuse("maintenance-worktree-prune")) {
+        return;
+      }
+
       const worktrunkEnabled = settings.worktrunk?.enabled === true;
       if (worktrunkEnabled) {
         const backend = resolveWorktreeBackend(settings, { logger: log });

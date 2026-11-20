@@ -3559,3 +3559,32 @@ literal is the defect, not a shortcut.**
   the guard can see, so a non-`FN` board now gets the refusal, the operator-facing sentence naming the real
   operand (`operates on RUFU-517 … and cannot also depend on it`), and the auto-reconcile that had been
   invisible to it. Whether more verbs belong in that list is a separate operator decision.
+
+## Project-root repository proof invariant (RUFU-804)
+
+A registered project root is a path, not a promise that a repository lives there. A project whose root is a
+**workspace folder holding member repositories** is a legitimate permanent registration, and Git does not
+walk upward past a non-repository to find one: `git branch --list 'fusion/*'` and `git worktree prune` fail
+there with `fatal: not a git repository` while the identical commands succeed in the member directory. So
+"the sweep threw" and "the sweep found nothing" are different facts that a sweep using `rootDir` as its git
+working directory must never be allowed to collapse.
+
+**A self-healing pass may not spawn git against a project root it has not proven to be a repository.**
+`probeRepoRootIsGitRepository` (`packages/engine/src/self-healing/repo-root-probe.ts`) is the ONE proof for
+that family — it reuses `detectGitRepository` rather than growing a parallel classifier, runs once per pass
+with **no memo** (a cached verdict keeps refusing, or keeps allowing, across a repair the manager never
+re-reads), and checks path existence **before** detection, because the shared classifier maps a missing
+working directory to `ENOENT` → `git-missing` and would report "the git binary is missing" for a folder that
+merely is not there. `SelfHealingManager.proveRepoRootOrRefuse` turns a refusal into three bounded surfaces
+— a durable per-card History line on the RUFU-643 once-seam (the bound that survives supervised restarts),
+one ids/counts/enums-only `worktree:repo-root-refused` row whose target is the sentinel `project-repo-root`
+(the real path has no route into the audit call, because the sentence that may name it goes only to the
+daemon log), and one repeat-suppressed daemon line — and nothing else: no column move, no `status`/`error`
+write, no pause, no stall-reason or approval-hold code, so a sweep that cannot inspect a branch never moves
+the card that owns it. `reclaimStaleActiveBranches` and `pruneWorktrees` are gated; the remaining root-git
+sites carry an explicit deliberately-unchanged verdict in
+[docs/solutions/reliability/self-healing-requires-proven-repo-root.md](solutions/reliability/self-healing-requires-proven-repo-root.md),
+which is also the adoption path for the next sweep. A gate must sit above **every** arm of a pass — a
+worktrunk backend call is still a git spawn for that pass — and the affected-card set must be derived from
+task rows, never by asking git the question the gate exists to refuse.
+

@@ -1,5 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RunAuditEventInput, Settings, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../../self-healing.js";
 
@@ -95,6 +99,26 @@ function wireExecSuccess() {
   });
 }
 
+/*
+FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+Every fixture here pointed `rootDir` at `"/tmp/project"`, a path that has never existed. That was
+harmless while `pruneWorktrees` asked nothing before spawning git; the sweep now proves the root
+first, and a directory that is not there is a named refusal (`missing-root`) rather than a prune —
+so an invariant about prune DELEGATION is unreachable from a fake path. The shared fixture is
+therefore a real temp repository, created through `execFileSync`, which the `node:child_process`
+mock above deliberately leaves real (it replaces only `exec` and `execSync`). Fixing the one
+fixture, not the six tests, is what keeps the per-test invariants exactly as they were.
+*/
+const projectRoot = (() => {
+  const root = mkdtempSync(join(tmpdir(), "wt-self-healing-"));
+  execFileSync("git", ["init"], { cwd: root, stdio: "pipe" });
+  return root;
+})();
+const PROJECT_ROOT = { rootDir: projectRoot };
+afterAll(() => {
+  rmSync(projectRoot, { recursive: true, force: true });
+});
+
 describe("reliability interactions: worktrunk x self-healing", () => {
   beforeEach(() => {
     execSpy.mockReset();
@@ -112,11 +136,11 @@ describe("reliability interactions: worktrunk x self-healing", () => {
     resolveBackendSpy.mockReturnValue({ kind: "worktrunk", prune });
 
     const store = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure: "fail" } } as Settings);
-    const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+    const manager = new SelfHealingManager(store, PROJECT_ROOT);
 
     await (manager as any).runMaintenance();
 
-    expect(prune).toHaveBeenCalledWith({ rootDir: "/tmp/project" });
+    expect(prune).toHaveBeenCalledWith(PROJECT_ROOT);
     expect(execSpy).not.toHaveBeenCalledWith(expect.stringContaining("git worktree prune"), expect.anything(), expect.anything());
   });
 
@@ -130,7 +154,7 @@ describe("reliability interactions: worktrunk x self-healing", () => {
     resolveBackendSpy.mockReturnValue({ kind: "worktrunk", prune });
 
     const store = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure } } as Settings, events);
-    const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+    const manager = new SelfHealingManager(store, PROJECT_ROOT);
 
     await (manager as any).pruneWorktrees();
 
@@ -149,11 +173,11 @@ describe("reliability interactions: worktrunk x self-healing", () => {
     scanIdleSpy.mockResolvedValue(["/tmp/project/.worktrees/idle"]);
 
     const store = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure: "fail" } } as Settings);
-    const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+    const manager = new SelfHealingManager(store, PROJECT_ROOT);
 
     await (manager as any).enforceWorktreeCap();
 
-    expect(prune).toHaveBeenCalledWith({ rootDir: "/tmp/project" });
+    expect(prune).toHaveBeenCalledWith(PROJECT_ROOT);
     expect(scanIdleSpy).not.toHaveBeenCalled();
     expect(readdirSpy).not.toHaveBeenCalled();
     expect(execSpy).not.toHaveBeenCalledWith(expect.stringContaining("git worktree remove"), expect.anything(), expect.anything());
@@ -170,7 +194,7 @@ describe("reliability interactions: worktrunk x self-healing", () => {
     });
 
     const store = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure: "fail" } } as Settings);
-    const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+    const manager = new SelfHealingManager(store, PROJECT_ROOT);
     // FNXC:SelfHealingReclaim 2026-07-07-08:45:
     // FN-7486 (commit 138d6447f) hardened tip-already-merged reclaim so an
     // unverifiable commit tip short-circuits BEFORE native `git worktree prune`
@@ -210,7 +234,7 @@ describe("reliability interactions: worktrunk x self-healing", () => {
 
     for (const settings of settingsVariants) {
       const store = makeStore(settings);
-      const manager = new SelfHealingManager(store, { rootDir: "/tmp/project" });
+      const manager = new SelfHealingManager(store, PROJECT_ROOT);
       await (manager as any).cleanupOrphans();
     }
 
@@ -224,11 +248,11 @@ describe("reliability interactions: worktrunk x self-healing", () => {
     resolveBackendSpy.mockReturnValue({ kind: "worktrunk", prune });
 
     const worktrunkOnStore = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: true, onFailure: "fail" } } as Settings);
-    const onManager = new SelfHealingManager(worktrunkOnStore, { rootDir: "/tmp/project" });
+    const onManager = new SelfHealingManager(worktrunkOnStore, PROJECT_ROOT);
     await (onManager as any).pruneWorktrees();
 
     const worktrunkOffStore = makeStore({ maintenanceIntervalMs: 0, worktrunk: { enabled: false, onFailure: "fail" } } as Settings);
-    const offManager = new SelfHealingManager(worktrunkOffStore, { rootDir: "/tmp/project" });
+    const offManager = new SelfHealingManager(worktrunkOffStore, PROJECT_ROOT);
     await (offManager as any).pruneWorktrees();
 
     expect(prune).toHaveBeenCalledTimes(1);

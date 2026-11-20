@@ -172,6 +172,36 @@ export type GitMutationType =
   | "worktree:worktrunk-remove"
   | "worktree:worktrunk-sync"
   | "worktree:worktrunk-prune"
+  /**
+   * A self-healing sweep refused to run any git command because it could not prove its project
+   * root is a Git repository.
+   *
+   * FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+   * Measured on the production daemon, the stale-active-branch reclaim sweep threw and was swallowed
+   * on 7 of 7 passes while its success line never appeared once, and `Worktree prune failed` appeared
+   * twice — all from a registered project root that is a NON-git workspace folder. Before this event
+   * those two states were indistinguishable from "the sweep ran and found nothing": a refused pass
+   * wrote no row at all. One event serves both sweeps (sweep identity is a fixed metadata enum), the
+   * same single-event style the orphaned-git-child pair uses, so there is one refusal vocabulary.
+   *
+   * Metadata is a closed set —
+   * ```ts
+   * metadata: {
+   *   sweep: "stale-active-branch-reclaim" | "maintenance-worktree-prune";
+   *   reason: "missing-root" | "not-repo" | "dubious-ownership" | "git-missing" | "timeout" | "unknown";
+   *   rootState: "present" | "missing";
+   *   candidateTaskCount: number; // cards whose stale worktree/branch pointer could not be reclaimed
+   *   outcome: "refused";
+   * }
+   * ```
+   * `target` is the fixed sentinel `project-repo-root`, NEVER the root path; the repository path,
+   * git's stderr, the detection sentence and the command line never enter target or metadata — the
+   * sentence lives in the daemon log, where the operator can act on it.
+   *
+   * Deliberately outside the curated delivery-pipeline catalogue (`run-audit-catalogue.test.ts` locks
+   * that table for-table against docs/run-audit.md); documented as prose in docs/run-audit.md.
+   */
+  | "worktree:repo-root-refused"
   | "worktree:worktrunk-fallback"
   | "worktree:worktrunk-failure"
   | "worktree:worktrunk-fallback-native"

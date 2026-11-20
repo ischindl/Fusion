@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import "../executor-test-helpers.js";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { TaskExecutor } from "../../executor.js";
@@ -11,6 +15,24 @@ import { createMockStore, resetExecutorMocks } from "../executor-test-helpers.js
 
 const TASK_ID = "FN-4973";
 const CONFLICT_PATH = "/tmp/test/.worktrees/solar-flame";
+
+/*
+FNXC:SelfHealingRepoRoot 2026-11-20-06:37 (RUFU-804):
+`reclaimStaleActiveBranches` now proves its project root before it spawns git, so a root that never
+existed makes the sweep refuse the pass before its per-card body runs. This file's manager fixture
+used exactly such a path: its assertion (the reclaimed branch must not re-register an active session)
+would then have passed because the sweep never looked at anything — vacuous, not verified. A real
+temp repository keeps the sweep body reachable, which is the only way this test can still fail when
+it is supposed to. The `TaskExecutor` fixtures keep `"/tmp/test"`: nothing on that path probes a root.
+*/
+const HEALING_REPO_ROOT = (() => {
+  const root = mkdtempSync(join(tmpdir(), "fn-4973-healing-"));
+  execFileSync("git", ["init"], { cwd: root, stdio: "pipe" });
+  return root;
+})();
+afterAll(() => {
+  rmSync(HEALING_REPO_ROOT, { recursive: true, force: true });
+});
 
 function makeStore(task: Task): TaskStore & EventEmitter {
   const emitter = new EventEmitter();
@@ -84,7 +106,7 @@ describe("FN-4973 reliability interactions: stale self-owned active-session reco
 
     const task = makeTask();
     const healingStore = makeStore(task);
-    const manager = new SelfHealingManager(healingStore as any, { rootDir: "/tmp/test" } as any);
+    const manager = new SelfHealingManager(healingStore as any, { rootDir: HEALING_REPO_ROOT } as any);
     await manager.reconcileTaskWorktreeMetadata();
     await manager.reclaimStaleActiveBranches();
 

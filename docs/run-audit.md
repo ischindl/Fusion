@@ -1948,3 +1948,63 @@ card is expected to pass through, and a catalogue row would imply one. They are 
 prefix is also disjoint from every prefix already in use, which is what lets a harness that counts *all*
 audit rows for a sweep keep its expectations — RUFU-405 had to annotate exactly such a count (`reclaimRows`)
 because a new row inside `reconcileAbandonedPlanningSessions` renumbered it.
+
+### The sweep that could not prove its project root (RUFU-804)
+
+`worktree:repo-root-refused` records one self-healing pass that ran **zero** git commands because it could not
+prove its registered project root is a Git repository. It is authored in
+`SelfHealingManager.surfaceRepoRootRefusal` (`packages/engine/src/self-healing.ts`) over the FN-9175 bounded
+seam (`emitBoundedRunAudit`), with the fixed agent id `self-healing`, the fixed synthetic run id
+`repo-root-probe`, and the git domain.
+
+The event exists because two states used to produce identical evidence. Measured on one continuous production
+era (daemon pid 4051354 on :4040, boot 2026-10-28 09:31:39Z, 473,765 log lines read at 11:04Z, era continuity
+proven by health `uptime` 5,443 s against process `etimes` 5,457 s), the stale-active-branch reclaim sweep
+logged `Stale active branch reclaim sweep failed: Command failed: git branch --list 'fusion/*'` followed by
+`fatal: not a git repository` plus the `GIT_DISCOVERY_ACROSS_FILESYSTEM not set` line, **7 times — exactly once
+per sweep invocation** — while its own success line `Reclaimed <n> stale active fusion branch(es) with no
+usable worktree` appeared **0 times** (the bare substring `Reclaimed` matches 21 lines in the same era, all
+belonging to two other sweeps, so the needle is not form-dead). `Worktree prune failed: Command failed: git
+worktree prune` appeared **2 times** from the same missing precondition. The mechanism was reproduced with a
+control: both commands fail at the workspace root `saneca-ws` and succeed in its member
+`saneca-ws/lager-manager`, so the failing root is a **workspace folder that is not itself a repository while
+its members are**. Because the reclaim sweep's whole per-card loop sat inside one `try`, the first git call
+threw before any candidate was examined and the broad catch returned `0` — writing no reclaim row and no
+History line. A reader therefore could not distinguish "the sweep ran and found nothing to reclaim" from "the
+sweep could not look at all", which is the distinction an operator needs in order to act.
+
+One event serves the whole root-git family; sweep identity is a fixed metadata enum (`sweep`:
+`stale-active-branch-reclaim` | `maintenance-worktree-prune`) rather than a second event name — the
+single-event style the orphaned-git-child no-action pair already uses — so a reviewer has one refusal
+vocabulary to query. The metadata is a closed set of ids, counts and fixed enums only: `sweep`, `reason`
+(`missing-root` | `not-repo` | `dubious-ownership` | `git-missing` | `timeout` | `unknown`), `rootState`
+(`present` | `missing`), `candidateTaskCount` (the cards whose stale `worktree`/`branch` pointer could **not**
+be reclaimed, counted from task rows and never from git), and `outcome: "refused"`. `target` is the fixed
+sentinel `project-repo-root`.
+
+`missing-root` is deliberately distinguishable from `git-missing`, and the order of the two probe steps is what
+buys it: existence is checked **before** detection, because the shared classifier maps a missing working
+directory to `ENOENT` → `git-missing` — a false claim that the git binary is missing, which would send the
+operator to reinstall git instead of to fix the project registration.
+
+The repository path, git's stderr, the detection sentence and the command line never enter `target` or
+metadata. That is not a redaction policy applied after the fact: the operator sentence that *may* name the path
+is produced by the probe (`operatorMessage`) and is handed only to the repeat-suppressed daemon log, which is
+the last statement in the surfacing helper. The path has no route into the audit call at all, and
+`self-healing-repo-root-refusal.test.ts` asserts the emitted row deep-equals the five-key shape with neither a
+path nor an error substring present.
+
+Emission is bounded, not per-pass: a row accompanies the pass whenever at least one durable per-card History
+line was actually appended by the RUFU-643 once-seam, and otherwise fires once per manager lifetime through a
+per-sweep latch that re-arms on a pass that proves the root — so a root that breaks again after being fixed is
+news again. The latch is keyed **per sweep**, because two sweeps refusing inside one maintenance batch are two
+distinct facts and a single shared latch made the second refusal silent again, which is the exact evidence gap
+this event removes. Zero-candidate refusals are the normal case for the prune pass, which runs at the hourly
+churn cadence, so an unbounded row would be an audit flood for one repeated fact. The in-process latch is never
+the only bound — the durable per-card once-seam is what survives the supervised dashboard restarts that defeat
+in-memory gates.
+
+These rows sit deliberately OUTSIDE the curated delivery-pipeline catalogue that `run-audit-catalogue.test.ts`
+locks table-for-table against the category tables above: a sweep that could not inspect its own project root is
+not a step every card is expected to pass through, and a documentation **table row** for it would fail that
+test — this section is prose for exactly that reason.
