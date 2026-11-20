@@ -874,6 +874,18 @@ export const cliPressPluginSchemaInit: PluginSchemaInitHook = {
  *
  * The lease table stores a hash of the bot token (`bot_token_id`), never the token itself, so a readable
  * table cannot hand out a credential (docs/secrets.md).
+ *
+ * FNXC:TelegramBridge 2026-11-20-17:03 (deploy blocker, measured on production):
+ * `project_id` in the key is NOT the isolation contract. `schema-applier.ts` finishes `applySchema` only
+ * after every table in the `project` schema answers `project_id` + `relrowsecurity` + `relforcerowsecurity`
+ * + a `fusion_project_isolation` policy, and it throws `Project-owned tables are missing required
+ * isolation: …` otherwise. A core `PluginSchemaInitHook` gets no automatic envelope: the envelope at
+ * `runLoadedPluginSchemaInitHooks` belongs to the third-party `LoadedPluginSchemaContract` path only, so a
+ * core hook must write the trio itself, exactly as `evenRealitiesPluginSchemaInit` does above. Declaring
+ * the columns and forgetting the envelope booted nothing at all — both `fn serve` and `dashboard` apply
+ * schema during boot and exited 1.3 s after start, so every tip after this hook ships was undeployable.
+ * The DO block is idempotent and re-runs on every boot, which also repairs a table that an operator
+ * created by hand without the policy.
  */
 export const telegramPluginSchemaInit: PluginSchemaInitHook = {
   pluginId: "fusion-plugin-telegram",
@@ -927,6 +939,38 @@ export const telegramPluginSchemaInit: PluginSchemaInitHook = {
         expires_at text NOT NULL,
         PRIMARY KEY (project_id, bot_token_id)
       );
+    `));
+
+    await db.execute(sql.raw(`
+      DO $telegram_isolation$
+      DECLARE t text;
+      BEGIN
+        FOREACH t IN ARRAY ARRAY[
+          'telegram_project_topics', 'telegram_questions', 'telegram_processed_updates',
+          'telegram_inbound_state', 'telegram_token_lease'
+        ]
+        LOOP
+          EXECUTE format('ALTER TABLE project.%I ENABLE ROW LEVEL SECURITY', t);
+          EXECUTE format('ALTER TABLE project.%I FORCE ROW LEVEL SECURITY', t);
+          EXECUTE format('DROP POLICY IF EXISTS fusion_project_isolation ON project.%I', t);
+          EXECUTE format(
+            'CREATE POLICY fusion_project_isolation ON project.%I '
+            || 'USING (current_setting(''fusion.project_bypass'', true) = ''on'' OR project_id = current_setting(''fusion.project_id'', true)) '
+            || 'WITH CHECK (current_setting(''fusion.project_bypass'', true) = ''on'' OR project_id = current_setting(''fusion.project_id'', true))',
+            t);
+          IF to_regprocedure('project.fusion_assign_project_id()') IS NOT NULL THEN
+            EXECUTE format('DROP TRIGGER IF EXISTS fusion_assign_project_id ON project.%I', t);
+            EXECUTE format(
+              'CREATE TRIGGER fusion_assign_project_id BEFORE INSERT OR UPDATE OF project_id ON project.%I '
+              || 'FOR EACH ROW EXECUTE FUNCTION project.fusion_assign_project_id()',
+              t);
+          END IF;
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fusion_runtime') THEN
+            EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON project.%I TO fusion_runtime', t);
+          END IF;
+        END LOOP;
+      END
+      $telegram_isolation$;
     `));
 
     await ensureProjectIndexes(db, [
