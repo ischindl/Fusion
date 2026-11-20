@@ -93,6 +93,8 @@ import {
   resolveQueuePresence,
   resolveWorkflowIrForTask,
   resolveWorkflowIrForTaskWithProvenance,
+  prefetchWorkflowSelections,
+  type WorkflowSelectionCache,
   resolveReviewColumns,
   workflowHasColumn,
   workflowPlansInColumn,
@@ -1647,6 +1649,31 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       let tasks;
+      /*
+      FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585):
+      ONE workflow-definitions read per request, shared by both lane-vocabulary resolutions this
+      route makes.
+
+      The comment on the hold resolution below states the contract — "ONE `listWorkflowDefinitions()`
+      read ... Measured cost is therefore one extra query per board load — flat, not per-row" — and
+      `excludeDone=1` (the dashboard's default board load) broke it silently: the complete-lane
+      resolution in the list branch and the hold-lane resolution in the enrichment block below each
+      called `resolveProjectColumnsForRoles(scopedStore, ...)`, so every default board load paid TWO
+      full `listWorkflowDefinitions()` reads plus two `parseWorkflowIr` validation passes over every
+      definition in the project. Nothing was incorrect per se, which is exactly why only a read count
+      catches it.
+
+      Fixed with a per-request memo rather than by merging the two calls, because the two answers must
+      stay separate: `complete` feeds `excludeColumns` (a WHERE-clause input, so taking the union
+      would wrongly hide hold-lane cards) and `hold` feeds enrichment (display only). It is declared
+      here, in the scope both branches see, because the two callsites sit in different blocks. The
+      helper's store surface is one optional `listWorkflowDefinitions` method, so memoising that
+      single method is the supported narrow shape rather than a wrap of the whole store.
+      */
+      let definitionsOnce: Promise<ReadonlyArray<{ ir?: unknown }>> | undefined;
+      const laneVocabularyStore = {
+        listWorkflowDefinitions: () => (definitionsOnce ??= scopedStore.listWorkflowDefinitions()),
+      };
       if (q && q.length > 0) {
         tasks = await scopedStore.searchTasks(q, { limit, offset, slim: true, includeArchived: false });
       } else {
@@ -1656,7 +1683,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         let excludeColumns: string[] | undefined;
         if (excludeDone && !column) {
           try {
-            excludeColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["complete"])];
+            excludeColumns = [...await resolveProjectColumnsForRoles(laneVocabularyStore, ["complete"])];
           } catch {
             excludeColumns = ["done"];
           }
@@ -1769,8 +1796,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         error, and a silent fall back to the client's step-count heuristic that this enrichment
         exists to correct.
         */
-        const holdColumns = await resolveProjectColumnsForRoles(scopedStore, ["hold"]);
+        const holdColumns = await resolveProjectColumnsForRoles(laneVocabularyStore, ["hold"]);
         const holdRows = tasks.filter((task) => holdColumns.has(task.column));
+        /*
+        FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585): the enrichment set is bounded by the
+        page the caller asked for, not by a 200-row sweep. `holdRows` is already a subset of the
+        rows this response returns, so PROMPT.md reads and release-gate evaluations cannot exceed the
+        page; `AWAITING_PLANNING_ENRICH_LIMIT` only bites above a page size the route itself already
+        refuses (limit <= 200). Lowering that constant instead would silently drop the badge from
+        rows that ARE on screen — a correctness loss bought with no work saved.
+        */
         const enrichable = holdRows.slice(0, AWAITING_PLANNING_ENRICH_LIMIT);
         if (holdRows.length > enrichable.length) {
           severityAuditLog.warn(
@@ -1782,6 +1817,20 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           const flagByTask = new Map<string, boolean>();
           const releaseGateByTask = new Map<string, import("@fusion/core").TaskReleaseGateVerdict>();
           const irCache = new Map<string, WorkflowIr>();
+          /*
+          FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585):
+          One batched selection read for the enrichment loop, where there were N single reads.
+
+          `resolveWorkflowIrForTask(store, id, irCache)` shared the IR across the loop but was given
+          no selection cache, and the resolver's documented rule for that case is to read the
+          selection live per call and cache nothing. A page of 20 hold-lane cards on ONE workflow
+          therefore issued 20 `getTaskWorkflowSelection` reads and re-derived the same workflow id 20
+          times; the IR cache could not help, because the miss happened one step earlier. Prefetching
+          through `prefetchWorkflowSelections` is what core's own list pass does for the same reason,
+          and it answers the whole set in one read — the pass's selection read count is 1, not N.
+          */
+          const selectionCache: WorkflowSelectionCache = new Map();
+          await prefetchWorkflowSelections(scopedStore, enrichable.map((task) => task.id), selectionCache);
           await Promise.all(enrichable.map(async (task) => {
             let promptContent: string | null = null;
             try {
@@ -1798,7 +1847,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             Share the hold-lane cap with awaitingPlanning and cache IR resolution per selected workflow:
             exact Promote visibility must not turn a board load into unbounded workflow reads.
             */
-            const ir = await resolveWorkflowIrForTask(scopedStore, task.id, irCache);
+            const ir = await resolveWorkflowIrForTask(scopedStore, task.id, irCache, selectionCache);
             const releaseGate = await evaluateTaskReleaseGate(scopedStore, task, { ir });
             if (releaseGate) releaseGateByTask.set(task.id, releaseGate);
           }));

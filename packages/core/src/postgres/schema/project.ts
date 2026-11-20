@@ -421,6 +421,31 @@ export const tasks = projectSchema.table("tasks", {
     .on(t.projectId, t.column)
     .where(sql`${t.deletedAt} IS NULL`),
   /*
+  FNXC:TasksListReadIndex 2026-11-20-06:45 (RUFU-585):
+  The board/engine page read's own index: (project, arrival order, numeric-id tie-break),
+  partial on live rows. It exists because NO index supplied the page comparator, so the ordered
+  walk paid for other projects' rows: `scripts/bench-tasks-list-reads.mjs` measured
+  `Index Scan using "idxTasksCreatedAt" ... Rows Removed by Filter: 230` at limit=20 and 5450 rows
+  removed across 1599 buffers at limit=600 - waste that grows with the CLUSTER at a fixed limit.
+  With this index the same reads cost 5 and 47 buffers and carry no `Sort` node at all.
+  `idxTasksProjectLiveColumn` above selects the project but encodes no order; `idxTasksCreatedAt`
+  encodes an order but is project-blind and non-partial. Neither can serve the ORDER BY the reader
+  actually issues.
+
+  Two truths to keep together, both measured, both stated in migration 0098: this is NOT what made
+  the operator's board load cost seconds (the page statement answers in 1.2 ms at limit=20; that
+  floor was event-loop CPU), and the planner only selects this index once the project is a
+  minority of `tasks` (chosen at 0.25% share, declined at 10% where it mispriced 1097 vs 1272).
+
+  The expression below is the SAME `COALESCE(substring(id from '-([0-9]+)$')::numeric, 0)` the
+  page query sorts on (`numericTaskSuffix` in `task-store/async/async-persistence.ts`) and the
+  one migration 0098 builds. Changing one without the other leaves the comparator with no index,
+  with no error anywhere, which is what `rufu-585-list-page-plan.pg.test.ts` guards.
+  */
+  index("idxTasksProjectLiveCreatedId")
+    .on(t.projectId, t.createdAt, sql`COALESCE(substring(${t.id} from '-([0-9]+)$')::numeric, 0)`)
+    .where(sql`${t.deletedAt} IS NULL`),
+  /*
   FNXC:TaskStoreSearch 2026-06-24-12:15:
   GIN index on the search_vector tsvector for full-text search
   (VAL-SEARCH-001). This is the PostgreSQL replacement for the FTS5 index.

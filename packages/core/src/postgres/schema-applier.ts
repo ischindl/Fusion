@@ -140,7 +140,16 @@ not "highest upstream number", and a number naming two migrations remains the on
  * after this one read the database this very binary migrated as newer and log the warn-only
  * stale-binary warning. Slot 0097 was free: no bundled file names it and no branch claims it, and
  * slot numbers are never reused. */
-export const SCHEMA_BASELINE_VERSION = "0097";
+/* FNXC:TasksListReadIndex 2026-11-20-06:45 (RUFU-585): the ceiling follows the highest bundled file
+ * again (0098, `idxTasksProjectLiveCreatedId`). Same rule as every note above: the stale-binary guard
+ * compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a ceiling left at 0097
+ * would make every boot read the database this binary just migrated as newer and log the warn-only
+ * stale-binary warning. Slot 0098 was free: no bundled file names it, and slot numbers are never
+ * reused. Side effect worth naming: the single ceiling equality in
+ * `packages/core/src/__tests__/postgres/schema-applier.test.ts` was already STALE on main, asserting
+ * "0096" against a ceiling of "0097" left behind by RUFU-433, which bumped the ceiling and updated
+ * only `artifact-retraction.test.ts`. This commit moves it to "0098", which repairs that drift. */
+export const SCHEMA_BASELINE_VERSION = "0098";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -437,6 +446,20 @@ runs (`migration-wiring-integrity.test.ts`). The columns must exist before any r
 them, because `listArtifacts` names them in a metadata-only select.
 */
 export const ARTIFACT_RETRACTION_VERSION = "0097";
+
+/*
+FNXC:TasksListReadIndex 2026-11-20-06:45 (RUFU-585):
+`idxTasksProjectLiveCreatedId` — the only index that matches the board page's own comparator
+(project, arrival order, numeric-id tie-break, live rows only). It exists because the ordered page
+walk was burning OTHER projects' rows: measured 230 rows removed by filter at `limit=20` and 5450
+across 1599 buffers at `limit=600` on a shared cluster, waste that grows with the cluster at a
+fixed limit. With it: 5 and 47 buffers, and no `Sort` node. Explicit registration: an unwired
+`.sql` in `migrations/` silently never runs (`migration-wiring-integrity.test.ts`). It must exist
+on UPGRADED clusters too, because the shared embedded cluster every operator actually runs is the
+shape where the planner selects it (measured chosen at 0.25% project share, declined at 10%); the
+full truth, including the claim this index does NOT carry, is in the migration's own comment.
+*/
+export const TASKS_LIST_READ_INDEX_VERSION = "0098";
 
 export const FILE_SCOPE_LEASE_RELEASE_VERSION = "0089";
 
@@ -776,6 +799,8 @@ const WORKFLOW_DEFERRED_SINCE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0095_rufu_2
 const GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH = join(MIGRATIONS_DIR, "0096_rufu_320_global_task_id_claim.sql");
 /* FNXC:ArtifactRetraction 2026-11-11-11:55 (RUFU-433): explicit registration; see ARTIFACT_RETRACTION_VERSION. */
 const ARTIFACT_RETRACTION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0097_rufu_433_artifact_retraction.sql");
+/* FNXC:TasksListReadIndex 2026-11-16-21:05 (RUFU-585): explicit registration; see TASKS_LIST_READ_INDEX_VERSION. */
+const TASKS_LIST_READ_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0098_rufu_585_tasks_list_read_index.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -942,6 +967,7 @@ export async function applySchemaBaseline(
     const workflowDeferredSinceAlreadyApplied = applied.includes(WORKFLOW_DEFERRED_SINCE_VERSION);
     const globalTaskIdClaimAlreadyApplied = applied.includes(GLOBAL_TASK_ID_CLAIM_VERSION);
     const artifactRetractionAlreadyApplied = applied.includes(ARTIFACT_RETRACTION_VERSION);
+    const tasksListReadIndexAlreadyApplied = applied.includes(TASKS_LIST_READ_INDEX_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -2401,6 +2427,42 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(ARTIFACT_RETRACTION_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${ARTIFACT_RETRACTION_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:TasksListReadIndex 2026-11-20-07:40 (RUFU-585):
+    Presence is re-probed rather than trusted from the marker, the way the neighbouring
+    migrations do it: `CREATE INDEX IF NOT EXISTS` means a cluster that already carries the
+    index (a hand-applied repair, or a re-run after a crashed apply) records the marker without
+    a DDL round trip, and a marker written without the index present must not silence the apply.
+
+    The absent-relation clause is not decoration and it was the shape this step shipped WRONG:
+    `to_regclass('project.tasks') IS NULL OR ...` answers "nothing to drift" for a database that
+    carries the bookkeeping but no product relation, which is the invariant
+    `postgres/schema-applier.test.ts` pins ("a drift probe must never fail PostgreSQL's analysis
+    phase on a database that legitimately lacks its target relation, because a throw inside
+    applySchemaBaseline is a project that cannot boot at all"). Without that clause the probe reads
+    "index missing", the block runs `CREATE INDEX ... ON project.tasks`, and PostgreSQL answers
+    42P01 (RangeVarGetRelidExtended) at ANALYSIS time — before any statement executes — so the
+    project cannot boot. That is the same boot crash RUFU-239 recorded, re-authored by this
+    migration, and the invariant test is what proved it: the first version of this step probed only
+    `pg_indexes` and failed "ensures schemas before hooks when all migration markers are already
+    recorded" plus both absent-relation drift-probe cases. The 0095/0097 neighbours carry the clause
+    for the identical reason.
+    */
+    const tasksListReadIndexExists = ((await tx.execute(sql`
+      SELECT (
+        to_regclass('project.tasks') IS NULL
+        OR EXISTS (
+          SELECT 1 FROM pg_indexes
+           WHERE schemaname = 'project' AND tablename = 'tasks' AND indexname = 'idxTasksProjectLiveCreatedId'
+        )
+      ) AS present
+    `)) as unknown as Array<{ present: boolean }>)[0]?.present === true;
+    if (!tasksListReadIndexAlreadyApplied || !tasksListReadIndexExists) {
+      const migrationSql = await readFile(TASKS_LIST_READ_INDEX_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASKS_LIST_READ_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

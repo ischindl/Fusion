@@ -1295,9 +1295,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   /**
    * FNXC:RuntimePersistenceAsync 2026-06-24-10:45:
+   *
+   * FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585): `ids` scopes the read to the caller's own
+   * page. Omitted it keeps the historical whole-table answer; a list/search/detail pass always has
+   * its row ids in hand and must not pay for the cluster's queue to answer a question about its
+   * own page. Membership semantics for the ids asked about are identical either way.
    */
-  public async getMergeQueuedTaskIdsAsync(): Promise<Set<string>> {
-    return getMergeQueuedTaskIdsAsyncImpl(this);
+  public async getMergeQueuedTaskIdsAsync(ids?: readonly string[]): Promise<Set<string>> {
+    return getMergeQueuedTaskIdsAsyncImpl(this, ids);
   }
   public isTaskIdPresentInArchivedTasksTable(id: string): boolean {
     return isTaskIdPresentInArchivedTasksTableImpl(this, id);

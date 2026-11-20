@@ -377,12 +377,46 @@ export function readTaskFromDbImpl(store: TaskStore, id: string, options?: { act
     return store.rowToTask(row);
 }
 
-export async function getMergeQueuedTaskIdsAsyncImpl(store: TaskStore): Promise<Set<string>> {
-    
+/*
+FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585):
+The merge-queue read was cluster-proportional: it issued `SELECT task_id FROM merge_queue` with no
+`WHERE` at all, so one caller that needed to know "is any of MY twenty rows queued" paid for every
+queued row of every project on the cluster. Measured on a seeded shared cluster
+(`scripts/bench-tasks-list-reads.mjs`, card RUFU-585):
+
+  Seq Scan on merge_queue (cost=0.00..20.00 rows=900) (actual time=0.020..0.129 rows=900 loops=1)
+
+900 rows returned on a pass that could ask about at most 20 of them, 99 percent of them belonging
+to OTHER projects, once per list/search/detail pass (`reads.ts` - the board list, the completed /
+queue page, both search pages and the single-task detail read). That is work growing with the
+CLUSTER at a fixed limit, which is the class this card exists to remove.
+
+Contract kept exactly as it was: a `Set<string>` of queued task ids, consulted only as
+`.has(task.id)` for tasks the caller already holds from its own page (verified at all five call
+sites). Narrowing the returned set to the ids asked about therefore cannot change any verdict,
+because an id outside the requested set was never readable by the caller anyway.
+
+No `project_id` predicate is added: task ids are globally unique since the id-claim registry
+(`central.global_task_id_claim`, RUFU-320 / migration 0096), so an `IN` list of this page's ids
+cannot match another project's row. An `IN` list of bound parameters is used rather than
+`= ANY(${array})` because drizzle expands a JS array in a template into SQL text, the same reason
+`board/*-analytics.ts` and `branch-and-pr-entities.ts` state. Passing `[]` short-circuits to an
+empty set: with no ids there is no membership question, and it costs no query.
+*/
+export async function getMergeQueuedTaskIdsAsyncImpl(
+  store: TaskStore,
+  ids?: readonly string[],
+): Promise<Set<string>> {
     const layer = store.asyncLayer!;
-    const rows = await layer.db
-      .select({ taskId: schema.project.mergeQueue.taskId })
-      .from(schema.project.mergeQueue);
+    if (ids !== undefined && ids.length === 0) return new Set<string>();
+    const rows = ids === undefined
+      ? await layer.db
+          .select({ taskId: schema.project.mergeQueue.taskId })
+          .from(schema.project.mergeQueue)
+      : await layer.db
+          .select({ taskId: schema.project.mergeQueue.taskId })
+          .from(schema.project.mergeQueue)
+          .where(inArray(schema.project.mergeQueue.taskId, [...ids]));
     return new Set(rows.map((row) => row.taskId));
 }
 

@@ -566,7 +566,15 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       });
       const now = Date.now();
       const settings = await store.getSettingsFast();
-      const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+      /*
+      FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585):
+      Every merge-queue read in this file now names the ids it is about to ask about. This is the
+      single-task detail read, so the answer it can use is one id wide, and it no longer pulls the
+      whole cluster's queue to decide it. The shared rule and the measured before-shape
+      (Seq Scan, 900 rows, 99 percent belonging to other projects, once per pass) are on
+      `getMergeQueuedTaskIdsAsyncImpl` in `task-id-integrity.ts`.
+      */
+      const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync([id]);
       /*
       FNXC:WorkflowLifecycle 2026-07-05-15:40:
       In-review merge/review agents stream progress to agent-log JSONL without
@@ -909,21 +917,29 @@ async function buildListDeriveFeed(
   filteredRows: Record<string, unknown>[],
   options?: ListTasksOptions,
 ): Promise<ListDeriveFeed> {
+  /*
+  FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585):
+  The page's id set is computed once and reused by every per-pass read below, because the page IS
+  the bound: `filteredRows` is already the SQL page, so a pass for 20 cards must not read the
+  cluster's merge queue or every workflow selection in the project. Same ids feed the selection and
+  IR prefetches below, which is what keeps the pass's read count a function of the page.
+  */
+  const pageIds = filteredRows.map((row) => String(row.id));
   const settings = await store.getSettingsFast();
-  const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+  const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync(pageIds);
   /* FNXC:WorkflowScheduling 2026-09-09-15:13 (merge origin/main f59f9ead92 -> main): FN-9261 lets the caller
      own the per-pass IR cache and count store-internal definition reads. Both were added to the inline prelude
      upstream still had; RUFU-201 moved that prelude here, so they are honored here. */
   const listPassIrCache = options?.irCache ?? new Map<string, WorkflowIr>();
   const listPassSelectionCache = options?.selectionCache ?? new Map<string, import("../workflows/workflow-ir-resolver.js").WorkflowSelection | undefined>();
-  const listSelectionReads = await prefetchWorkflowSelections(store, filteredRows.map((row) => String(row.id)), listPassSelectionCache);
+  const listSelectionReads = await prefetchWorkflowSelections(store, pageIds, listPassSelectionCache);
   if (options?.selectionReadTally) {
     options.selectionReadTally.batched += listSelectionReads.batched;
     options.selectionReadTally.singles += listSelectionReads.singles;
   }
   /* FNXC:WorkflowScheduling 2026-09-05-23:12: one IR read per definition per pass, not per row; the tally
      reports store-internal reads to callers without changing badge fallback semantics. */
-  await prefetchWorkflowIrs(store, filteredRows.map((row) => String(row.id)), listPassIrCache, listPassSelectionCache, options?.definitionReadTally);
+  await prefetchWorkflowIrs(store, pageIds, listPassIrCache, listPassSelectionCache, options?.definitionReadTally);
   const localColumnByTaskId = new Map<string, string>();
   for (const pgRow of filteredRows) {
     if (typeof pgRow.id === "string" && typeof pgRow.column === "string") {
@@ -2236,7 +2252,9 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       .orderBy(asc(schema.project.tasks.updatedAt))
       .limit(resolvedLimit + 1);
     const hasMore = pgRows.length > resolvedLimit;
-    const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+    /* FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585): scoped to this page's own ids (the
+       +1 look-ahead row included), not the whole cluster's queue. See `getMergeQueuedTaskIdsAsyncImpl`. */
+    const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync(pgRows.map((row) => String(row.id)));
     /*
     FNXC:WorkflowLifecycleColumns 2026-07-28-04:00 (PR #2470 review, P1):
     Pre-resolve hold columns for the PAUSED rows only, before the synchronous
@@ -2458,7 +2476,9 @@ const settings = await store.getSettingsFast();
    once for the stall signals; the spend-chip decision reuses that same read rather than adding
    one per row. */
 const boardCostVisible = settings.showCostBadgeOnCards === true;
-const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+/* FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585): the searched page asks about its own rows.
+   See `getMergeQueuedTaskIdsAsyncImpl` for the measured whole-cluster shape this replaces. */
+const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync(pgRows.map((row) => String(row.id)));
 // Shared across the page so one workflow is read once, not once per hit.
 const searchPassIrCache = new Map<string, WorkflowIr>();
 /* FNXC:WorkflowScheduling 2026-09-05-23:12: Search hydration has the same per-row selection N+1 as board lists; prefetch retains the default workflow for cached absent selections. */
@@ -2632,7 +2652,9 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
     }
     const now = Date.now();
     const settings = await store.getSettingsFast();
-    const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
+    /* FNXC:TasksListReadScope 2026-11-20-06:45 (RUFU-585): this search page asks about its own rows.
+       See `getMergeQueuedTaskIdsAsyncImpl` for the measured whole-cluster shape this replaces. */
+    const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync(pgRows.map((row) => String(row.id)));
     // Shared across the page so one workflow is read once, not once per hit.
     const searchPassIrCache = new Map<string, WorkflowIr>();
     /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): the stall resolver answers references

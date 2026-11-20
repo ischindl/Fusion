@@ -327,7 +327,13 @@ describe("artifact retraction wiring (no PostgreSQL backend required)", () => {
   it("registers the migration in the applier so it cannot silently never run", () => {
     const applier = readFileSync(new URL("../postgres/schema-applier.ts", import.meta.url), "utf8");
     expect(applier).toContain(MIGRATION_BASENAME);
-    expect(SCHEMA_BASELINE_VERSION).toBe("0097");
+    /*
+    FNXC:TasksListReadIndex 2026-11-16-21:05 (RUFU-585):
+    The ceiling assertion tracks the ceiling, not this card. RUFU-585 added 0098
+    (`idxTasksProjectLiveCreatedId`), which moved the ceiling off 0097; the 0097 basename and the
+    three tombstone columns above are unchanged. This is the line the next ceiling bump edits.
+    */
+    expect(SCHEMA_BASELINE_VERSION).toBe("0098");
   });
 
   it("maps every column the migration adds, in BOTH row mappers, so a tombstone can never read as live", () => {

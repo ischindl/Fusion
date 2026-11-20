@@ -1733,3 +1733,46 @@ Two traps from this card that belong to the checklist rather than to a ticket:
   (12 600 B/card) sat below the live p50 of the projected row (14 553 B), so real data violated it and the
   first discovery would have been a CI run. Re-derived as 20 000 / 10 000 B/card, still 3x below the
   whole-row figure, with the dropped columns asserted absent outright rather than merely small.
+
+## The read-cost bench is the repeatable lane for page-work claims (RUFU-585)
+
+`pnpm bench:tasks-list-reads` (`scripts/bench-tasks-list-reads.mjs`) exists because "the task list
+is slow" is not measurable as a duration: durations move with whatever else is on the host, while
+*work* is what a card can actually fix. The bench therefore reports both, and the work counters are
+the ones a change must move.
+
+- **Setup:** the bench connects; it never starts a server. `FUSION_PG_TEST_URL_BASE` is a base URL
+  with no database path and is the ONLY thing that chooses the PostgreSQL it runs against (default
+  `postgresql://localhost:5499`); an unrecognised flag is ignored, so `--pg-port=5501` would silently
+  keep talking to 5499 — which may be another lane's server. Raise a disposable instance first and
+  point both at the same port: `pnpm pg:test:up -- --port 5499` then
+  `export FUSION_PG_TEST_URL_BASE=postgresql://localhost:5499`. The bench then creates its own
+  throwaway database in that server (`rufu585_bench_<stamp>`), seeds it, and deletes it on exit — the
+  server itself outlives the run. It seeds one subject project plus foreign projects that own
+  `merge_queue` rows, because the reads this measures were cluster-proportional and a single-project
+  fixture would show them as flat.
+- **What it asserts:** per-pass read counts (SQL statements, merge-queue reads, settings reads,
+  workflow selection/definition reads) at `limit` 20/100/600, one-way and 4-way concurrent, plus the
+  page SQL captured verbatim from the store with its `EXPLAIN (ANALYZE, BUFFERS)` plan. `--foreign`
+  is the shared-cluster shape; `--drop-index` measures with and without an index over identical
+  rows, statistics, and cache.
+- **What it does NOT measure:** the HTTP layer. The bench drives `TaskStore.listTasks({ limit })` —
+  the seam the route calls — and reports the `/tasks` route's per-row enrichment cost separately as
+  `routeEnrichment`. The route's own per-request read shape (one catalog read shared by both lane
+  vocabularies, one batched workflow-selection read, at most one `PROMPT.md` read per hold-lane row)
+  is owned by `packages/dashboard/src/__tests__/routes-tasks-read-cost.test.ts`, which drives the
+  real route on an ephemeral port and asserts call counts, not durations. Do not go looking for the
+  route's read counts in a bench report, and do not duplicate them there.
+- **Why the plan-shape assertion lives here and not in a `.pg` test:** the new
+  `idxTasksProjectLiveCreatedId` is only *chosen* by the planner when the board's project is a
+  minority of `tasks` (measured chosen at 0.25 % of live rows, declined at 10 % where it mispriced
+  1 097 against 1 272 while real times were 4.8 ms against 1.1 ms). A `.pg` test seeds rows into one
+  project — a 100 % share — which is precisely the shape in which the planner honestly declines it,
+  so a plan assertion there would fail for a reason unrelated to the invariant it meant to guard.
+  The deterministic pg-lane-free guard is instead the expression-pairing test
+  `packages/core/src/__tests__/rufu-585-list-page-plan.test.ts`: the page comparator, the
+  fresh-database index declaration, and migration 0098 must remain one expression, because a drift
+  between them produces no error anywhere and silently returns the project-blind scan.
+- **Reading a concurrent result:** 4-way concurrency amplifies work that was already being done
+  serially. Before the change the per-pass enrichment amplified with concurrency; page SQL did not.
+  If a change makes the *page* statement amplify, that is a new defect, not the same one scaled.

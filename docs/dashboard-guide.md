@@ -3765,3 +3765,56 @@ Per-card bytes on the live project this was measured against: 61 871 B for a who
 slim read, 16 661 B for what the board now asks for (3.71x cheaper, and 36 ms -> 11 ms of SQL). The full
 before/after and the four rules are in
 `docs/solutions/performance/idle-board-read-cost-and-poll-discipline.md`.
+
+## Task list read cost: what one page is allowed to read (RUFU-585)
+
+The task list route is the first thing an operator's board asks the server, and it was the one
+route whose cost could not be pinned down. A dashboard boot was measured at a 2.9 s floor even with
+`limit=20`, near-flat to 600 rows, with four concurrent requests each taking ~10 s — the shape of a
+CPU-bound server, not of a query with a bad plan. Measuring it properly separated two things that
+looked like one symptom:
+
+- **The page statement was never the floor.** `EXPLAIN (ANALYZE, BUFFERS)` over the SQL the store
+  itself emits answers in 1.2 ms at `limit=20`, examining 21 rows. What made the route slow is
+  event-loop CPU shared by every route (the `FNXC:ListReadPromptParseCache` note in
+  `packages/core/src/task-store/task-artifacts-ops.ts` records `/api/health` answering in 2.9–5.6 s
+  during the same storm).
+- **What did grow with the cluster was two per-pass reads, not the page.** The merge-queue read ran
+  with no `WHERE` at all — `Seq Scan on merge_queue`, 900 rows, 99 % of them belonging to other
+  projects — once per list/search/detail pass, to answer a membership question about the ≤20 rows
+  the page already held. And the ordered page walk had no matching index, so it used the
+  project-blind `idxTasksCreatedAt` and removed other projects' rows by filter (230 rows at
+  `limit=20`, 5 450 across 1 599 buffers at `limit=600`).
+
+`scripts/bench-tasks-list-reads.mjs` (`pnpm bench:tasks-list-reads`) is the repeatable instrument.
+It seeds a project plus foreign projects that own merge-queue rows, drives the real
+`TaskStore.listTasks({ limit })` seam at 20/100/600 one-way and 4-way concurrent, captures the page
+SQL verbatim from the store with its own `EXPLAIN (ANALYZE, BUFFERS)` output, and counts the
+per-pass work (SQL statements, merge-queue reads, settings reads, workflow selection/definition
+reads) so a growth claim is a count and not a duration. `--foreign` seeds the shared-cluster shape;
+`--drop-index` gives a true before/after over identical rows, statistics, and cache.
+
+What the card changed, and the honest size of each claim:
+
+- **`idxTasksProjectLiveCreatedId`** (migration 0098) is the first index matching the page's own
+  comparator — `(project_id, created_at, numeric task-id suffix)` partial on live rows. Measured on
+  identical rows: 1 599 → 47 buffers at `limit=600` with the `Sort` node gone entirely (4.8 ms →
+  1.1 ms), 71 → 5 buffers at `limit=20`. **Limitation, measured:** PostgreSQL only selects it once
+  the board's project is a *minority* of `tasks` (chosen at 0.25 % of live rows, declined at 10 %,
+  where it mispriced 1 097 against 1 272). It is a shared-cluster fix and changes nothing on a
+  dominant-project table.
+- **The merge-queue read is scoped to the page's ids** (`getMergeQueuedTaskIdsAsync(ids)`); an empty
+  id set issues no query. A scoped read propagates a database failure rather than answering
+  "nothing is queued", because every consumer *suppresses* a stall badge on a queue hit and an
+  emptied set would assert an absence no read proved.
+- **One workflow-definitions read per task-list request** instead of two. The route's own comment
+  already promised one; `excludeDone=1` (the dashboard default) was paying two. The complete-lane
+  and hold-lane answers stay separate because the first feeds the `WHERE` clause — a union would
+  wrongly hide hold-lane cards.
+- **One batched workflow-selection read** for the `awaitingPlanning`/Promote enrichment loop, which
+  previously issued one selection read per row while sharing only the IR.
+
+What the card deliberately did **not** do: no default `limit` in the core store read (that would
+silently truncate engine scheduler and sweep callers that page by cursor); no worker, pool, or
+V8-heap increase; and enrichment stays bounded by the page it returns rather than by a smaller
+constant, because shrinking that constant would drop a badge from rows that are on screen.

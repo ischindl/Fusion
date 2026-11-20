@@ -139,6 +139,16 @@ import {
   FILE_SCOPE_LEASE_RELEASE_VERSION,
   WORKFLOW_DEFERRED_SINCE_VERSION,
   GLOBAL_TASK_ID_CLAIM_VERSION,
+  /*
+  FNXC:TasksListReadIndex 2026-11-20-09:04 (RUFU-585):
+  These ledger fixtures read `ORDER BY version` as TEXT over every recorded marker, so each new slot
+  must be appended here in the same commit that ships it. 0097 (RUFU-433) had NOT been appended when it
+  landed — measured: with the pre-RUFU-585 files checked out, `upgrades a 0001 database` and
+  `upgrades a 0003 database` already failed on `main` with this same array diff. Carrying both slots
+  here is what makes the assertion able to describe an upgraded database at all.
+  */
+  ARTIFACT_RETRACTION_VERSION,
+  TASKS_LIST_READ_INDEX_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -263,8 +273,15 @@ describe("schema-applier: immutable migration identities", () => {
     FNXC:TaskIdGlobalUniqueness 2026-11-08-10:31 (RUFU-320): the ceiling moves to 0096
     (`central.global_task_id_claim`), the DB-wide task-id claim registry. Same rule, same reason: a ceiling
     left at 0095 makes every boot read the database this binary just migrated as newer than the binary.
+
+    FNXC:TasksListReadIndex 2026-11-20-06:45 (RUFU-585): the ceiling moves to 0098
+    (`idxTasksProjectLiveCreatedId`, the index matching the board page's own comparator). This line also
+    repairs a drift this card did not create: RUFU-433 advanced the ceiling to 0097 and updated
+    `artifact-retraction.test.ts` but left THIS single ceiling equality asserting "0096", so the two
+    files disagreed on main before this card branched. The rule that makes it worth asserting is that a
+    constant may carry exactly one ceiling equality and this file-level scan must agree with it.
     */
-    expect(SCHEMA_BASELINE_VERSION).toBe("0096");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0098");
 
       /*
       FNXC:MigrationRestack 2026-10-12-18:24: readiness keeps upstream's 0087 and the receipts keep 0086, so
@@ -2062,8 +2079,46 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       Migration 0059 (FN-9037) builds a partial index on tasks(project_id, source_agent_id).
       Real 0000 databases have source_agent_id (baseline since the PG cutover), so this
       historical fixture must retain it; project_id arrives via the 0006 ownership migration.
+
+      FNXC:TasksListReadIndex 2026-11-20-09:04 (RUFU-585):
+      The same rule now binds created_at and deleted_at: migration 0098 builds
+      idxTasksProjectLiveCreatedId on (project_id, created_at, <numeric id suffix>) with a
+      WHERE deleted_at IS NULL predicate, and both columns are 0000-era (0000_initial.sql), so the
+      upgrade-from-0000 run failed 42703 (column "deleted_at" does not exist) at the 0098 block
+      instead of reaching the automation-isolation assertion. Nullable here rather than NOT NULL
+      as the real baseline declares it, because this fixture inserts no task rows.
       */
-      CREATE TABLE project.tasks (id text PRIMARY KEY, source_agent_id text, "column" text NOT NULL DEFAULT 'todo');
+      CREATE TABLE project.tasks (id text PRIMARY KEY, source_agent_id text, "column" text NOT NULL DEFAULT 'todo', created_at text, deleted_at text);
+      /*
+      FNXC:PgSchemaApplier 2026-11-20-09:04 (RUFU-585):
+      Migration 0097 (RUFU-433) issues three ALTER TABLE project.artifacts statements. Real 0000
+      databases have project.artifacts from 0000_initial.sql, so this historical fixture must retain it
+      — the same rule the 0059 / 0061 / 0082 / Ideation notes above record. Without it the
+      upgrade-from-0000 run died on 42P01 (RangeVarGetRelidExtended) inside applySchemaBaseline at the
+      0097 block instead of reaching the automation-isolation assertion this fixture exists to test,
+      because that block's absent-relation probe only answers "nothing to drift" once its marker is
+      recorded, and on this fixture the marker is by design not recorded. Measured: the two
+      "upgrades a 0001 / 0003 database" cases and this one were red on main (verified by running the
+      pre-RUFU-585 files), so the table was missing from this list when 0097 landed.
+      */
+      CREATE TABLE project.artifacts (
+        id text PRIMARY KEY,
+        type text NOT NULL,
+        title text NOT NULL,
+        description text,
+        mime_type text,
+        size_bytes integer,
+        uri text,
+        content text,
+        author_id text NOT NULL,
+        author_type text NOT NULL DEFAULT 'agent',
+        task_id text,
+        metadata jsonb,
+        created_at text NOT NULL,
+        updated_at text NOT NULL,
+        CONSTRAINT artifacts_task_id_fkey
+          FOREIGN KEY (task_id) REFERENCES project.tasks(id) ON DELETE CASCADE
+      );
       /*
       FNXC:Ideation 2026-07-18-13:25:
       FN-8295 migration 0022 FKs ideation rows to missions/mission_features on (project_id, id).
@@ -2347,6 +2402,9 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       WORKFLOW_DEFERRED_SINCE_VERSION,
       /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
       GLOBAL_TASK_ID_CLAIM_VERSION,
+      /* FNXC:TasksListReadIndex 2026-11-20-09:04 (RUFU-585): 0097 (RUFU-433, never appended by its own card) then 0098. */
+      ARTIFACT_RETRACTION_VERSION,
+      TASKS_LIST_READ_INDEX_VERSION,
       /* FNXC:MigrationCollisionRepair 2026-10-05-11:29: this fork records the non-numeric repair
       identity and ORDER BY version is TEXT, so it sorts after every numeric slot. Keep it last. */
       MIXED_0065_REPAIR_VERSION,
@@ -2802,6 +2860,9 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       WORKFLOW_DEFERRED_SINCE_VERSION,
       /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
       GLOBAL_TASK_ID_CLAIM_VERSION,
+      /* FNXC:TasksListReadIndex 2026-11-20-09:04 (RUFU-585): 0097 (RUFU-433, never appended by its own card) then 0098. */
+      ARTIFACT_RETRACTION_VERSION,
+      TASKS_LIST_READ_INDEX_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2956,6 +3017,9 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       WORKFLOW_DEFERRED_SINCE_VERSION,
       /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
       GLOBAL_TASK_ID_CLAIM_VERSION,
+      /* FNXC:TasksListReadIndex 2026-11-20-09:04 (RUFU-585): 0097 (RUFU-433, never appended by its own card) then 0098. */
+      ARTIFACT_RETRACTION_VERSION,
+      TASKS_LIST_READ_INDEX_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
