@@ -38,6 +38,13 @@ import {
   type MemoryGetOptions,
   type MemoryGetResult,
 } from "./memory-backend.js";
+/*
+FNXC:MemoryBudget 2026-11-20-11:55 (RUFU-665):
+The disk-fallback allowlist below accepts the cold-tier shape, and it takes the shape from the same
+import-free leaf the writer and the file API use — not re-declared here, and not reached through
+`memory-backend.js`, which consumes the predicate without re-exporting it.
+*/
+import { isArchiveMemoryFileName } from "./memory-archive-filename.js";
 import { resolveStashMemorySettings } from "./stash-settings.js";
 import {
   reportStashReadOutcome,
@@ -416,8 +423,9 @@ export const MEMORY_FILE_LAYER_RESERVED_SLOTS = 1;
  * Deterministic two-lane merge for memory search: cap each lane at `limit`, sort by score
  * descending with a stable path-then-lineStart tie-break, slice to `limit`, then apply the
  * one-slot file-layer reservation. Two calls with the same inputs return the same ordering.
- * Cross-scope ranking (the `+ 1000` agent-memory offset in the engine tool) is RUFU-665's
- * subject, not this merge's; this helper only merges the remote and file lanes of ONE scope.
+ * Cross-scope ranking is NOT this helper's subject: the agent-scope tie-break lives in the engine tool
+ * that merges SCOPES (`AGENT_MEMORY_SCOPE_TIEBREAK`, formerly a flat `+ 1000` — RUFU-665), while this
+ * helper only merges the remote and file lanes of ONE scope and therefore sees one scale throughout.
  */
 export function mergeMemoryFileLayerHits(
   remoteHits: MemorySearchResult[],
@@ -473,7 +481,12 @@ export function isCanonicalLayeredMemoryPath(rawPath: string): boolean {
   return (
     leaf === MEMORY_LONG_TERM_FILENAME ||
     leaf === MEMORY_DREAMS_FILENAME ||
-    CANONICAL_DAILY_MEMORY_RE.test(leaf)
+    CANONICAL_DAILY_MEMORY_RE.test(leaf) ||
+    // FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665): a retired note is still a canonical layered memory
+    // path. Without this the backend would list and search `ARCHIVE-*.md` while this disk fallback
+    // refused to serve it, i.e. the note is findable and unreadable — the exact loss the roll-up must
+    // not introduce.
+    isArchiveMemoryFileName(leaf)
   );
 }
 

@@ -22,21 +22,43 @@
  * And one ordering invariant: no rewrite happens unless a backup covering that file succeeded in the
  * same sweep, taken after the bytes were read. The backup is also what makes "loss-free" auditable —
  * if a collapse is ever disputed, the pre-rewrite file is on disk.
+ *
+ * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+ * RUFU-279 shipped the DETECTION half of this contract and stopped at a demonstrable dead end: the only
+ * legal shrink was an exact-duplicate collapse, so a file whose sections are all distinct could be
+ * reported over budget forever and could never converge. This module now owns the CONVERGENCE half too,
+ * with a second hard property added to the two above:
+ *
+ * 3. CONVERGENT WITHOUT EDITING. When collapsing duplicates cannot reach the budget, whole `## `
+ *    sections are RETIRED out of the hot file into a dated cold-tier file beside it
+ *    (`ARCHIVE-YYYY-MM-DD.md`), byte-for-byte and in append order. Retirement is a move, never a
+ *    rewrite: no summarization, no merging, no rewording, no split section, and no LLM in the loop --
+ *    the module stays deterministic and its loss-freedom stays provable by comparing bytes.
+ *
+ * Two rules keep the cold tier from becoming a new problem. It is REACHABLE: the file is enumerated,
+ * indexed, and returned by `fn_memory_search` / `fn_memory_get`, so retiring a note costs it its prompt
+ * slot and nothing else (only the injected prompt index deliberately stays hot-file-only). And it is
+ * NEVER A MAINTENANCE TARGET: `discoverLongTermMemoryTargets` only ever lists `MEMORY.md` paths, so the
+ * convergence loop cannot simply relocate the ceiling onto a file that keeps growing. That is why the
+ * archive is a flat sibling in the same directory rather than a subdirectory, and dated rather than one
+ * perpetually-appended `ARCHIVE.md`.
  */
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createMemoryBackupManager, memoryLongTermPath } from "@fusion/core";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createMemoryBackupManager, memoryLongTermPath, MEMORY_ARCHIVE_PREAMBLE_LINES } from "@fusion/core";
 import type { ProjectSettings } from "@fusion/core";
 import {
   MEMORY_LONG_TERM_BYTE_BUDGET,
+  MEMORY_LONG_TERM_HOT_TARGET_BYTES,
   MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES,
+  archiveMemoryFileName,
+  countMemoryEntries,
   parseMemoryFile,
   renderMemoryFile,
   type LongTermMemoryScope,
   type MemorySection,
 } from "./memory-budget.js";
-
 /** Run-audit event names owned by this module (declared in `util/run-audit.ts`). */
 export const LONG_TERM_MEMORY_AUDIT_EVENTS = {
   overBudget: "memory:long-term-over-budget",
@@ -132,6 +154,273 @@ function assertSectionsRetained(retained: MemorySection[], output: string, newli
   }
 }
 
+/*
+FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+Preamble of a cold-tier file. The TEXT is core's (`MEMORY_ARCHIVE_PREAMBLE_LINES`), because the lane that
+lists these files and the lane that writes them must agree on what a cold file is; only the newline
+rendering stays here. Deliberately clock-free: the DATE lives in the filename (`ARCHIVE-YYYY-MM-DD.md`),
+so the same input bytes produce a byte-identical archive body whenever the roll-up runs, which is what
+makes "a re-run after a partial failure is idempotent" provable rather than hoped for. The wording is the
+contract a future reader needs: this text is verbatim author content, it is searchable, and it is not in
+the prompt.
+*/
+/**
+ * The exact bytes a newly-created cold-tier file starts with (LF form; a CRLF source renders CRLF).
+ *
+ * FNXC:MemoryBudget 2026-11-20-12:48 (RUFU-665 landing fix, CEO lane):
+ * This is a function, not an eagerly-rendered module constant, and the shape it replaces was a real defect,
+ * not a style choice. The module aliased core's `MEMORY_ARCHIVE_PREAMBLE_LINES` into a module-level `const`
+ * and called `.join()` on it at import time. Entered through `self-healing.ts` (the order the `engine-core`
+ * gate exercises), that `@fusion/core` binding is not initialized while this module evaluates, so the alias
+ * captured `undefined`: seven gate test files died at IMPORT time with
+ * `Cannot read properties of undefined (reading 'join')`, and the two roll-up sites that read the same alias
+ * would have thrown at RUNTIME on the identical premise. Reading the imported binding inside a function is
+ * sound - by call time core is fully evaluated, and ESM live bindings then carry the true value. The rule
+ * this encodes: no engine module may render core memory text at import time.
+ */
+export function archiveMemoryPreamble(newline = "\n"): string {
+  return `${MEMORY_ARCHIVE_PREAMBLE_LINES.join(newline)}${newline}`;
+}
+
+/** Result of planning a byte-quota roll-up over one file's content. */
+export type LongTermMemoryRollupPlan = {
+  /** Hot-file content after the move — identical to the input when nothing moved. */
+  content: string;
+  /** Cold-tier body: deterministic preamble + every moved section, verbatim. `null` when nothing moved. */
+  archivedContent: string | null;
+  /**
+   * The moved sections themselves. Maintenance needs the SECTIONS, not the rendered body, because a
+   * same-day re-run must merge into an archive that already exists; re-parsing `archivedContent` would
+   * reintroduce the blank-line-normalizing artifacts the merge helper would then treat as new text.
+   */
+  archivedSections: MemorySection[];
+  changed: boolean;
+  /** Whether the hot output is within `targetBytes`; false means the breach is reported, not hidden. */
+  converged: boolean;
+  sectionsBefore: number;
+  sectionsAfter: number;
+  /** Whole `## ` sections moved out of the hot file. */
+  rolledUpSections: number;
+  /** Bytes removed from the hot file by the move (`bytesBefore - bytesAfter`). */
+  rolledUpBytes: number;
+  bytesBefore: number;
+  bytesAfter: number;
+};
+
+function linesByteLength(lines: string[]): number {
+  let sum = 0;
+  for (const line of lines) sum += Buffer.byteLength(line, "utf8");
+  return sum;
+}
+
+/**
+ * Plan a loss-free byte-quota roll-up: keep the newest whole sections that fit `targetBytes`, move the
+ * earlier whole sections verbatim into a cold-tier body.
+ *
+ * FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+ * RUFU-279's collapse is the only shrink it knows, and on the measured production shape (594,273 B /
+ * 306 entries, every section distinct) it moves zero bytes — the repo's own test asserted that dead
+ * end (`stillOverBudget: true`, all sections retained). This planner is the missing convergent half,
+ * built from three constraints that survive the obvious shortcuts:
+ *
+ * 1. WHOLE SECTIONS ONLY, UNEDITED. A section is the unit an author wrote and the unit the memory
+ *    index renders, so the split point is between sections, never inside one. Nothing is shortened,
+ *    merged, reordered, or reworded — an LLM digest cannot prove which memory was still needed, and a
+ *    truncated section is content loss wearing a size fix.
+ * 2. NEWEST STAYS HOT. The file's order is append order, so the tail is the working set the operator
+ *    is actually reasoning about; "oldest first out" needs no timestamps because the contract is
+ *    append-only. The newest section stays even when it alone exceeds the target, because an empty hot
+ *    file is a worse failure than a still-over-budget one — and that case reports `converged: false`
+ *    rather than pretending.
+ * 3. THE MOVE IS ONLY LOSS-FREE IF IT IS PROVEN. Every kept and every moved section's raw lines must
+ *    appear verbatim in one of the two outputs, and the incremental byte accounting is cross-checked
+ *    against a real render before anything is returned. A planner that could silently misplace a
+ *    section would be strictly worse than the non-converging sweep it replaces.
+ *
+ * Determinism: the result is a pure function of the input bytes and `targetBytes` — no clock, no
+ * random, no filesystem — so re-planning unchanged bytes returns byte-identical outputs.
+ */
+export function planLongTermMemoryRollup(params: { content: string; targetBytes: number }): LongTermMemoryRollupPlan {
+  const targetBytes = Math.max(0, Math.floor(params.targetBytes));
+  const parts = parseMemoryFile(params.content);
+  const bytesBefore = Buffer.byteLength(params.content, "utf8");
+
+  const noop = (converged: boolean): LongTermMemoryRollupPlan => ({
+    content: params.content,
+    archivedContent: null,
+    archivedSections: [],
+    changed: false,
+    converged,
+    sectionsBefore: parts.sections.length,
+    sectionsAfter: parts.sections.length,
+    rolledUpSections: 0,
+    rolledUpBytes: 0,
+    bytesBefore,
+    bytesAfter: bytesBefore,
+  });
+
+  // Nothing to do: already within the target, or there is no whole section that could be moved. A
+  // preamble-only file has no author entry to move, so it is reported not-converged, never rewritten.
+  if (bytesBefore <= targetBytes) return noop(true);
+  if (parts.sections.length <= 1) return noop(false);
+
+  /*
+   * Incremental byte accounting instead of re-rendering per candidate: the production file is
+   * hundreds of sections and multi-megabyte, and `renderMemoryFile` per probe would make the walk
+   * O(sections x file). The formula mirrors `renderMemoryFile` exactly — every line, one separator
+   * between adjacent lines, plus the restored closing line break — and the chosen split is verified
+   * against a real render below, so a drift here fails loudly instead of mis-planning.
+   */
+  const nlBytes = Buffer.byteLength(parts.newline, "utf8");
+  const trailingBytes = parts.trailingNewline ? nlBytes : 0;
+  const preambleLines = parts.preamble.length;
+  const preambleBytes = linesByteLength(parts.preamble);
+  const renderedBytes = (extraLines: number, extraBytes: number): number => {
+    const totalLines = preambleLines + extraLines;
+    if (totalLines === 0) return trailingBytes;
+    return preambleBytes + extraBytes + nlBytes * (totalLines - 1) + trailingBytes;
+  };
+
+  let keepFrom = parts.sections.length - 1;
+  let keptLines = parts.sections[keepFrom]!.lines.length;
+  let keptBytes = linesByteLength(parts.sections[keepFrom]!.lines);
+  for (let index = keepFrom - 1; index >= 0; index -= 1) {
+    const candidate = parts.sections[index]!;
+    const candidateLines = keptLines + candidate.lines.length;
+    const candidateBytes = keptBytes + linesByteLength(candidate.lines);
+    if (renderedBytes(candidateLines, candidateBytes) > targetBytes) break;
+    keepFrom = index;
+    keptLines = candidateLines;
+    keptBytes = candidateBytes;
+  }
+
+  const moved = parts.sections.slice(0, keepFrom);
+  const kept = parts.sections.slice(keepFrom);
+  if (moved.length === 0) return noop(renderedBytes(keptLines, keptBytes) <= targetBytes);
+
+  const hotContent = renderMemoryFile(parts, kept);
+  const hotBytes = Buffer.byteLength(hotContent, "utf8");
+  const expectedHotBytes = renderedBytes(keptLines, keptBytes);
+  if (hotBytes !== expectedHotBytes) {
+    throw new Error(
+      `memory:long-term-rollup byte accounting disagreed with the render (${expectedHotBytes} planned, ${hotBytes} rendered)`,
+    );
+  }
+
+  const archiveBody = [
+    ...MEMORY_ARCHIVE_PREAMBLE_LINES,
+    ...moved.flatMap((section) => [...section.lines, ""]),
+  ].join(parts.newline);
+  const archivedContent = archiveBody.endsWith(parts.newline) ? archiveBody : `${archiveBody}${parts.newline}`;
+
+  // Loss proof across BOTH outputs: every moved section must be present in the archive body, and every
+  // kept section must survive in the rendered hot file. A section that appears in neither is a bug this
+  // planner refuses to ship, so both halves are asserted against the RENDERED bytes rather than against
+  // the section arrays the plan was built from — planning a loss and rendering a loss are different
+  // failures, and only the render is what gets written.
+  assertSectionsRetained(kept, hotContent, parts.newline);
+  for (const section of moved) {
+    if (!archivedContent.includes(section.lines.join(parts.newline))) {
+      throw new Error(`memory:long-term-rollup dropped archived section "${section.heading}"`);
+    }
+  }
+
+  return {
+    content: hotContent,
+    archivedContent,
+    archivedSections: moved,
+    changed: hotContent !== params.content,
+    converged: hotBytes <= targetBytes,
+    sectionsBefore: parts.sections.length,
+    sectionsAfter: kept.length,
+    rolledUpSections: moved.length,
+    rolledUpBytes: bytesBefore - hotBytes,
+    bytesBefore,
+    bytesAfter: hotBytes,
+  };
+}
+
+/** Cold-tier filename for a date, re-exported so maintenance and its tests share one source of truth. */
+export { archiveMemoryFileName };
+
+/**
+ * Merge moved sections into an existing cold-tier body without duplicating anything.
+ *
+ * FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+ * A same-day second sweep must append only what has not been archived yet — the hot file may have
+ * gained new material between sweeps, and a naive append after a partial failure would write the same
+ * author text twice into the same file. Identity is the same key the duplicate collapse uses (heading
+ * modulo case/whitespace + body modulo trailing whitespace), so the archive dedupes on exactly the
+ * notion of "the same entry" the rest of the module already uses. Existing archive bytes are kept
+ * untouched, so an append never rewrites what is already cold.
+ */
+export function mergeSectionsIntoArchive(params: {
+  existing: string | null;
+  sectionsToAppend: MemorySection[];
+  newline: string;
+}): { content: string; appended: number; skippedDuplicates: number } {
+  const newline = params.newline;
+  const existing = params.existing;
+  if (params.sectionsToAppend.length === 0) {
+    return { content: existing ?? "", appended: 0, skippedDuplicates: 0 };
+  }
+
+  const existingKeys = new Set<string>();
+  if (existing) {
+    for (const section of parseMemoryFile(existing).sections) {
+      existingKeys.add(`${section.normalizedHeading}\u0000${section.normalizedBody}`);
+    }
+  }
+
+  const toWrite: MemorySection[] = [];
+  let skipped = 0;
+  const seenThisRun = new Set<string>();
+  for (const section of params.sectionsToAppend) {
+    const key = `${section.normalizedHeading}\u0000${section.normalizedBody}`;
+    if (existingKeys.has(key) || seenThisRun.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    seenThisRun.add(key);
+    toWrite.push(section);
+  }
+
+  if (toWrite.length === 0) return { content: existing ?? "", appended: 0, skippedDuplicates: skipped };
+
+  const body = toWrite.flatMap((section) => [...section.lines, ""]).join(
+    existing && existing.length > 0 ? (existing.includes("\r\n") ? "\r\n" : "\n") : newline,
+  );
+  // A cold file written for the first time gets the preamble in the SOURCE file's newline shape, so a
+  // CRLF memory tree never grows an LF-headed archive beside it; an existing cold file keeps its own.
+  const freshBase = archiveMemoryPreamble(newline);
+  const base = existing && existing.length > 0 ? existing : freshBase;
+  const baseNewline = base.includes("\r\n") ? "\r\n" : "\n";
+  const joined = base.endsWith(baseNewline) ? `${base}${body}` : `${base}${baseNewline}${body}`;
+  return {
+    content: joined.endsWith(baseNewline) ? joined : `${joined}${baseNewline}`,
+    appended: toWrite.length,
+    skippedDuplicates: skipped,
+  };
+}
+
+/**
+ * The moved sections whose exact text is ABSENT from an archive body read back from disk.
+ *
+ * FNXC:MemoryBudget 2026-11-20-12:40 (RUFU-665):
+ * Byte-equality between what was written and what was read back proves the write landed; it cannot prove
+ * the move survived, because the merge that produced those bytes is the code that could have decided a
+ * section was already cold and skipped it. This predicate asks the question the claim actually needs:
+ * is each section's own text in the file? Exported as a pure function so the refusal it controls is
+ * testable without staging a partial write against a real filesystem.
+ */
+export function movedSectionsMissingFromArchive(
+  archiveContent: string,
+  sections: readonly MemorySection[],
+  newline: string,
+): MemorySection[] {
+  return sections.filter((section) => !archiveContent.includes(section.lines.join(newline)));
+}
+
 /** One long-term memory file the maintenance sweep may measure and reorganize. */
 export type LongTermMemoryTarget = {
   scope: LongTermMemoryScope;
@@ -150,6 +439,13 @@ export type LongTermMemoryTarget = {
  * would add a DB round-trip to a startup step and would silently skip the residue of deleted agents,
  * which is exactly the content still crowding context. A failed listing means "no agent memory", which
  * is also the honest reading of a missing directory.
+ *
+ * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+ * Discovery is restricted to `MEMORY.md` by construction and must stay that way. Cold-tier files
+ * (`ARCHIVE-YYYY-MM-DD.md`) live in these SAME directories, so a discovery rule that listed "every `.md`
+ * in here" would make the archive a maintenance target, and the convergence loop would relocate the
+ * unbounded-growth ceiling onto the archive file while calling it a fix. The archive is append-only and
+ * never re-planned; the maintenance suite pins that an `ARCHIVE-*.md` is never treated as a target.
  */
 export function discoverLongTermMemoryTargets(rootDir: string): LongTermMemoryTarget[] {
   const targets: LongTermMemoryTarget[] = [];
@@ -198,6 +494,14 @@ export type LongTermMemoryMaintenanceOptions = {
   audit: LongTermMemoryAuditEmit;
   /** Backup factory covering the memory tree; defaults to the configured `MemoryBackupManager`. */
   createBackup?: () => Promise<LongTermMemoryBackupReceipt>;
+  /**
+   * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+   * What the roll-up aims the hot file under. Defaults to `MEMORY_LONG_TERM_HOT_TARGET_BYTES` when the
+   * caller keeps the shipped budget, and to 75 % of the injected budget otherwise, so a test (or a
+   * future caller) that narrows `budgetBytes` gets a proportionally narrowed target instead of a
+   * target above its own budget, which would silently plan no roll-up at all.
+   */
+  hotTargetBytes?: number;
   /*
    * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
    * RUFU-279 made this path a snapshot producer but left its only eviction routine
@@ -233,6 +537,10 @@ export type LongTermMemoryMaintenanceResult = {
   suppressedFindings: number;
   duplicateSectionsCollapsed: number;
   conflictsRetained: number;
+  /** Whole sections that actually moved into a cold tier in THIS sweep (planned-but-refused moves are not counted). */
+  rolledUpSections: number;
+  /** Bytes that actually left the hot files into cold tiers in this sweep. */
+  rolledUpBytes: number;
   rewritten: number;
   skippedTooLarge: number;
   failures: number;
@@ -260,6 +568,13 @@ export function longTermMemoryOverBudgetSignature(params: {
   conflictsFound: boolean;
   tooLarge: boolean;
 }): string {
+  /*
+   * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+   * The shape is deliberately unchanged by the roll-up. The two convergence-possibility booleans
+   * (`collapseCanConverge`, `retirementCanConverge`) are per-row facts, not rate-limit identity: a
+   * file's size and entry count already re-announce it when either bucket moves, and folding a boolean
+   * that flips mid-episode into the key would let one file spend two cooldown windows per flip.
+   */
   const budgetMultiples = Math.floor(params.bytes / Math.max(1, params.budgetBytes));
   return [
     params.scope,
@@ -293,6 +608,14 @@ type PendingRewrite = {
   /** Exact bytes the plan was built from, for the pre-write change check. */
   original: string;
   planned: LongTermMemoryConsolidationPlan;
+  /** Byte-quota roll-up plan, or `null` when the collapse alone was enough (or nothing moved). */
+  rollup: LongTermMemoryRollupPlan | null;
+  /** Final hot-file bytes: the roll-up's kept tail when sections moved, otherwise the collapsed content. */
+  finalContent: string;
+  /** Newline shape of the source file, reused so the cold tier matches its hot sibling. */
+  newline: string;
+  /** Cold-tier path the moved sections go to (`null` when nothing moves). */
+  archivePath: string | null;
   bytesBefore: number;
   entryCountBefore: number;
 };
@@ -321,6 +644,9 @@ export async function runLongTermMemoryMaintenance(
 ): Promise<LongTermMemoryMaintenanceResult> {
   const budgetBytes = options.budgetBytes ?? MEMORY_LONG_TERM_BYTE_BUDGET;
   const maxBytes = options.maxBytes ?? MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES;
+  const hotTargetBytes = options.hotTargetBytes ?? (
+    options.budgetBytes === undefined ? MEMORY_LONG_TERM_HOT_TARGET_BYTES : Math.floor(budgetBytes * 0.75)
+  );
   const now = options.now ?? Date.now;
   const state = options.overBudgetAuditState ?? new Map<string, number>();
   const cooldownMs = options.cooldownMs ?? LONG_TERM_MEMORY_OVER_BUDGET_AUDIT_COOLDOWN_MS;
@@ -334,6 +660,8 @@ export async function runLongTermMemoryMaintenance(
     suppressedFindings: 0,
     duplicateSectionsCollapsed: 0,
     conflictsRetained: 0,
+    rolledUpSections: 0,
+    rolledUpBytes: 0,
     rewritten: 0,
     skippedTooLarge: 0,
     failures: 0,
@@ -346,6 +674,18 @@ export async function runLongTermMemoryMaintenance(
     duplicatesFound: boolean;
     conflictsFound: boolean;
     tooLarge: boolean;
+    /*
+     * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+     * Two booleans the operator needs to route the finding, carried on the row rather than inferred
+     * from the file. "Over budget" alone conflates two different jobs: a file whose breach is a pile of
+     * re-appended restatements is fixed by collapsing duplicates, while the measured production file
+     * (every section distinct) is not, and maintenance has to say which lever exists before an author
+     * goes looking for one. `retirementCanConverge` false beside `collapseCanConverge` false is the
+     * only honest "this one needs a human decision" signal; `tooLarge` is reported as both false
+     * because an un-parsed file proves nothing about either remedy.
+     */
+    collapseCanConverge: boolean;
+    retirementCanConverge: boolean;
   }): Promise<void> {
     const signature = longTermMemoryOverBudgetSignature({
       scope: input.target.scope,
@@ -375,6 +715,8 @@ export async function runLongTermMemoryMaintenance(
         duplicatesFound: input.duplicatesFound,
         conflictsFound: input.conflictsFound,
         tooLarge: input.tooLarge,
+        collapseCanConverge: input.collapseCanConverge,
+        retirementCanConverge: input.retirementCanConverge,
       },
     });
   }
@@ -398,6 +740,9 @@ export async function runLongTermMemoryMaintenance(
           duplicatesFound: false,
           conflictsFound: false,
           tooLarge: true,
+          // An un-parsed file proves nothing about either remedy; claiming either would be a guess.
+          collapseCanConverge: false,
+          retirementCanConverge: false,
         });
         await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
           target: auditTargetFor(target),
@@ -418,6 +763,21 @@ export async function runLongTermMemoryMaintenance(
         continue;
       }
 
+      /*
+       * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+       * Collapse first, then plan a byte-quota roll-up over the COLLAPSED bytes, in that order and for
+       * one reason: collapsing exact duplicates removes text that is provably redundant, while retiring
+       * a section moves text that might still be wanted. Doing it the other way round would push a
+       * duplicate pair into the cold tier (both copies) instead of deleting one, and would make the
+       * rolled-up count overstate the retirement. A file with no duplicates still plans a roll-up, which
+       * is precisely the case RUFU-279 could not converge.
+       */
+      const rollup = planned.changed
+        ? planLongTermMemoryRollup({ content: planned.content, targetBytes: hotTargetBytes })
+        : planLongTermMemoryRollup({ content, targetBytes: hotTargetBytes });
+      const collapseOnlyConverges = Buffer.byteLength(planned.content, "utf8") <= budgetBytes;
+      const finalContent = rollup.changed ? rollup.content : planned.content;
+
       result.overBudget += 1;
       result.duplicateSectionsCollapsed += planned.duplicateSectionsCollapsed;
       result.conflictsRetained += planned.conflictsRetained;
@@ -428,9 +788,23 @@ export async function runLongTermMemoryMaintenance(
         duplicatesFound: planned.duplicateSectionsCollapsed > 0,
         conflictsFound: planned.conflictsRetained > 0,
         tooLarge: false,
+        collapseCanConverge: planned.duplicateSectionsCollapsed > 0 && collapseOnlyConverges,
+        retirementCanConverge: rollup.changed && rollup.converged,
       });
-      if (planned.changed) {
-        pending.push({ target, original: content, planned, bytesBefore: bytes, entryCountBefore: planned.entriesBefore });
+      if (planned.changed || rollup.changed) {
+        pending.push({
+          target,
+          original: content,
+          planned,
+          rollup: rollup.changed ? rollup : null,
+          finalContent,
+          newline: parseMemoryFile(content).newline,
+          archivePath: rollup.changed && rollup.archivedSections.length > 0
+            ? join(dirname(target.path), archiveMemoryFileName(new Date(now())))
+            : null,
+          bytesBefore: bytes,
+          entryCountBefore: planned.entriesBefore,
+        });
       }
     } catch (error) {
       result.failures += 1;
@@ -525,7 +899,9 @@ export async function runLongTermMemoryMaintenance(
       const current = await readFile(item.target.path, "utf8");
       if (current !== item.original) {
         // Someone wrote the file after we planned. Their bytes win and the next sweep re-plans; a
-        // duplicate collapse must never overwrite a concurrent append.
+        // maintenance rewrite must never overwrite a concurrent append. The cold tier is gated on the
+        // SAME proof: an archive append whose hot sections were refused would duplicate author text
+        // into a second file with nothing removed from the first.
         result.failures += 1;
         const fresh = consolidateLongTermMemoryContent(current);
         await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
@@ -540,9 +916,84 @@ export async function runLongTermMemoryMaintenance(
         continue;
       }
 
-      await writeFile(item.target.path, item.planned.content, "utf8");
+      /*
+       * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+       * Archive BEFORE the hot shrink, and read it back before anything leaves the hot file. The two
+       * failure shapes are not equally acceptable: writing the hot file first and then failing the
+       * archive would DISCARD author content, which is the one outcome this module exists to make
+       * impossible. This order can only ever fail toward duplication -- an archive append with the hot
+       * file untouched means the section briefly exists in two places, which is a tidiness problem an
+       * operator can see and repair, not a loss. A failed archive write therefore records stage `write`
+       * and leaves the hot file byte-identical.
+       */
+      let archiveWrittenTo: string | null = null;
+      if (item.rollup && item.archivePath && item.rollup.archivedSections.length > 0) {
+        let existingArchive: string | null = null;
+        try {
+          if (existsSync(item.archivePath)) existingArchive = await readFile(item.archivePath, "utf8");
+        } catch (error) {
+          result.failures += 1;
+          options.log?.warn?.(`long-term memory cold tier unreadable for ${item.archivePath}: ${describe(error)}`);
+          await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
+            target: auditTargetFor(item.target),
+            metadata: { ...identity, stage: "read", bytes: item.bytesBefore },
+          });
+          continue;
+        }
+        const merged = mergeSectionsIntoArchive({
+          existing: existingArchive,
+          sectionsToAppend: item.rollup.archivedSections,
+          newline: item.newline,
+        });
+        try {
+          if (!existingArchive) await mkdir(dirname(item.archivePath), { recursive: true });
+          await writeFile(item.archivePath, merged.content, "utf8");
+          const archiveReadBack = await readFile(item.archivePath, "utf8");
+          /*
+           * FNXC:MemoryBudget 2026-11-20-12:40 (RUFU-665):
+           * Byte equality against what this process just wrote proves the WRITE landed; it does not prove
+           * the MOVED CONTENT survived, because the merge that produced those bytes is the very code that
+           * could have decided a section was already cold and skipped it. So every moved section's exact
+           * text is required to be present in the bytes read back from disk — the loss-free claim rests on
+           * the file, not on the writer's return value.
+           *
+           * A miss needs no restore, and that is the point of the archive-first order above: the hot file
+           * has not been touched yet, so refusing here leaves the author's content exactly where it was,
+           * in one place, with the failure recorded. A restore would only be the remedy for an order that
+           * shrank the hot file first.
+           */
+          const missing = movedSectionsMissingFromArchive(
+            archiveReadBack,
+            item.rollup.archivedSections,
+            item.newline,
+          );
+          if (archiveReadBack !== merged.content || missing.length > 0) {
+            result.failures += 1;
+            options.log?.warn?.(
+              `long-term memory cold tier verify refused the roll-up for ${item.archivePath}: ` +
+                `${missing.length} of ${item.rollup.archivedSections.length} moved sections absent after read-back`,
+            );
+            await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
+              target: auditTargetFor(item.target),
+              metadata: { ...identity, stage: "verify", bytes: item.bytesBefore, rolledUpSections: merged.appended },
+            });
+            continue;
+          }
+          archiveWrittenTo = item.archivePath;
+        } catch (error) {
+          result.failures += 1;
+          options.log?.warn?.(`long-term memory cold tier write failed for ${item.archivePath}: ${describe(error)}`);
+          await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
+            target: auditTargetFor(item.target),
+            metadata: { ...identity, stage: "write", bytes: item.bytesBefore },
+          });
+          continue;
+        }
+      }
+
+      await writeFile(item.target.path, item.finalContent, "utf8");
       const written = await readFile(item.target.path, "utf8");
-      if (written !== item.planned.content) {
+      if (written !== item.finalContent) {
         result.failures += 1;
         await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.failed, {
           target: auditTargetFor(item.target),
@@ -551,7 +1002,19 @@ export async function runLongTermMemoryMaintenance(
         continue;
       }
 
+      const movedSections = archiveWrittenTo ? item.rollup?.archivedSections.length ?? 0 : 0;
+      /*
+       * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+       * `rolledUpBytes` is the RETIREMENT delta only, not `bytesBefore - bytesAfter`. The two differ
+       * whenever a sweep also collapsed duplicates, and the row already reports the collapse separately
+       * as `duplicateSectionsCollapsed`; a key named for the move that also counted the collapse would
+       * make "how much did retirement free?" unanswerable, which is the one number this row exists to
+       * give an operator deciding whether to trust the cold tier.
+       */
+      const movedBytes = archiveWrittenTo ? Math.max(0, item.rollup?.rolledUpBytes ?? 0) : 0;
       result.rewritten += 1;
+      result.rolledUpSections += movedSections;
+      result.rolledUpBytes += movedBytes;
       const bytesAfter = Buffer.byteLength(written, "utf8");
       await safeAudit(options.audit, LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated, {
         target: auditTargetFor(item.target),
@@ -560,18 +1023,26 @@ export async function runLongTermMemoryMaintenance(
           bytesBefore: item.bytesBefore,
           bytesAfter,
           budgetBytes,
+          hotTargetBytes,
           entryCountBefore: item.entryCountBefore,
-          entryCountAfter: item.planned.entriesAfter,
+          entryCountAfter: countMemoryEntries(written),
           duplicateSectionsCollapsed: item.planned.duplicateSectionsCollapsed,
           conflictsRetained: item.planned.conflictsRetained,
+          // Counts only. The cold tier's FILENAME, path, date and headings live in the file itself and
+          // in the debug line below, never in a queryable row: an archive name is a dated path, and a
+          // dated path is exactly the kind of value the memory audit contract keeps out of run-audit.
+          rolledUpSections: movedSections,
+          rolledUpBytes: movedBytes,
           // Task premise 4: after a rewrite that still exceeds the bound, the original breach row and
-          // this number together put BOTH the pre- and post-rewrite breach on the record.
+          // this number together put BOTH the pre- and post-rewrite breach on the record. A converged
+          // roll-up flips this to false, which is the durable proof that the sweep converged.
           stillOverBudget: bytesAfter > budgetBytes,
         },
       });
       options.log?.debug?.(
-        `long-term memory consolidated (${auditTargetFor(item.target)}): ${item.entryCountBefore} -> ${item.planned.entriesAfter} entries, ` +
-          `${item.bytesBefore} -> ${bytesAfter} bytes (budget ${budgetBytes}).`,
+        `long-term memory consolidated (${auditTargetFor(item.target)}): ${item.entryCountBefore} -> ${countMemoryEntries(written)} entries, ` +
+          `${item.bytesBefore} -> ${bytesAfter} bytes (budget ${budgetBytes}, hot target ${hotTargetBytes}, ` +
+          `collapsed ${item.planned.duplicateSectionsCollapsed}, rolled up ${movedSections}${archiveWrittenTo ? ` into ${archiveWrittenTo}` : ""}).`,
       );
     } catch (error) {
       result.failures += 1;

@@ -327,6 +327,35 @@ A workflow graph container node (alongside `foreach`/`loop`) whose template subg
 
 Single pass — no iteration or rework inside the template (this is what distinguishes it from `foreach`/`loop`). Because the toggle key is the node id, renaming or recreating a group resets its per-task enablement; and because that id may deliberately equal a built-in step-template id, the per-task enable set must keep group ids identity-stable rather than round-tripping them through legacy step-template materialization (which would remap the key and silently bypass the group).
 
+## Memory
+
+### Long-term memory working set
+The `MEMORY.md` a lane reads back into its own context — project memory at `.fusion/memory/MEMORY.md` or
+one durable agent's `.fusion/agent-memory/{agentId}/MEMORY.md`. It is bounded by
+`MEMORY_LONG_TERM_BYTE_BUDGET` because it is injected, so the bound protects context, not storage.
+
+### Hot target
+The sub-budget size a converged long-term memory file is shrunk to (`MEMORY_LONG_TERM_HOT_TARGET_BYTES`,
+75% of the budget). Converging *to* the budget would re-breach on the next append inside the same
+maintenance interval and spend another backup snapshot on a file the pass had just fixed.
+
+### Cold tier (archived long-term memory)
+`ARCHIVE-YYYY-MM-DD.md`, a flat sibling of the `MEMORY.md` it came from, one file per retirement day and
+appended to by later sweeps. It is retired long-term content and reports the `long-term` layer with the
+label "Archived long-term memory": it is listed and readable through `fn_memory_search`, `fn_memory_get`
+and the memory APIs, is never injected into the prompt, is never a maintenance target, and refuses every
+write path. Only budget maintenance writes it, directly.
+
+### Roll-up
+The named process that moves whole oldest `## ` sections from the hot file into the cold tier until the hot
+file reaches the Hot target. It is a MOVE: no summarization, no merging, no rewording, no reordering, and no
+LLM in the loop, and loss-freedom is provable by comparing the bytes on either side of the move.
+
+### Retirement identity
+What makes a section "the same entry" for dedupe purposes: its heading *and* its body together. A
+heading-only identity silently loses content in append-only memory, where a heading such as `## Tick
+notes` legitimately recurs every tick with a different body.
+
 ## Persistence & migrations
 
 ### Schema-Version Sweep

@@ -29,8 +29,11 @@
  * regex or its own stride is the class re-forming — see
  * `docs/solutions/reliability/memory-retrieval-unicode-tokenizer-and-window-geometry.md`.
  *
- * Deliberately NOT here: the cross-scope `+ 1000` score offset, the merge ordering, and every
- * result limit. Those belong to RUFU-665 Step 6 and stay byte-identical to it.
+ * Deliberately NOT here: the cross-scope score offset, the merge ordering, and every result limit.
+ * The offset was `+ 1000` and is now `AGENT_MEMORY_SCOPE_TIEBREAK` (RUFU-665 Step 6): this scorer
+ * returns a DISTINCT-WORD COUNT, so a flat 1000 made the agent's own note outrank a project line that
+ * matched five times as many words. It stays OUT of this module all the same — it is a scope policy
+ * applied by the lane that merges scopes, not a fact about what a word or a window is.
  */
 
 /**

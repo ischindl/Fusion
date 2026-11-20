@@ -1190,7 +1190,7 @@ The confirmed-landing recovery lane — the pump-driven retry for a merge whose 
 
 Metadata stays ids/outcomes-only in the family's own sense: the configured remote name is the one string the row exists to carry. Remote URLs, ref tips, credentials in a remote URL, review findings, and error prose never enter the row; a failed push keeps its detail in the engine log and in `stderrPreview`.
 
-### Long-term memory budget maintenance (RUFU-279)
+### Long-term memory budget maintenance (RUFU-279, RUFU-665)
 
 `memory:long-term-over-budget` records a long-term `MEMORY.md` (project scope, or one durable agent's
 own memory) that exceeds the code-owned byte budget; `memory:long-term-consolidated` records a rewrite
@@ -1206,9 +1206,38 @@ agent, measured `bytes`, `budgetBytes`, `overByBytes`, `entryCount`, booleans `d
 `read`/`too-large`/`backup`/`backup-scope`/`concurrent-write`/`write`/`verify`. Because the rewrite is
 backup-first and loss-free, a `consolidated` row is also proof that a memory backup covering that file
 was created in the same pass; `bytesBefore`/`bytesAfter` and `entryCountBefore`/`entryCountAfter` name
-both sides of the change, and `stillOverBudget` stays true when collapsing duplicates could not bring
-the file under the bound. Entry headings, entry text, diff text, file paths, and error messages are
+both sides of the change. Entry headings, entry text, diff text, file paths, and error messages are
 never recorded — the durable memory content is precisely what an operator would have to redact.
+
+**The cold tier adds no new event, only keys** (RUFU-665). An over-budget file whose sections are all
+distinct used to be unfixable by any legal rewrite, so `stillOverBudget: true` was a permanent state and
+a `-failed` row named the only remedy the pass had (collapse duplicates) — an instruction that could not
+be followed. `memory:long-term-over-budget` now also answers *which* of the two remedies can still work:
+`collapseCanConverge` and `retirementCanConverge`. Both false is the honest exhaustion case; either true
+means a later pass can land. The pair is also what separates "we refused to open this file" from "we
+opened it and could not fix it": the maintenance cost bound (`MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES`,
+8 MiB) skips a file without parsing it, and before these booleans an above-ceiling breach and an
+all-distinct parsed breach wrote the same nothing-can-be-done row. A ceiling skip claims NEITHER remedy —
+an un-parsed file proves nothing about either — while a parsed over-budget file reports
+`retirementCanConverge: true`, so `tooLarge: true` beside both false can now only mean the sweep never
+read the file. The ceiling itself stays a skip: reclassifying it as a cost bound on *rewriting* rather
+than on *reading* is a separate decision about how much of a 13 MB file maintenance may hold in memory
+per pass. `memory:long-term-consolidated` gained `hotTargetBytes` (the sub-budget
+convergence target the hot file is shrunk to, deliberately below `budgetBytes` so a converged file does
+not re-breach on the next append), `rolledUpSections` and `rolledUpBytes`. `rolledUpBytes` is the
+retirement delta **only** — `bytesBefore - bytesAfter` would also count the collapse, which the row
+already reports separately as `duplicateSectionsCollapsed`, and "how much did retirement free?" is the
+one number an operator needs in order to decide whether to trust the cold tier. A converged roll-up flips
+`stillOverBudget` to false, which is the durable proof that the sweep converged rather than merely
+reported.
+
+What the cold tier's own identity is *not*: its **filename** appears only in the file itself and in the
+`long-term memory consolidated` debug line, never in a queryable row. `ARCHIVE-YYYY-MM-DD.md` is a dated
+path, and a dated path is exactly the value the memory audit contract keeps out of run-audit — so the row
+counts how many sections moved and how many bytes they carried, and says nothing about where they went.
+The cold tier is also never a maintenance target, and therefore emits no rows of its own: retiring into a
+file that the same sweep later measures would move the byte ceiling onto the archive, which is the loop
+this card exists to close.
 
 The three events are deliberately absent from the curated `run-audit-catalogue.ts` delivery-pipeline
 list: that catalogue is locked table-for-table against the delivery surface, and these rows are

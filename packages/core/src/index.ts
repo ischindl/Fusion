@@ -3163,6 +3163,20 @@ export {
   type MemoryInstructionContext,
 } from "./memory/project-memory.js";
 
+/*
+FNXC:MemoryBudget 2026-11-20-11:05 (RUFU-665):
+The cold-tier filename and preamble live in an import-free leaf so the engine's maintenance writer and
+every core read lane share ONE definition of the name. A second copy anywhere is how a retired note ends
+up searchable in one lane and refused in another; see the module docstring.
+*/
+export {
+  MEMORY_ARCHIVE_FILENAME_PREFIX,
+  MEMORY_ARCHIVE_PREAMBLE,
+  MEMORY_ARCHIVE_PREAMBLE_LINES,
+  archiveMemoryFileName,
+  isArchiveMemoryFileName,
+} from "./memory/memory-archive-filename.js";
+
 // ── Memory Backend ───────────────────────────────────────
 
 export {

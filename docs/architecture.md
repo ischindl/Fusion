@@ -825,6 +825,9 @@ Both systems currently use `.fusion/memory/MEMORY.md` as the canonical working s
 - Long-term: `.fusion/memory/MEMORY.md`
 - Daily notes: `.fusion/memory/YYYY-MM-DD.md`
 - Dream processing: `.fusion/memory/DREAMS.md`
+- Archived long-term (cold tier, RUFU-665): `.fusion/memory/ARCHIVE-YYYY-MM-DD.md` — same folder, one
+  file per retirement day, appended by later sweeps; agent scope mirrors it under
+  `.fusion/agent-memory/{agentId}/`
 
 **Memory subsystems:**
 - `memory-backend.ts` — backend contracts + file/readonly/qmd implementations
@@ -861,6 +864,35 @@ The QMD backend (`qmd`) delegates read/write I/O to the file backend and schedul
 QMD-backed memory behavior also applies to agent-private memory workspaces under `.fusion/agent-memory/{agentId}/`:
 - Agent memory search normalizes QMD hit paths (including `qmd://...`, absolute paths, and relative filenames) into canonical readable workspace paths (`MEMORY.md`, `DREAMS.md`, `YYYY-MM-DD.md`) so results can be passed directly into `fn_memory_get`.
 - Agent-memory writes from tool and non-tool paths (including `processAgentMemoryDreams()`) schedule agent-specific QMD refreshes so new dreams/long-term updates remain discoverable without manual reindexing.
+
+**Long-term memory converges by moving, never by rewriting (RUFU-665).** A long-term `MEMORY.md` over
+`MEMORY_LONG_TERM_BYTE_BUDGET` has exactly two legal fates, and the maintenance pass now owns both: collapse
+sections that are *provably* the same entry, and retire whole oldest sections into the cold tier. The
+ordering is load-bearing at three levels. Duplicates collapse **before** sections retire, because collapsing
+removes provably redundant text while retiring moves text the author may still want — the reverse order
+pushes duplicate pairs into the cold tier and reports them as retired. Inside one file the cold tier is
+written and read back **before** the hot file shrinks, so the only failure the move can have is a section
+that briefly exists in two places; a failed archive write leaves the hot file byte-identical. And the whole
+pass is backup-first: no hot rewrite and no archive write happen unless a backup covering that file
+succeeded earlier in the same pass.
+
+Two properties make the cold tier a destination rather than a second working set. It is **never a
+maintenance target** — discovery lists `MEMORY.md` files only — because retiring into a file the same sweep
+measures would simply move the byte ceiling onto the archive. And it is **read-only through every memory
+API**: `fn_memory_append` has no path argument at all, and the read side of each scope's path resolver opts
+into the archive shape (`allowArchive`) while the write side never does, so an AI compaction can read the
+verbatim record and cannot rewrite it. Budget maintenance is the only writer, and it writes the file
+directly. The archive keeps its `long-term` layer — it *is* retired long-term content, the distinction is
+in its label ("Archived long-term memory") — and its filename lives in the file and the debug log line,
+never in a run-audit row or a prompt.
+
+Retirement identity is heading **and** body together, never the heading alone. Append-only memory reuses
+headings constantly (`## Tick notes` recurs every tick with a different body), so a heading-only key would
+drop the second body from the append while the hot shrink still removed it: content gone from the working
+set, a post-verify that reports the heading as present, and a sweep that re-plans the same section on every
+pass. The hot file is also shrunk to `MEMORY_LONG_TERM_HOT_TARGET_BYTES` (75% of the budget), not to the
+budget itself — a file parked at exactly the ceiling re-breaches on the next append and the sweep spends
+another snapshot on a file it just converged.
 
 **Dashboard API:**
 - `GET /api/memory/backend` — Returns current backend status and capabilities, including `stashReadOutcome` (why a Stash read refused) and `stashReadScope` (what a scoped Stash read dropped)

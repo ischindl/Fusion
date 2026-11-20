@@ -5,11 +5,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runMemoryBackupCommand, type ProjectSettings } from "@fusion/core";
 import { buildMemoryHeadingIndex } from "../../agents/agent-memory-index.js";
 import {
+  ARCHIVE_MEMORY_FILENAME_PREFIX,
   MEMORY_LONG_TERM_BYTE_BUDGET,
+  MEMORY_LONG_TERM_HOT_TARGET_BYTES,
+  MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES,
+  archiveMemoryFileName,
   countMemoryEntries,
   formatLongTermMemoryAppendReport,
   formatMemoryBudgetStatus,
   formatMemorySize,
+  isArchiveMemoryFileName,
   measureLongTermMemory,
   parseMemoryFile,
   renderMemoryFile,
@@ -197,5 +202,65 @@ describe("budget report wording", () => {
     expect(text).toContain("back up the file and collapse exactly duplicated entries");
     // The sentence an author must not misread: maintenance will never shorten their prose.
     expect(text).toContain("will not shorten or drop entries you wrote");
+  });
+
+  /*
+  FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+  The RUFU-279 sentence promised only a duplicate collapse. On the production shape (every section
+  distinct) that remedy moves zero bytes, so the message described a fix that could not fix anything,
+  and each author who noticed filed another card. The remedy named here must be the one that
+  converges an all-unique file and must say what happens to the moved text.
+  */
+  it("names the converging remedy and the archive file an author can search afterwards", () => {
+    const text = formatLongTermMemoryAppendReport({ scopeLabel: "project", appendedBytes: 256, report });
+    expect(text).toContain("ARCHIVE-YYYY-MM-DD.md");
+    expect(text).toContain("fn_memory_search");
+    expect(text).toContain("fn_memory_get");
+    // The forbidden workaround the number otherwise invites.
+    expect(text).toContain("do not delete entries to fix the number");
+  });
+});
+
+/*
+FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+Two numbers this card adds, and both are only meaningful as constraints: a hot target that is not
+strictly below the budget would converge onto a file that the very next append re-breaches, and an
+archive filename predicate that accepts a shape nothing writes turns the read path into a guesser.
+These are code-owned constants, so the values are asserted as values, not as comments.
+*/
+describe("hot target and cold-tier filename contract (RUFU-665)", () => {
+  it("puts the hot target strictly below the budget while both stay code-owned constants", () => {
+    expect(MEMORY_LONG_TERM_HOT_TARGET_BYTES).toBeLessThan(MEMORY_LONG_TERM_BYTE_BUDGET);
+    expect(MEMORY_LONG_TERM_HOT_TARGET_BYTES).toBe(24 * 1024);
+    expect(MEMORY_LONG_TERM_BYTE_BUDGET).toBe(32 * 1024);
+    // Append headroom: the gap is what lets fn_memory_append keep working between sweeps.
+    expect(MEMORY_LONG_TERM_BYTE_BUDGET - MEMORY_LONG_TERM_HOT_TARGET_BYTES).toBe(8 * 1024);
+    // The cost bound is unchanged by this card and sits far above both working numbers.
+    expect(MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES).toBeGreaterThan(MEMORY_LONG_TERM_BYTE_BUDGET);
+  });
+
+  it("accepts the dated archive shape the roll-up writes", () => {
+    expect(ARCHIVE_MEMORY_FILENAME_PREFIX).toBe("ARCHIVE-");
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-09-30.md")).toBe(true);
+    expect(archiveMemoryFileName(new Date(Date.UTC(2026, 8, 30)))).toBe("ARCHIVE-2026-09-30.md");
+    expect(isArchiveMemoryFileName(archiveMemoryFileName(new Date()))).toBe(true);
+  });
+
+  it("rejects every archive-shaped name that no writer could have produced", () => {
+    expect(isArchiveMemoryFileName("ARCHIVE-.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-9-30.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-09-30.md.md")).toBe(false);
+    expect(isArchiveMemoryFileName("../../ARCHIVE-2026-09-30.md")).toBe(false);
+    expect(isArchiveMemoryFileName(".fusion/memory/ARCHIVE-2026-09-30.md")).toBe(false);
+    expect(isArchiveMemoryFileName("archive-2026-09-30.md")).toBe(false);
+    expect(isArchiveMemoryFileName("MEMORY.md")).toBe(false);
+    expect(isArchiveMemoryFileName("DREAMS.md")).toBe(false);
+    expect(isArchiveMemoryFileName("2026-09-30.md")).toBe(false);
+    // Calendar-validity is part of the shape: no clock writes month 13 or day 99.
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-13-99.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-13-01.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-02-30.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2026-02-29.md")).toBe(false);
+    expect(isArchiveMemoryFileName("ARCHIVE-2028-02-29.md")).toBe(true);
   });
 });

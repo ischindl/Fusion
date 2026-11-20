@@ -107,16 +107,27 @@ The order of evaluation is the contract, because it is what keeps each claim pro
 An inventory that cannot be read answers "content may exist", so the tool never asserts an empty
 store it did not actually read.
 
-## Deliberately unchanged
+## Deliberately unchanged *by that card* (and what RUFU-665 later moved)
 
-`RUFU-665` owns memory-retrieval score ordering and result budgets (its Step 6 is a follow-up card
-that removes the `+1000` cross-scope offset). This card is upstream of it, so all of the following
-are byte-identical, and the card that removes the offset must not find it already moved:
+`RUFU-665` owns memory-retrieval score ordering and result budgets. The tokenizer/geometry card above sat
+upstream of it, so everything below stayed byte-identical while it landed — a follow-up card removing the
+offset must be able to find it where it said it was. RUFU-665 Step 6 has now landed and is recorded here,
+so this section reads as a boundary that moved on one line, not as a claim that nothing ever did:
 
-- the `+ 1000` offset and `Number(result.score ?? 1) + 1000`
-- the final merge `[...agentResults, ...projectResults].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, limit)`
-- the `score > 0` relevance door, `limit` clamps, the 1200-char snippet cap, the window **width**
-- the `+1000`-separated `agent-memory` / `qmd-agent-memory` backend labels
+- the `+ 1000` offset and `Number(result.score ?? 1) + 1000` — **replaced by `AGENT_MEMORY_SCOPE_TIEBREAK
+  = 0.5` at both agent lanes** (`score + AGENT_MEMORY_SCOPE_TIEBREAK` on the file lane, and the same on the
+  agent `qmd` lane). Both lanes score a window by its *distinct matched query words*, so one agent line
+  matching one word used to score 1001 and beat a project line matching five: the offset was not a
+  preference, it was a veto on cross-scope relevance. 0.5 keeps the stated preference — an exact tie still
+  prefers the agent's own note — while one extra matched word on the other side outranks it. Both are
+  strictly sub-one by construction, and any score at or above 100 could now only be the old offset.
+- the final merge `[...agentResults, ...projectResults].sort((a, b) => b.score - a.score ||
+  a.path.localeCompare(b.path)).slice(0, limit)` — **unchanged**, and it is what makes the ordering
+  deterministic: score first, then path, never insertion order or filesystem time.
+- the `score > 0` relevance door, `limit` clamps, the 1200-char snippet cap, the window **width** —
+  unchanged.
+- the `+1000`-separated `agent-memory` / `qmd-agent-memory` backend labels — unchanged; the label, not the
+  score, is what tells a caller which lane a hit came from.
 
 Two tempting changes were rejected as scope creep that would have *reduced* recall: raising
 `MEMORY_QUERY_MIN_TERM_LENGTH` from 2 to 3 (it would drop genuine two-letter words in other

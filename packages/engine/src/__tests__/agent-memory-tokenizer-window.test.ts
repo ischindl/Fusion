@@ -129,7 +129,16 @@ describe("agent-memory lane: relevance is a whole word, not a substring", () => 
     expect(hits).toHaveLength(1);
     expect(hits[0].snippet).toContain("pg-gated test harness recipe");
     expect(hits[0].lineStart).toBe(13);
-    expect(hits[0].score).toBe(1004);
+    /*
+    FNXC:MemoryRanking 2026-11-20-11:50 (RUFU-665):
+    This line read `toBe(1004)` until RUFU-665 removed the flat `+ 1000` cross-scope offset. The score IS
+    four distinct matched words, so the assertion now states the property that matters and stays true at
+    any tie-break value the lane chooses: the word count carries the score, and the agent-scope bonus is
+    a FRACTION — strictly under one more word match — rather than a two-hundred-fold lead over a block
+    that matched five words.
+    */
+    expect(hits[0].score).toBeGreaterThan(4);
+    expect(hits[0].score).toBeLessThan(5);
   });
 
   it("a Slovak word present as a whole word still matches (positive control)", async () => {
@@ -159,8 +168,14 @@ describe("agent-memory lane: relevance is a whole word, not a substring", () => 
 
     const hits = await search("Post-merge verification gate");
     expect(hits).toHaveLength(1);
-    // 3 distinct term matches + the cross-scope offset, which this card must not touch
-    expect(hits[0].score).toBe(1003);
+    /*
+    FNXC:MemoryRanking 2026-11-20-11:50 (RUFU-665):
+    The comment beside this assertion used to read "the cross-scope offset, which this card must not
+    touch" — RUFU-665 is exactly the card that owns it, and the offset is no longer 1000. Three distinct
+    term matches carry the score; the agent-scope bonus must stay below one further match.
+    */
+    expect(hits[0].score).toBeGreaterThan(3);
+    expect(hits[0].score).toBeLessThan(4);
     expect(hits[0].snippet).toContain("project-wide");
   });
 

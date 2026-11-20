@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp, formatAgentDiagnosticLines, withAgentPendingApprovalCounts } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp, formatAgentDiagnosticLines, withAgentPendingApprovalCounts, isArchiveMemoryFileName } from "@fusion/core";
 import type { AgentApprovalCountStore } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 /*
@@ -763,7 +763,15 @@ export const memorySearchParams = Type.Object({
 });
 
 export const memoryGetParams = Type.Object({
-  path: Type.String({ description: "Memory path from fn_memory_search, e.g. .fusion/memory/MEMORY.md or .fusion/memory/YYYY-MM-DD.md" }),
+  /*
+  FNXC:MemoryBudget 2026-11-20-11:35 (RUFU-665):
+  The cold tier names itself in this description because a path is only usable if the caller knows it can
+  be asked for. `ARCHIVE-YYYY-MM-DD.md` is the file budget maintenance moves an agent's or the project's
+  oldest verbatim `## ` sections into when `MEMORY.md` passes its byte budget; it is readable here and is
+  NOT writable — `fn_memory_append` has no path argument at all, and the file API refuses writes to the
+  cold tier, so a retired entry stays the append-only record it claims to be.
+  */
+  path: Type.String({ description: "Memory path from fn_memory_search, e.g. .fusion/memory/MEMORY.md, .fusion/memory/YYYY-MM-DD.md, or .fusion/memory/ARCHIVE-YYYY-MM-DD.md (the cold tier budget maintenance retired oldest entries into; readable here, never writable)" }),
   startLine: Type.Optional(Type.Number({ description: "1-based start line (default: 1)" })),
   lineCount: Type.Optional(Type.Number({ description: "Number of lines to read (default: 120, max: 400)" })),
 });
@@ -902,6 +910,24 @@ const agentQmdRefreshState = new Map<string, { lastStartedAt: number; inFlight?:
 const AGENT_QMD_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DAILY_AGENT_MEMORY_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
 
+/*
+FNXC:MemoryRanking 2026-11-20-11:25 (RUFU-665):
+The cross-scope offset used to be `+ 1000` added to every agent-memory hit — the agent's own note
+ALWAYS won, and not because it was more relevant. Read the arithmetic: both lanes now score a window by
+the number of DISTINCT query words it contains (`countMemoryTermMatches`), so an agent line matching one
+word scored 1001 and a project line matching five scored 5 — a two-hundred-fold lead for the weakest
+possible relevance signal. Under it the agent's own file won every contest, including the ones where it
+matched almost nothing, and a stale self-note outranked the durable project convention that answered the
+query. That is a scope bias dressed as a score, and it is why the ranking looked arbitrary from the card.
+
+The tie is what a tie-break is for: at an EXACT tie (same word count) the agent's own note still wins —
+it is the note this agent wrote about its own work, and preferring it is a defensible, stated preference,
+not an incantation. One extra matched word on the project side outranks it, because relevance, not
+authorship, is the thing being ranked. The value is therefore strictly LESS THAN ONE so it can never
+outrank a single additional word match at any window size or word count.
+*/
+const AGENT_MEMORY_SCOPE_TIEBREAK = 0.5;
+
 export function sanitizeAgentMemoryId(agentId: string): string {
   return agentId.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
 }
@@ -1022,7 +1048,15 @@ async function listAgentMemoryFiles(rootDir: string, agentMemory: AgentMemoryCon
   }
 
   for (const entry of entries) {
-    if (!DAILY_AGENT_MEMORY_RE.test(entry)) continue;
+    /*
+    FNXC:MemoryBudget 2026-11-20-11:25 (RUFU-665):
+    Daily notes and cold-tier archives. An agent's retired sections are in `ARCHIVE-*.md` beside its
+    MEMORY.md, and this listing is what its own `fn_memory_search` walks — a retired note that is absent
+    here is not "out of context but still searchable", it is simply gone to the author. The read lane's
+    path guard (`resolveAgentMemoryPath`) accepts the same shape and the write lane's does not, which is
+    the asymmetry the core file API enforces too: the cold tier is reachable, never rewritable.
+    */
+    if (!DAILY_AGENT_MEMORY_RE.test(entry) && !isArchiveMemoryFileName(entry)) continue;
     const absPath = join(dir, entry);
     const fileStat = await stat(absPath);
     if (fileStat.isFile()) {
@@ -1044,8 +1078,9 @@ substring test let those fragments score — `syst` inside "system", `te` inside
 "template". One accidental substring earned a point, and one point was enough to put a wholly
 irrelevant 12-line block at the top of the result. Relevance now comes from the shared core
 helper: a word is a Unicode word, and a match is set membership over words. The `score === 0`
-filter stays as the relevance door and the `+ 1000` cross-scope offset below is untouched
-(RUFU-665 Step 6 owns that arithmetic).
+filter stays as the relevance door. The cross-scope offset beside it WAS `+ 1000` and is now
+`AGENT_MEMORY_SCOPE_TIEBREAK` (RUFU-665): this scorer returns a distinct-word count, so a flat 1000 made
+the agent's own note win every ranking regardless of what it said.
 */
 function scoreAgentMemorySnippet(snippet: string, query: string): number {
   return countMemoryTermMatches(snippet, deriveMemoryQueryTerms(query));
@@ -1104,7 +1139,7 @@ async function searchAgentMemoryFile(rootDir: string, agentMemory: AgentMemoryCo
         lineStart: index + 1,
         lineEnd: Math.min(index + MEMORY_SNIPPET_WINDOW_LINES, lines.length),
         snippet: chunk.slice(0, 1200),
-        score: score + 1000,
+        score: score + AGENT_MEMORY_SCOPE_TIEBREAK,
         backend: "agent-memory",
       });
     }
@@ -1199,6 +1234,11 @@ function normalizeQmdAgentMemoryResultPath(rootDir: string, agentId: string, raw
   if (DAILY_AGENT_MEMORY_RE.test(filename)) {
     return `${agentPrefix}${filename}`;
   }
+  // FNXC:MemoryBudget 2026-11-20-11:25 (RUFU-665): an indexed cold-tier hit resolves to the same display
+  // path the file lane publishes, or a retired note is findable and unreadable.
+  if (isArchiveMemoryFileName(filename)) {
+    return `${agentPrefix}${filename}`;
+  }
 
   return fallbackPath;
 }
@@ -1225,8 +1265,8 @@ async function searchAgentMemoryWithQmd(rootDir: string, agentMemory: AgentMemor
     non-overlapping stride the way the file walk does — it has to drop what came back. The guard
     runs BEFORE the limit is applied (it used to slice first), because the defect is that one
     result set spends two slots on the same text: dropping after the slice would keep spending
-    them and just return fewer rows. The `+ 1000` offset stays exactly where RUFU-665 Step 6
-    expects it.
+    them and just return fewer rows. The scope offset beside it is RUFU-665's
+    `AGENT_MEMORY_SCOPE_TIEBREAK`, not the old `+ 1000`.
     */
     const mapped: MemorySearchHit[] = rawResults.map((result: Record<string, unknown>) => {
       const rawPath = result.path ?? result.file;
@@ -1235,7 +1275,7 @@ async function searchAgentMemoryWithQmd(rootDir: string, agentMemory: AgentMemor
         lineStart: Number(result.lineStart ?? result.startLine ?? 1),
         lineEnd: Number(result.lineEnd ?? result.endLine ?? result.startLine ?? 1),
         snippet: String(result.snippet ?? result.text ?? result.content ?? "").slice(0, 1200),
-        score: Number(result.score ?? 1) + 1000,
+        score: Number(result.score ?? 1) + AGENT_MEMORY_SCOPE_TIEBREAK,
         backend: "qmd-agent-memory",
       };
     }).filter((result: MemorySearchHit) => result.snippet.trim().length > 0);
@@ -1255,7 +1295,14 @@ function resolveAgentMemoryPath(rootDir: string, agentId: string, path: string):
     return null;
   }
   const filename = path.slice(prefix.length);
-  if (filename !== AGENT_MEMORY_FILENAME && filename !== AGENT_DREAMS_FILENAME && !DAILY_AGENT_MEMORY_RE.test(filename)) {
+  if (
+    filename !== AGENT_MEMORY_FILENAME
+    && filename !== AGENT_DREAMS_FILENAME
+    && !DAILY_AGENT_MEMORY_RE.test(filename)
+    // FNXC:MemoryBudget 2026-11-20-11:25 (RUFU-665): the read lane accepts the cold tier; see
+    // `listAgentMemoryFiles` for why a retired note must stay reachable by its author.
+    && !isArchiveMemoryFileName(filename)
+  ) {
     return null;
   }
   return {
@@ -5648,6 +5695,10 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
     description:
       "Search durable project memory and this agent's own memory, returning small snippets with file paths and line ranges. " +
       "Use this before fn_memory_get; do not read all memory by default. " +
+      // FNXC:MemoryBudget 2026-11-20-11:35 (RUFU-665): the cold tier must be named where a caller decides
+      // what a search covers, otherwise "I thought my note was gone" is the only available reading of an
+      // over-budget MEMORY.md. This is a statement of fact about the lanes below, not an instruction.
+      "Both scopes include the dated ARCHIVE-YYYY-MM-DD.md cold tier that budget maintenance retires the oldest verbatim entries into, so a retired entry is still found here (and read with fn_memory_get) even though it is no longer injected into your prompt. " +
       "An empty answer says why: no-query-terms (the query has no usable word), no-memory-content (nothing written yet), or no-token-match (the words matched nothing) — an empty store and a bad query are different situations.",
     parameters: memorySearchParams,
     execute: async (_id: string, params: Static<typeof memorySearchParams>) => {

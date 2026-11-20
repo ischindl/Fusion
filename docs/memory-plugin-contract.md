@@ -347,6 +347,11 @@ Allowed workspace files are constrained to:
 - `.fusion/memory/MEMORY.md`
 - `.fusion/memory/DREAMS.md`
 - `.fusion/memory/YYYY-MM-DD.md`
+- `.fusion/memory/ARCHIVE-YYYY-MM-DD.md` — **readable, never writable** (RUFU-665). This is the cold tier
+  budget maintenance retires the oldest whole `## ` sections into, verbatim. Every read path accepts it
+  (listing, get, search, including the `qmd` hit-normalization lane); every write path refuses it, so a
+  plugin cannot rewrite the verbatim record. Budget maintenance is the only writer and it writes the file
+  directly rather than through this contract.
 
 ### 3.7 Prompt Instruction Context Contract
 
@@ -365,6 +370,10 @@ Allowed workspace files are constrained to:
 
 - Canonical layered workspace: `.fusion/memory/`
 - Canonical long-term file: `.fusion/memory/MEMORY.md`
+- Cold tier for retired long-term sections: `.fusion/memory/ARCHIVE-YYYY-MM-DD.md` (flat sibling, one file
+  per retirement day, appended by later sweeps). It reports the `long-term` layer — it is retired
+  long-term content — and is never itself a maintenance target, so the byte budget cannot be relocated
+  onto the archive (RUFU-665).
 - Runtime path validation rejects non-layered legacy requests
 
 #### 3.8.2 QMD stale-index normalization scope

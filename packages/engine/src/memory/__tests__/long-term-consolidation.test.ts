@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -54,6 +55,37 @@ function memoryContent(entries: number, opts?: { duplicateOf?: number }): string
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+/*
+FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+The cold tier is addressed by the injected clock, so every test that proves an archive exists pins the
+same date the sweep was given, instead of reading today's date from the host. Tests that prove an
+archive does NOT exist list the directory instead, because they leave the clock unpinned.
+*/
+const ARCHIVE_FILE = "ARCHIVE-2026-09-30.md";
+const CLOCK_2026_09_30 = () => Date.UTC(2026, 8, 30);
+
+/**
+ * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+ * One section bigger than any budget maintenance is allowed to apply. It is the shape the roll-up can
+ * report and cannot retire, and so the only way left to reach a genuine no-change plan: it keeps the
+ * "this pass produced no snapshot" precondition reachable after the all-unique dead end was removed.
+ */
+function unshrinkableMemory(): string {
+  return `# Project Memory\n\n## The one enormous note\n${"u".repeat(400)}\n`;
+}
+
+/** Every cold-tier filename present in one memory directory, whatever date the sweep stamped it with. */
+async function archivePathsIn(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && /^ARCHIVE-\d{4}-\d{2}-\d{2}\.md$/.test(entry.name))
+      .map((entry) => join(dir, entry.name));
+  } catch {
+    return [];
+  }
 }
 
 function collectAudit(): { rows: Array<{ event: string; target: string; metadata: Record<string, unknown> }>; emit: LongTermMemoryAuditEmit } {
@@ -183,9 +215,18 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(audit.rows).toEqual([]);
   });
 
+  /*
+   * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+   * RUFU-279's version of this test ended with `entryCountAfter: 6` and every body still in the hot
+   * file. At `budgetBytes: 200` the collapsed six sections still exceed the 150-byte hot target, so the
+   * roll-up now ALSO retires the oldest of them. The duplicate-collapse assertions are unchanged; the
+   * loss-free assertion is strengthened from "all bodies are in MEMORY.md" to "every body is in the hot
+   * file or in the cold tier, and the hot file actually fits".
+   */
   it("reports a breach, backs up first, then collapses exact duplicates", async () => {
     const root = await makeTempProject();
     const path = await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    const before = memoryContent(6, { duplicateOf: 3 });
     const audit = collectAudit();
     const createBackup = vi.fn(async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt);
 
@@ -193,6 +234,7 @@ describe("runLongTermMemoryMaintenance", () => {
       rootDir: root,
       budgetBytes: 200,
       audit: audit.emit,
+      now: () => Date.UTC(2026, 8, 30),
       createBackup,
     });
 
@@ -203,8 +245,17 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(createBackup).toHaveBeenCalledTimes(1);
 
     const after = await readFile(path, "utf8");
-    expect(Buffer.byteLength(after, "utf8")).toBeLessThan(Buffer.byteLength(memoryContent(6, { duplicateOf: 3 }), "utf8"));
-    for (let i = 0; i < 6; i++) expect(after).toContain(`Body ${i} —`);
+    expect(Buffer.byteLength(after, "utf8")).toBeLessThan(Buffer.byteLength(before, "utf8"));
+    expect(Buffer.byteLength(after, "utf8")).toBeLessThanOrEqual(150);
+
+    const archivePath = join(root, ".fusion", "memory", ARCHIVE_FILE);
+    const archive = await readFile(archivePath, "utf8");
+    for (let i = 0; i < 6; i++) {
+      expect(after.includes(`Body ${i} —`) || archive.includes(`Body ${i} —`)).toBe(true);
+    }
+    // The newest note is what stays hot; the retirement takes the oldest first.
+    expect(after).toContain("Body 5 —");
+    expect(archive).toContain("Body 0 —");
 
     expect(audit.rows.map((row) => row.event)).toEqual([
       LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget,
@@ -214,24 +265,43 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(audit.rows[1].metadata).toMatchObject({
       scope: "project",
       entryCountBefore: 9,
-      entryCountAfter: 6,
       duplicateSectionsCollapsed: 3,
-      stillOverBudget: true,
+      rolledUpSections: result.rolledUpSections,
+      // The point of the roll-up: the hot file is now inside the bound, so the row stops claiming a
+      // standing breach instead of implying the breach is unresolved.
+      stillOverBudget: false,
+    });
+    const entryCountAfter = Number(audit.rows[1].metadata.entryCountAfter);
+    expect(entryCountAfter).toBeGreaterThan(0);
+    expect(entryCountAfter).toBeLessThan(9);
+
+    /*
+     * FNXC:MemoryBudget 2026-11-20-13:52 (RUFU-665, carried Delta 1 from RUFU-774):
+     * The other half of the distinct-signal pair asserted on the ceiling-skip test. A file the sweep DID
+     * open and could not fix by collapsing anything announces that a second remedy exists; an above-ceiling
+     * file that was never parsed claims neither. Without this half, "both false" would be ambiguous again.
+     */
+    expect(audit.rows[0].metadata).toMatchObject({
+      tooLarge: false,
+      collapseCanConverge: false,
+      retirementCanConverge: true,
     });
   });
 
   /*
-   * FNXC:MemoryBudget 2026-09-30-01:29 (RUFU-279):
-   * This is the shape the production file actually had: 594,273 bytes over 306 entries, every one of
-   * them a distinct body, so the breach was real but deduplication could legally remove nothing. The
-   * honest result is a report and an untouched file — maintenance must never invent a compaction (a
-   * summary pass would mean deleting durable memory, which RUFU-279 rules out) and must not spend a
-   * backup snapshot when there is no rewrite to protect.
+   * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+   * SYMPTOM ACCEPTANCE for "long-term memory keeps reaching the budget limit and the sweep cannot fix
+   * it". RUFU-279's version of this test was named "reports an all-unique breach without backing up or
+   * touching the file" and asserted `rewritten: 0`, an untouched file, and no backup call — it encoded
+   * the dead end as the intended contract (the production file was 594,273 B over 306 distinct entries,
+   * so the collapse legally removed nothing and the sweep could only re-announce the breach forever).
+   * That assertion is the defect, so it is replaced rather than softened: the same input now backs up,
+   * archives the oldest whole sections, and lands the hot file inside the bound.
    */
-  it("reports an all-unique breach without backing up or touching the file", async () => {
+  it("converges an all-unique breach: backs up, archives the oldest sections, and lands under the bound", async () => {
     const root = await makeTempProject();
     const path = await writeProjectMemory(root, memoryContent(6));
-    const before = await readFile(path, "utf8");
+    const before = memoryContent(6);
     const audit = collectAudit();
     const createBackup = vi.fn(async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt);
 
@@ -239,15 +309,261 @@ describe("runLongTermMemoryMaintenance", () => {
       rootDir: root,
       budgetBytes: 200,
       audit: audit.emit,
+      now: CLOCK_2026_09_30,
       createBackup,
     });
 
-    expect(result).toMatchObject({ overBudget: 1, duplicateSectionsCollapsed: 0, conflictsRetained: 0, rewritten: 0, failures: 0 });
-    expect(await readFile(path, "utf8")).toBe(before);
-    expect(createBackup).not.toHaveBeenCalled();
-    expect(audit.rows.map((row) => row.event)).toEqual([LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget]);
-    expect(audit.rows[0].metadata).toMatchObject({ duplicatesFound: false, conflictsFound: false, tooLarge: false });
+    expect(result).toMatchObject({
+      overBudget: 1,
+      duplicateSectionsCollapsed: 0,
+      conflictsRetained: 0,
+      rewritten: 1,
+      failures: 0,
+    });
+    expect(result.rolledUpSections).toBeGreaterThan(0);
+    expect(result.rolledUpBytes).toBeGreaterThan(0);
+
+    // With a rewrite pending, the backup is a precondition, so it must have run.
+    expect(createBackup).toHaveBeenCalledTimes(1);
+
+    const after = await readFile(path, "utf8");
+    expect(after).not.toBe(before);
+    expect(Buffer.byteLength(after, "utf8")).toBeLessThanOrEqual(150);
+
+    // Loss-free across both tiers: nothing the author wrote disappeared.
+    const archive = await readFile(join(root, ".fusion", "memory", ARCHIVE_FILE), "utf8");
+    for (let i = 0; i < 6; i++) {
+      expect(after.includes(`Body ${i} —`) || archive.includes(`Body ${i} —`)).toBe(true);
+    }
+
+    expect(audit.rows.map((row) => row.event)).toEqual([
+      LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget,
+      LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated,
+    ]);
+    // The two booleans the operator needs to route the finding: duplicates cannot fix this file, only
+    // retirement can. That distinction is the whole difference between the two production shapes.
+    expect(audit.rows[0].metadata).toMatchObject({
+      duplicatesFound: false,
+      conflictsFound: false,
+      tooLarge: false,
+      collapseCanConverge: false,
+      retirementCanConverge: true,
+    });
+    expect(audit.rows[1].metadata).toMatchObject({
+      duplicateSectionsCollapsed: 0,
+      rolledUpSections: result.rolledUpSections,
+      stillOverBudget: false,
+    });
   });
+
+  it("re-running a converged hot file writes nothing and emits no finding", async () => {
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6));
+    await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: async () => {},
+      now: CLOCK_2026_09_30,
+      createBackup: async () => ({ scope: "all" }),
+    });
+    const converged = await readFile(path, "utf8");
+
+    const audit = collectAudit();
+    const createBackup = vi.fn(async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt);
+    const second = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: audit.emit,
+      now: CLOCK_2026_09_30,
+      createBackup,
+    });
+
+    expect(second).toMatchObject({ withinBudget: 1, overBudget: 0, rewritten: 0, rolledUpSections: 0, failures: 0 });
+    expect(await readFile(path, "utf8")).toBe(converged);
+    // Convergence is terminal while the file stays small: no finding, no snapshot, no churn.
+    expect(audit.rows).toEqual([]);
+    expect(createBackup).not.toHaveBeenCalled();
+  });
+
+  it("appends only newly-moved sections to a same-day archive instead of duplicating them", async () => {
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6));
+    const runOnce = () =>
+      runLongTermMemoryMaintenance({
+        rootDir: root,
+        budgetBytes: 200,
+        audit: async () => {},
+        now: CLOCK_2026_09_30,
+        createBackup: async () => ({ scope: "all" }),
+      });
+
+    await runOnce();
+    const archivePath = join(root, ".fusion", "memory", ARCHIVE_FILE);
+    const firstArchive = await readFile(archivePath, "utf8");
+
+    // The author keeps writing, so the hot file breaches again and the sweep retires more sections.
+    await writeFile(path, `${await readFile(path, "utf8")}${memoryContent(8).replace(/^# Project Memory\n\n/, "")}`, "utf8");
+    await runOnce();
+    const secondArchive = await readFile(archivePath, "utf8");
+
+    // The already-cold bytes were preserved, not rewritten, and the new arrivals appear exactly once.
+    expect(secondArchive.startsWith(firstArchive)).toBe(true);
+    const headings = secondArchive.split("\n").filter((line) => line.startsWith("## ")).length;
+    const uniqueHeadings = new Set(secondArchive.split("\n").filter((line) => line.startsWith("## "))).size;
+    expect(headings).toBe(uniqueHeadings);
+  });
+
+  /*
+   * FNXC:MemoryBudget 2026-11-20-12:50 (RUFU-665):
+   * The maintenance-level shape of the same defect: append-only memory reuses headings ("## Tick notes"
+   * every tick), so a sweep whose archive identity is the heading alone would drop the second body from
+   * the append while the hot shrink still removed it — content gone from the working set with a post-verify
+   * that reports the heading as present, and a sweep that re-plans the same section forever.
+   */
+  /*
+   * FNXC:MemoryBudget 2026-11-20-12:50 (RUFU-665):
+   * The whole claim of the roll-up in one assertion set: after a sweep, every section body the author had
+   * written is still on disk exactly once, in one of the two files. Anything else is a rewrite or a
+   * deletion wearing the word "maintenance", and this is the only place the claim can be checked — the
+   * planner proves its own arithmetic, which is not the same as bytes surviving.
+   */
+  it("keeps every author body exactly once across the hot file and the cold tier", async () => {
+    const root = await makeTempProject();
+    const content = memoryContent(10);
+    const path = await writeProjectMemory(root, content);
+    const bodies = content
+      .split("\n")
+      .filter((line) => line.startsWith("Body "))
+      .map((line) => line.trim());
+    expect(bodies.length).toBe(10);
+
+    await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 400,
+      audit: async () => {},
+      now: CLOCK_2026_09_30,
+      createBackup: async () => ({ scope: "all" }),
+    });
+
+    const hot = await readFile(path, "utf8");
+    const archive = await readFile(join(root, ".fusion", "memory", ARCHIVE_FILE), "utf8");
+    const combined = `${hot}\n${archive}`;
+
+    for (const body of bodies) {
+      const occurrences = combined.split(body).length - 1;
+      expect(occurrences, `author body present ${occurrences} times instead of exactly once: ${body.slice(0, 40)}`).toBe(1);
+    }
+    // What left the injected file is exactly what the cold tier now holds.
+    for (const body of bodies) {
+      if (hot.includes(body)) continue;
+      expect(archive, `retired from the hot file and absent from the cold tier: ${body.slice(0, 40)}`).toContain(body);
+    }
+  });
+
+  it("retires two same-heading sections with different bodies and keeps both verbatim", async () => {
+    const root = await makeTempProject();
+    const first = `- first tick: the lockfile drifted in the plugin workspace ${"x".repeat(300)}`;
+    const second = `- second tick: the gate failed on the hash, not the lint ${"y".repeat(300)}`;
+    const filler = Array.from({ length: 6 }, (_, i) => `## Filler ${i}\n- ${"f".repeat(300)}`).join("\n\n");
+    await writeProjectMemory(root, `# Project Memory\n\n## Tick notes\n${first}\n\n## Tick notes\n${second}\n\n${filler}\n`);
+
+    const run = () =>
+      runLongTermMemoryMaintenance({
+        rootDir: root,
+        budgetBytes: 2_000,
+        audit: async () => {},
+        now: CLOCK_2026_09_30,
+        createBackup: async () => ({ scope: "all" }),
+      });
+
+    const result = await run();
+    expect(result.rolledUpSections).toBeGreaterThan(0);
+
+    const hot = await readFile(join(root, ".fusion", "memory", "MEMORY.md"), "utf8");
+    const archive = await readFile(join(root, ".fusion", "memory", ARCHIVE_FILE), "utf8");
+    const cold = hot + archive;
+
+    // Both bodies survive somewhere, and the file that holds them holds them exactly once each.
+    expect(cold).toContain("first tick: the lockfile drifted");
+    expect(cold).toContain("second tick: the gate failed on the hash");
+    expect(archive.split("first tick: the lockfile drifted").length - 1).toBeLessThanOrEqual(1);
+    expect(archive.split("second tick: the gate failed").length - 1).toBeLessThanOrEqual(1);
+
+    // A re-run on a file that has converged is silent: nothing appended, nothing rewritten.
+    const archiveBefore = archive;
+    const again = await run();
+    expect(again.rewritten).toBe(0);
+    expect(await readFile(join(root, ".fusion", "memory", ARCHIVE_FILE), "utf8")).toBe(archiveBefore);
+  });
+
+  /*
+   * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+   * The ordering claim this card turns on: the cold tier is written BEFORE the hot file shrinks, so the
+   * only failure mode the move can have is a section that briefly exists in two places. Here the archive
+   * volume is unwritable, and the author's bytes must stay exactly where they were. Had the hot shrink
+   * run first, this test would be measuring deleted content.
+   */
+  it("leaves the hot file untouched when the cold-tier write fails, because only duplication is acceptable", async () => {
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6));
+    const before = await readFile(path, "utf8");
+    const audit = collectAudit();
+    const memoryDir = join(root, ".fusion", "memory");
+    // Readable so the pre-write existence probe still answers, but nothing may be created in it.
+    await chmod(memoryDir, 0o500);
+    try {
+      const result = await runLongTermMemoryMaintenance({
+        rootDir: root,
+        budgetBytes: 200,
+        audit: audit.emit,
+        now: CLOCK_2026_09_30,
+        createBackup: async () => ({ scope: "all" }),
+      });
+
+      // Author content stays exactly where it was: the refused move never reached the hot file.
+      expect(await readFile(path, "utf8")).toBe(before);
+      expect(result.rewritten).toBe(0);
+      expect(result.rolledUpSections).toBe(0);
+      expect(result.failures).toBe(1);
+      expect(audit.rows.some((row) => row.metadata.stage === "write")).toBe(true);
+      expect(audit.rows.some((row) => row.event === LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated)).toBe(false);
+    } finally {
+      // Restore writability so the temp-tree cleanup can unlink the directory.
+      await chmod(memoryDir, 0o700);
+    }
+  });
+
+  it("never treats a cold-tier archive as a maintenance target", async () => {
+    const root = await makeTempProject();
+    await writeProjectMemory(root, memoryContent(6));
+    const archivePath = join(root, ".fusion", "memory", ARCHIVE_FILE);
+    // A cold file bigger than the budget: maintenance must not re-plan it, or the ceiling just moved.
+    await writeFile(archivePath, memoryContent(40), "utf8");
+    const archiveBefore = await readFile(archivePath, "utf8");
+
+    const targets = discoverLongTermMemoryTargets(root);
+    expect(targets.map((target) => target.path)).not.toContain(archivePath);
+
+    await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: async () => {},
+      now: CLOCK_2026_09_30,
+      createBackup: async () => ({ scope: "all" }),
+    });
+
+    expect(await readFile(archivePath, "utf8")).toBe(archiveBefore);
+  });
+
+  /*
+   * FNXC:MemoryBudget 2026-09-30-01:29 (RUFU-279), amended 2026-11-20-13:35 (RUFU-665):
+   * Maintenance must never INVENT a compaction — a summary pass would mean deleting durable memory, which
+   * RUFU-279 rules out — and it must not spend a backup snapshot when there is no rewrite to protect.
+   * RUFU-279 also asserted the second half of that sentence as "an all-unique breach therefore rewrites
+   * nothing at all"; the file that produced it (594,273 B over 306 distinct entries) is now converged by
+   * retiring whole oldest sections verbatim, and that superseded claim is recorded on the test that owns
+   * it. What did NOT change is this one: with no backup, nothing is written anywhere.
+   */
 
   it("never writes when the backup fails, and records the stage", async () => {
     const root = await makeTempProject();
@@ -267,6 +583,9 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(await readFile(path, "utf8")).toBe(before);
     expect(result.rewritten).toBe(0);
     expect(result.failures).toBe(1);
+    // No backup, and so no rewrite and no cold-tier append either: the archive is gated on the same
+    // backup precondition the hot write is, so a refused rewrite leaves nothing behind.
+    expect(await archivePathsIn(join(root, ".fusion", "memory"))).toEqual([]);
     const failed = audit.rows.find((row) => row.event === LONG_TERM_MEMORY_AUDIT_EVENTS.failed);
     expect(failed?.metadata).toMatchObject({ stage: "backup" });
     expect(audit.rows.some((row) => row.event === LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated)).toBe(false);
@@ -289,6 +608,9 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(await readFile(agentPath, "utf8")).toBe(agentBefore);
     expect(await readFile(projectPath, "utf8")).not.toBe(agentBefore);
     expect(result.rewritten).toBe(1);
+    // An uncovered target gets NO cold-tier file: the archive is part of the same rewrite, so a
+    // scope-limited backup cannot leak retired sections out of the scope it does not cover.
+    expect(await archivePathsIn(join(root, ".fusion", "agent-memory", "agent-1"))).toEqual([]);
     const scopeFailure = audit.rows.find((row) => row.metadata.stage === "backup-scope");
     expect(scopeFailure?.metadata).toMatchObject({ scope: "agent", agentId: "agent-1", backupScope: "project" });
   });
@@ -315,6 +637,9 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(result.failures).toBe(1);
     // The concurrent author's bytes survive untouched; the collapse waits for the next sweep.
     expect(after).toContain(concurrentAppend.trim());
+    // An archive whose hot sections were refused would duplicate author text into a second file, so the
+    // same re-read proof gates the cold tier too.
+    expect(await archivePathsIn(join(root, ".fusion", "memory"))).toEqual([]);
     expect(audit.rows.some((row) => row.metadata.stage === "concurrent-write")).toBe(true);
   });
 
@@ -339,7 +664,26 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(result.failures).toBe(0);
     expect(await readFile(path, "utf8")).toBe(before);
     expect(audit.rows.some((row) => row.metadata.stage === "too-large")).toBe(true);
-    expect(audit.rows.some((row) => row.event === LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget && row.metadata.tooLarge === true)).toBe(true);
+    const finding = audit.rows.find(
+      (row) => row.event === LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget && row.metadata.tooLarge === true,
+    );
+    expect(finding, "the size skip must still announce the breach").toBeDefined();
+
+    /*
+     * FNXC:MemoryBudget 2026-11-20-13:50 (RUFU-665, carried Delta 1 from RUFU-774):
+     * "Refused to read it" and "read it and could not converge" used to be the SAME row: an all-unique
+     * breach and an above-ceiling breach both reported no remedy, so an operator could not tell a file
+     * whose ceiling could be widened from one whose content needs a human decision. The two convergence
+     * booleans are what separate them — and the contrast is only real because a parsed over-budget file
+     * now reports `retirementCanConverge: true` (asserted on the convergence case above). A ceiling skip
+     * claims NEITHER: an un-parsed file proves nothing about either remedy, and both false beside
+     * `tooLarge: true` can therefore only mean the sweep never opened the file.
+     */
+    expect(finding?.metadata).toMatchObject({
+      tooLarge: true,
+      collapseCanConverge: false,
+      retirementCanConverge: false,
+    });
   });
 
   it("keeps a within-budget file untouched even when it holds duplicates", async () => {
@@ -605,6 +949,7 @@ describe("runLongTermMemoryMaintenance snapshot retention", () => {
       rootDir: root,
       budgetBytes: 200,
       audit: audit.emit,
+      now: CLOCK_2026_09_30,
       createBackup: async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt,
       cleanupOldBackups: async () => {
         throw new Error("backup volume is read-only");
@@ -616,10 +961,15 @@ describe("runLongTermMemoryMaintenance snapshot retention", () => {
     const after = await readFile(path, "utf8");
     expect(after).not.toBe(before);
     expect(Buffer.byteLength(after, "utf8")).toBeLessThan(Buffer.byteLength(before, "utf8"));
-    for (let i = 0; i < 6; i++) expect(after).toContain(`Body ${i} —`);
+    // FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665): the survivors assertion spans both tiers now.
+    const archive = await readFile(join(root, ".fusion", "memory", ARCHIVE_FILE), "utf8");
+    for (let i = 0; i < 6; i++) {
+      expect(after.includes(`Body ${i} —`) || archive.includes(`Body ${i} —`)).toBe(true);
+    }
 
     // No forged failure counterpart, and the documented metadata key set is exactly what it was before
-    // this card — a snapshot eviction grows no audit surface.
+    // this card plus the four keys the roll-up and the hot target added — a snapshot eviction still
+    // grows no audit surface of its own.
     expect(audit.rows.map((row) => row.event)).toEqual([
       LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget,
       LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated,
@@ -630,32 +980,43 @@ describe("runLongTermMemoryMaintenance snapshot retention", () => {
         "bytesBefore",
         "bytesAfter",
         "budgetBytes",
+        "hotTargetBytes",
         "entryCountBefore",
         "entryCountAfter",
         "duplicateSectionsCollapsed",
         "conflictsRetained",
+        "rolledUpSections",
+        "rolledUpBytes",
         "stillOverBudget",
       ].sort(),
     );
     expect(audit.rows[1].metadata).toMatchObject({
       scope: "project",
       entryCountBefore: 9,
-      entryCountAfter: 6,
       duplicateSectionsCollapsed: 3,
-      stillOverBudget: true,
+      stillOverBudget: false,
     });
+    expect(Number(audit.rows[1].metadata.entryCountAfter)).toBeLessThan(9);
   });
 
   it("does not evict on a pass that took no snapshot, even at retention zero", async () => {
     /*
      * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
      * Retention 0 makes any eviction maximally destructive, so an untouched directory is proof the scan
-     * never ran rather than proof it deleted nothing. A breach with all-unique entries plans no change,
-     * so this pass acquires no snapshot and owns no eviction — retention bounds the copies a pass
-     * produced, it is not a background janitor for history.
+     * never ran rather than proof it deleted nothing. This pass acquires no snapshot and therefore owns
+     * no eviction — retention bounds the copies a pass produced, it is not a background janitor for
+     * history.
+     *
+     * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+     * RUFU-441 reached the no-snapshot state with an all-unique breach, because a collapse was then the
+     * only legal change and there was nothing to collapse. RUFU-665 removed that dead end: an all-unique
+     * breach now plans a roll-up and so DOES acquire a snapshot. The subject here is the eviction gate,
+     * not the planner, so the case keeps its precondition honestly by holding a file no rule in this
+     * module may shrink — one section bigger than the whole budget. Maintenance reports it and rewrites
+     * nothing, which is still a pass that produced no copy to bound.
      */
     const root = await makeTempProject();
-    const path = await writeProjectMemory(root, memoryContent(6));
+    const path = await writeProjectMemory(root, unshrinkableMemory());
     const before = await readFile(path, "utf8");
     const dir = join(root, MEMORY_BACKUP_REL);
     await seedSnapshots(root, ["memory-2026-09-01-000000", "memory-2026-09-02-000000"]);

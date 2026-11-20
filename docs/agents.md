@@ -661,6 +661,10 @@ Two placement rules, both learned the expensive way:
   a compact authority-only default by default and make the verbose mode opt-in, and lane instructions
   say plainly that the output is not to be pasted into long-term memory. The size bound is asserted
   against the constant in `packages/core/src/__tests__/workflow-role-agent-defaults-merger.test.ts`.
+  Breaching the budget is no longer a one-way eviction: the sweep now retires the oldest whole sections
+  into `ARCHIVE-YYYY-MM-DD.md` beside the file, where they stay searchable through `fn_memory_search`
+  and `fn_memory_get` but stop occupying context (RUFU-665). That makes the budget a working-set bound
+  rather than a deletion deadline, and it is still not a licence to paste a census in.
 
 Reading discipline: **print only fields whose path was just verified against a real mirror.** When two
 readers disagreed about whether one field was an array or an object, the census printed neither and
@@ -794,7 +798,12 @@ Runtime behavior:
   - `.fusion/agent-memory/{agentId}/MEMORY.md` (long-term)
   - `.fusion/agent-memory/{agentId}/DREAMS.md` (synthesized patterns)
   - `.fusion/agent-memory/{agentId}/YYYY-MM-DD.md` (daily notes)
+  - `.fusion/agent-memory/{agentId}/ARCHIVE-YYYY-MM-DD.md` (the cold tier budget maintenance retires
+    oldest verbatim sections into — still searchable, never injected into the prompt)
 - `fn_memory_get` is intentionally bounded to those same files only.
+- The cold tier is **read-only through every memory tool**: `fn_memory_append` takes a `scope`, never a
+  path, and each scope's write resolver refuses the archive filename outright, so an agent — or an AI
+  compaction — can read the retired record but cannot rewrite it. Budget maintenance is the only writer.
 - Agent memory resolution order is:
   1. Inline `agent.memory` (highest priority)
   2. `.fusion/agent-memory/{agentId}/MEMORY.md` (fallback when inline is empty, and supplemental long-term section when inline is present)

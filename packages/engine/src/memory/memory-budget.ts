@@ -38,7 +38,57 @@ export const MEMORY_LONG_TERM_BYTE_BUDGET = 32 * 1024;
  */
 export const MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES = 8 * 1024 * 1024;
 
-/** Which long-term memory file a measurement or rewrite is about. */
+/*
+FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+RUFU-279 shipped the measurement half of maintenance but no convergence half, so the repo's own tests
+asserted the dead end (`stillOverBudget: true` with every section retained): collapsing exact
+duplicates is the only legal shrink, and a file of genuinely different notes has almost none. The
+result was a permanent red announcement with no operator-reachable fix except raising the budget,
+which the task forbids. Three separate numbers now exist and conflating any two of them re-creates
+that dead end, so each owns one question:
+
+- `MEMORY_LONG_TERM_BYTE_BUDGET` (32 KiB) is the WORKING-SET BOUND: what a file may measure before it
+  counts as a breach that must be reported. Reporting is independent of what maintenance can do.
+- `MEMORY_LONG_TERM_HOT_TARGET_BYTES` (24 KiB) is the CONVERGENCE TARGET the roll-up aims under. It is
+  deliberately strictly below the budget, not equal to it: maintenance runs on the maintenance tick,
+  so a hot file parked at exactly 32 KiB would be re-breached by the next append inside the same
+  interval and the author would keep getting the breach sentence for work the sweep already did. The
+  25 % margin is the room `fn_memory_append` needs to keep appending between sweeps.
+- `ARCHIVE_MEMORY_FILENAME_PREFIX` names the COLD TIER: a flat sibling file in the same memory
+  directory holding whole sections moved out of the hot file, byte-for-byte. It is enumerated,
+  indexed, and searchable through `fn_memory_search` / `fn_memory_get`; it is never injected into the
+  prompt index, and it is never a maintenance target, so the convergence loop cannot move the ceiling
+  onto a file that just keeps growing.
+
+The flat-sibling shape (same directory, one new filename, dated) is a settled decision from RUFU-735
+and the alternatives were rejected for concrete loss reasons: daily notes are reset by the dream
+processor after synthesis, so a moved entry would later vanish; `DREAMS.md` is consumed by the dream
+prompt which re-promotes durable lessons back into `MEMORY.md`, creating a growth loop; an LLM digest
+is non-deterministic and cannot prove losslessness; and a subdirectory is refused by
+`resolveAgentMemoryFilePath`, which rejects any path component below the agent memory folder.
+*/
+
+/** Convergence target for the hot file: strictly below the budget, leaving append headroom. */
+export const MEMORY_LONG_TERM_HOT_TARGET_BYTES = Math.floor(MEMORY_LONG_TERM_BYTE_BUDGET * 0.75);
+
+/**
+ * Filename prefix of the cold tier. A cold file is always `ARCHIVE-YYYY-MM-DD.md`.
+ *
+ * FNXC:MemoryBudget 2026-11-20-11:05 (RUFU-665):
+ * The shape is NOT declared here. It lives in `@fusion/core`'s import-free memory filename leaf, because
+ * the core read lanes (listing, `fn_memory_get` path allowance, the disk fallback) and this engine write
+ * lane have to agree on one name or a retired note is searchable in one lane and refused in the other,
+ * and `@fusion/core` may not import `@fusion/engine`. These three names are re-exports, not a second
+ * definition: one authority, greppable from either side.
+ */
+export {
+  MEMORY_ARCHIVE_FILENAME_PREFIX as ARCHIVE_MEMORY_FILENAME_PREFIX,
+  archiveMemoryFileName,
+  isArchiveMemoryFileName,
+} from "@fusion/core";
+
+/**
+ * Which long-term memory file a measurement or rewrite is about. */
 export type LongTermMemoryScope = "project" | "agent";
 
 /**
@@ -216,6 +266,15 @@ export function formatMemoryBudgetStatus(report: LongTermMemoryBudgetReport): st
  * write. Over budget, the message names both halves of the remedy: maintenance will back the file up
  * and collapse exactly duplicated entries, and it will NOT shorten what the author wrote — so nobody
  * waits for an automation that is designed not to shrink their prose.
+ *
+ * FNXC:MemoryBudget 2026-11-20-10:20 (RUFU-665):
+ * The RUFU-279 sentence promised only a duplicate collapse, which for the production file shape (every
+ * section distinct) is a remedy that moves zero bytes. An author reading it concluded the only way out
+ * was to file another card about the same defect, and that sentence was the driver behind a family of
+ * duplicate cards filed in one day. So the message now names the remedy that ACTUALLY converges an
+ * all-unique file — the oldest whole entries move verbatim into `ARCHIVE-<date>.md` beside `MEMORY.md`,
+ * where `fn_memory_search` still returns them — and states the one thing the author must not do, which
+ * is delete their own notes to make the number go down. Concrete remedy, concrete non-action.
  */
 export function formatLongTermMemoryAppendReport(params: {
   scopeLabel: string;
@@ -228,7 +287,10 @@ export function formatLongTermMemoryAppendReport(params: {
   }
   return (
     `Appended to ${params.scopeLabel} memory (${formatMemorySize(params.appendedBytes)} appended; ${status}). ` +
-    `Over budget by ${formatMemorySize(params.report.overByBytes)}: scheduled maintenance will back up the file and collapse exactly duplicated entries. ` +
-    `It will not shorten or drop entries you wrote, so prefer consolidating related notes into one entry.`
+    `Over budget by ${formatMemorySize(params.report.overByBytes)}: scheduled maintenance will back up the file and collapse exactly duplicated entries, ` +
+    `and when duplicates alone cannot converge it it moves your oldest entries verbatim into ARCHIVE-YYYY-MM-DD.md in this same memory folder, ` +
+    `where fn_memory_search and fn_memory_get still return them. ` +
+    `It will not shorten or drop entries you wrote, so do not delete entries to fix the number; ` +
+    `prefer consolidating related notes into one entry.`
   );
 }

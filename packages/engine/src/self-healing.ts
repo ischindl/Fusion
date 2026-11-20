@@ -10933,8 +10933,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     });
 
     if (result.overBudget > 0 || result.failures > 0 || result.rewritten > 0) {
+      /*
+       * FNXC:MemoryBudget 2026-11-20-10:24 (RUFU-665):
+       * The roll-up counts are named here because this line is the only operator-visible narration of a
+       * sweep: the archive file's own name appears in the per-target debug line and nowhere else in run
+       * audit (paths never enter a metadata row). Without these two numbers a converged file would look
+       * identical in the log to a file that was only duplicate-collapsed, and "did retirement actually
+       * move anything?" would be unanswerable from the engine log.
+       */
       const summary = `Long-term memory maintenance: scanned=${result.scanned} within-budget=${result.withinBudget} over-budget=${result.overBudget} ` +
         `duplicates-collapsed=${result.duplicateSectionsCollapsed} conflicts-retained=${result.conflictsRetained} ` +
+        `rolled-up-sections=${result.rolledUpSections} rolled-up-bytes=${result.rolledUpBytes} ` +
         `rewritten=${result.rewritten} suppressed-findings=${result.suppressedFindings} failures=${result.failures}`;
       if (result.failures > 0) log.warn(summary);
       else log.debug(summary);

@@ -38,6 +38,13 @@ import {
   deriveMemoryQueryTerms,
   dropLineOverlappingMemoryHits,
 } from "./memory-query-terms.js";
+/*
+FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665):
+The cold-tier filename shape is imported, never re-declared. Budget maintenance WRITES these files from
+the engine, and this module decides whether a reader can reach them; a second copy of the shape here is
+how a retired note ends up searchable in one lane and refused in another.
+*/
+import { isArchiveMemoryFileName } from "./memory-archive-filename.js";
 
 export const MEMORY_WORKSPACE_PATH = ".fusion/memory";
 export const MEMORY_LONG_TERM_FILENAME = "MEMORY.md";
@@ -672,10 +679,20 @@ export async function ensureOpenClawMemoryFiles(rootDir: string, date = new Date
 function getMemoryFileLayer(displayPath: string): MemoryFileInfo["layer"] {
   if (displayPath === `${MEMORY_WORKSPACE_PATH}/${MEMORY_LONG_TERM_FILENAME}`) return "long-term";
   if (displayPath === `${MEMORY_WORKSPACE_PATH}/${MEMORY_DREAMS_FILENAME}`) return "dreams";
+  /*
+   * FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665):
+   * A cold-tier file IS retired long-term content, so it reports the `long-term` layer rather than
+   * pretending to be a daily note. The layer union is deliberately NOT widened to `"archive"`: it is a
+   * published field that the dashboard re-declares in `app/api/system/memory.ts` and sorts by in two
+   * places, and a new value there buys no honesty this label already carries. The LABEL is where the
+   * distinction belongs, and it says what the file is.
+   */
+  if (isArchiveMemoryFileName(basename(displayPath))) return "long-term";
   return "daily";
 }
 
 function getMemoryFileLabel(displayPath: string): string {
+  if (isArchiveMemoryFileName(basename(displayPath))) return "Archived long-term memory";
   const layer = getMemoryFileLayer(displayPath);
   if (layer === "long-term") return "Long-term memory";
   if (layer === "dreams") return "Dreams";
@@ -685,10 +702,12 @@ function getMemoryFileLabel(displayPath: string): string {
 function getAgentMemoryFileLayer(fileName: string): MemoryFileInfo["layer"] {
   if (fileName === MEMORY_LONG_TERM_FILENAME) return "long-term";
   if (fileName === MEMORY_DREAMS_FILENAME) return "dreams";
+  if (isArchiveMemoryFileName(fileName)) return "long-term";
   return "daily";
 }
 
 function getAgentMemoryFileLabel(fileName: string): string {
+  if (isArchiveMemoryFileName(fileName)) return "Archived long-term memory";
   const layer = getAgentMemoryFileLayer(fileName);
   if (layer === "long-term") return "Long-term memory";
   if (layer === "dreams") return "Dreams";
@@ -723,7 +742,7 @@ export async function readProjectMemoryFile(rootDir: string, options: MemoryGetO
 }
 
 export async function readProjectMemoryFileContent(rootDir: string, path: string): Promise<{ path: string; content: string }> {
-  const { absPath, displayPath } = resolveMemoryFilePath(rootDir, path);
+  const { absPath, displayPath } = resolveMemoryFilePath(rootDir, path, { allowArchive: true });
   try {
     const content = await readFile(absPath, "utf-8");
     return { path: displayPath, content };
@@ -775,7 +794,9 @@ export async function listAgentMemoryFiles(rootDir: string, agentId: string, dat
 
   if (existsSync(workspacePath)) {
     for (const entry of await readdir(workspacePath)) {
-      if (!DAILY_MEMORY_RE.test(entry)) continue;
+      // FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665): cold-tier archives are listed beside dailies, so
+      // a retired agent note stays reachable in the same surface that listed it while it was hot.
+      if (!DAILY_MEMORY_RE.test(entry) && !isArchiveMemoryFileName(entry)) continue;
       const absPath = join(workspacePath, entry);
       const fileStat = await stat(absPath);
       if (fileStat.isFile()) {
@@ -813,7 +834,18 @@ async function resolveAgentMemoryFilePath(
   rootDir: string,
   agentId: string,
   requestedPath: string,
+  options: { allowArchive?: boolean } = {},
 ): Promise<{ absPath: string; displayPath: string }> {
+  /*
+   * FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665):
+   * Same read/write asymmetry as the project lane: `readAgentMemoryFile` passes `allowArchive`, the
+   * write lane does not, so the cold tier stays the append-only record it claims to be while remaining
+   * fully readable. Below this point every existing guard is untouched — traversal, absolute path, the
+   * workspace-prefix containment, and the no-subdirectories rule all still apply, which is why the cold
+   * tier is a flat sibling file and not `archive/…`: a subdirectory here would be refused by the rule on
+   * line ~871 and a retired note would be unreachable for the agent that wrote it.
+   */
+  const allowArchive = options.allowArchive === true;
   const { agentMemoryWorkspacePath } = await import("./memory-dreams.js");
   const workspacePath = agentMemoryWorkspacePath(rootDir, agentId);
   const workspaceDisplayPath = relative(rootDir, workspacePath).replace(/\\/g, "/");
@@ -833,10 +865,14 @@ async function resolveAgentMemoryFilePath(
     fileName !== MEMORY_LONG_TERM_FILENAME
     && fileName !== MEMORY_DREAMS_FILENAME
     && !DAILY_MEMORY_RE.test(fileName)
+    && !(allowArchive && isArchiveMemoryFileName(fileName))
   ) {
     throw new MemoryBackendError(
       "UNSUPPORTED",
-      `Memory path '${requestedPath}' is outside allowed files: ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/MEMORY.md, ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/DREAMS.md, ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/YYYY-MM-DD.md`,
+      `Memory path '${requestedPath}' is outside allowed files: ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/MEMORY.md, ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/DREAMS.md, ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/YYYY-MM-DD.md`
+      // Same write-lane-only hint as the project scope: name the cold tier to the caller who reached for
+      // it, not to a reader whose path was already accepted.
+      + (allowArchive ? "" : `; ${AGENT_MEMORY_WORKSPACE_PATH}/{agentId}/ARCHIVE-YYYY-MM-DD.md is the read-only cold tier — retired entries are read with fn_memory_get, never written`),
       "file",
     );
   }
@@ -872,7 +908,7 @@ async function resolveAgentMemoryFilePath(
 }
 
 export async function readAgentMemoryFile(rootDir: string, agentId: string, path: string): Promise<{ path: string; content: string }> {
-  const { absPath, displayPath } = await resolveAgentMemoryFilePath(rootDir, agentId, path);
+  const { absPath, displayPath } = await resolveAgentMemoryFilePath(rootDir, agentId, path, { allowArchive: true });
 
   try {
     const content = await readFile(absPath, "utf-8");
@@ -900,7 +936,23 @@ function isPathTraversal(path: string): boolean {
   return path.split(/[\\/]+/).includes("..");
 }
 
-function normalizeMemoryRequestPath(rawPath: string): string {
+/**
+ * FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665):
+ * The cold tier is READABLE through this allowance and NOT WRITABLE through it. Retirement is
+ * maintenance's own append-only move; a memory-file API that could overwrite `ARCHIVE-*.md` would let
+ * any caller rewrite the verbatim record the whole loss-free contract depends on, while the only lane
+ * that genuinely needs the file is the read path — `fn_memory_get` and the follow-up on a search hit are
+ * what a retired note must stay reachable through. The accepted shape stays exactly as strict as the
+ * writer's, so nothing `archiveMemoryFileName()` could not have produced is let in here.
+ */
+function normalizeMemoryRequestPath(rawPath: string, options: { allowArchive?: boolean } = {}): string {
+  const allowArchive = options.allowArchive === true;
+  const isAllowedLeaf = (leaf: string): boolean =>
+    leaf === MEMORY_LONG_TERM_FILENAME
+    || leaf === MEMORY_DREAMS_FILENAME
+    || DAILY_MEMORY_RE.test(leaf)
+    || (allowArchive && isArchiveMemoryFileName(leaf));
+
   const trimmed = rawPath.trim();
   if (!trimmed) {
     throw new MemoryBackendError("NOT_FOUND", "Memory path is required", "memory");
@@ -922,19 +974,27 @@ function normalizeMemoryRequestPath(rawPath: string): string {
   }
   if (normalized.startsWith(`${MEMORY_WORKSPACE_PATH}/`)) {
     const file = basename(normalized);
-    if (file === MEMORY_LONG_TERM_FILENAME || file === MEMORY_DREAMS_FILENAME || DAILY_MEMORY_RE.test(file)) {
+    if (isAllowedLeaf(file)) {
       return `${MEMORY_WORKSPACE_PATH}/${file}`;
     }
   }
   throw new MemoryBackendError(
     "UNSUPPORTED",
-    `Memory path '${rawPath}' is outside allowed files: .fusion/memory/MEMORY.md, .fusion/memory/DREAMS.md, .fusion/memory/YYYY-MM-DD.md`,
+    `Memory path '${rawPath}' is outside allowed files: .fusion/memory/MEMORY.md, .fusion/memory/DREAMS.md, .fusion/memory/YYYY-MM-DD.md`
+    // The cold tier is named ONLY on the write lane, where the caller just tried to write it: there the
+    // useful sentence is "that file exists and is read-only", and a caller on the read lane never needs
+    // to be told about a path that was just accepted.
+    + (allowArchive ? "" : "; .fusion/memory/ARCHIVE-YYYY-MM-DD.md is the read-only cold tier — retired entries are read with fn_memory_get, never written"),
     "memory",
   );
 }
 
-function resolveMemoryFilePath(rootDir: string, requestedPath: string): { absPath: string; displayPath: string } {
-  const displayPath = normalizeMemoryRequestPath(requestedPath);
+function resolveMemoryFilePath(
+  rootDir: string,
+  requestedPath: string,
+  options: { allowArchive?: boolean } = {},
+): { absPath: string; displayPath: string } {
+  const displayPath = normalizeMemoryRequestPath(requestedPath, options);
   const absPath = resolve(rootDir, displayPath);
   const rel = relative(rootDir, absPath);
   if (!rel || rel.startsWith(`..${sep}`) || rel === ".." || isAbsolute(rel)) {
@@ -944,7 +1004,8 @@ function resolveMemoryFilePath(rootDir: string, requestedPath: string): { absPat
 }
 
 async function getMemoryFile(rootDir: string, options: MemoryGetOptions, backend: string): Promise<MemoryGetResult> {
-  const { absPath, displayPath } = resolveMemoryFilePath(rootDir, options.path);
+  // Reads reach the cold tier; the write lane never passes this option (see `normalizeMemoryRequestPath`).
+  const { absPath, displayPath } = resolveMemoryFilePath(rootDir, options.path, { allowArchive: true });
   let content: string;
   try {
     content = await readFile(absPath, "utf-8");
@@ -986,7 +1047,10 @@ async function listMemoryFiles(rootDir: string): Promise<Array<{ absPath: string
 
   if (existsSync(workspacePath)) {
     for (const entry of await readdir(workspacePath)) {
-      if (!DAILY_MEMORY_RE.test(entry)) continue;
+      // Daily notes and cold-tier archives only. The archive branch is what keeps a retired note in the
+      // listing, the file-lane search, and the dashboard after budget maintenance moves it out of
+      // MEMORY.md; anything else in this directory stays unlisted.
+      if (!DAILY_MEMORY_RE.test(entry) && !isArchiveMemoryFileName(entry)) continue;
       const absPath = join(workspacePath, entry);
       const fileStat = await stat(absPath);
       if (fileStat.isFile()) {
@@ -1124,9 +1188,14 @@ function normalizeQmdSearchResultPath(rootDir: string, rawPath: unknown): string
   if (DAILY_MEMORY_RE.test(normalizedBaseName)) {
     return `${MEMORY_WORKSPACE_PATH}/${normalizedBaseName}`;
   }
+  // FNXC:MemoryBudget 2026-11-20-10:55 (RUFU-665): an indexed cold-tier hit must resolve to the same
+  // canonical path the listing publishes, or a retired note is findable by search and unreadable by get.
+  if (isArchiveMemoryFileName(normalizedBaseName)) {
+    return `${MEMORY_WORKSPACE_PATH}/${normalizedBaseName}`;
+  }
 
   try {
-    return normalizeMemoryRequestPath(candidate);
+    return normalizeMemoryRequestPath(candidate, { allowArchive: true });
   } catch {
     return original;
   }
