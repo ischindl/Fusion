@@ -42,8 +42,25 @@ export function hasVerifiedDaemonRequest(req: Request): boolean {
  * loopback/Origin/Host rejection, so the daemon-token gate must not 401 the
  * hook's curl before the route's own auth runs — otherwise CLI chat recall
  * would be silently dead in daemon mode.
+ *
+ * FNXC:PluginAuth 2026-11-20-02:49 (RUFU-782):
+ * `/api/plugins/fusion-plugin-telegram/fusion` joins the exemption for the same reason the two
+ * `/api/cli-agent/*` routes did: its caller is `WebhookNotificationProvider` in the generic format,
+ * which posts only `Content-Type: application/json` and carries no bearer, so the daemon-token gate
+ * would 401 the bridge's only inbound event path before the plugin's own auth could run. The route
+ * therefore performs its own constant-time check of the `?key=` shared secret and FAILS CLOSED when no
+ * secret is configured, which is why the exemption is granted for one exact plugin route and not for
+ * plugin routes generally.
+ *
+ * Scope of this exemption, stated because `isExemptPath` matches `path === exempt ||
+ * path.startsWith(exempt + "/")`: exempting `.../fusion` also exempts every path BELOW it. No further
+ * unauthenticated route may ever be added under `/api/plugins/fusion-plugin-telegram/fusion`.
+ * Sibling plugin routes such as `.../status` are not under it and stay behind the daemon token; the
+ * query string is not part of `req.path`, so `?projectId=&key=` cannot widen or narrow the match.
  */
-const EXEMPT_PATHS = ["/api/health", "/api/cli-agent/hooks", "/api/cli-agent/memory-recall"];
+const TELEGRAM_INGEST_PATH = "/api/plugins/fusion-plugin-telegram/fusion";
+
+const EXEMPT_PATHS = ["/api/health", "/api/cli-agent/hooks", "/api/cli-agent/memory-recall", TELEGRAM_INGEST_PATH];
 
 /**
  * Only /api/* paths are gated by this middleware. The SPA shell (index.html,

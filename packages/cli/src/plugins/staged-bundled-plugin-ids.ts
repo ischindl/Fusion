@@ -23,6 +23,9 @@ export const ALL_STAGED_BUNDLED_IDS = [
   "fusion-plugin-todos",
   "fusion-plugin-compound-engineering",
   "fusion-plugin-whatsapp-chat",
+  // FNXC:BundledPlugins 2026-11-20-04:21 (RUFU-782): The Telegram bridge ships staged like the WhatsApp
+  // template, so an operator enables it from Settings -> Plugins instead of installing it by hand.
+  "fusion-plugin-telegram",
   "fusion-plugin-reports",
   "fusion-plugin-cli-printing-press",
   "fusion-plugin-linear-import",

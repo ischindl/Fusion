@@ -150,6 +150,7 @@
     "@fusion-plugin-examples/paperclip-runtime": "workspace:*",
     "@fusion-plugin-examples/quality": "workspace:*",
     "@fusion-plugin-examples/roadmap": "workspace:*",
+    "@fusion-plugin-examples/telegram": "workspace:*",
     "@fusion/core": "workspace:*",
     "@fusion/engine": "workspace:*",
     "@fusion/i18n": "workspace:*",

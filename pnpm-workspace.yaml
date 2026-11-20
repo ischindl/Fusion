@@ -77,6 +77,7 @@ packages:
   - "plugins/fusion-plugin-omp-runtime"
   - "plugins/fusion-plugin-agent-browser"
   - "plugins/fusion-plugin-whatsapp-chat"
+  - "plugins/fusion-plugin-telegram"
   - "plugins/fusion-plugin-roadmap"
   - "plugins/fusion-plugin-todos"
   - "plugins/fusion-plugin-even-realities-glasses"

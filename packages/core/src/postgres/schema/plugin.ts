@@ -356,3 +356,89 @@ export const cliPressPluginTableNames = [
   "cli_press_credentials",
   "cli_press_service_settings",
 ] as const;
+
+// ── Telegram bridge plugin tables ────────────────────────────────
+/*
+FNXC:TelegramBridge 2026-11-20-03:29 (RUFU-782):
+Shape for the bundled Telegram bridge. Every table carries project_id in its key because all projects
+share this schema and one bot serves all of them — a bridge that could read another project's open
+question could resume another project's card.
+
+`thread_id`, `bot_message_id`, and `update_id` are Telegram-side identifiers. They fit in a signed 32-bit
+integer today but Telegram does not bound them, so they are bigint: truncating a thread id would silently
+route a message into the wrong topic instead of failing.
+
+`telegram_token_lease.bot_token_id` is a hash of the bot token, never the token. The lease must identify
+WHICH token it holds without storing a credential in a table the runtime role can read (docs/secrets.md).
+*/
+
+/** Per-project delivery target: the forum topic this project's messages go into, keyed by bot chat. */
+export const telegramProjectTopics = projectSchema.table("telegram_project_topics", {
+  projectId: text("project_id").notNull(),
+  chatId: text("chat_id").notNull(),
+  threadId: bigint("thread_id", { mode: "number" }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.chatId] }),
+]);
+
+/** One question the bridge sent, and the Telegram message that carries it. */
+export const telegramQuestions = projectSchema.table("telegram_questions", {
+  projectId: text("project_id").notNull(),
+  questionId: text("question_id").notNull(),
+  taskId: text("task_id"),
+  chatId: text("chat_id").notNull(),
+  threadId: bigint("thread_id", { mode: "number" }),
+  botMessageId: bigint("bot_message_id", { mode: "number" }).notNull(),
+  kind: text("kind").notNull(),
+  /** JSON array of answer-option labels, or null for a free-text question. */
+  options: text("options"),
+  questionText: text("question_text").notNull(),
+  status: text("status").notNull(),
+  createdAt: text("created_at").notNull(),
+  answeredAt: text("answered_at"),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.questionId] }),
+]);
+
+/** Inbound `update_id` replay guard, pruned by the plugin's own retention setting. */
+export const telegramProcessedUpdates = projectSchema.table("telegram_processed_updates", {
+  projectId: text("project_id").notNull(),
+  updateId: bigint("update_id", { mode: "number" }).notNull(),
+  chatId: text("chat_id").notNull(),
+  receivedAt: text("received_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.updateId] }),
+]);
+
+/** The `getUpdates` offset, durable so a restart does not re-read the ~24h Telegram buffers. */
+export const telegramInboundState = projectSchema.table("telegram_inbound_state", {
+  projectId: text("project_id").notNull(),
+  chatId: text("chat_id").notNull(),
+  lastUpdateOffset: bigint("last_update_offset", { mode: "number" }).notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.chatId] }),
+]);
+
+/** One row per bot token: which process is allowed to long-poll it. */
+export const telegramTokenLease = projectSchema.table("telegram_token_lease", {
+  projectId: text("project_id").notNull(),
+  botTokenId: text("bot_token_id").notNull(),
+  holderId: text("holder_id").notNull(),
+  acquiredAt: text("acquired_at").notNull(),
+  renewedAt: text("renewed_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.botTokenId] }),
+]);
+
+/** Registry of Telegram-bridge-owned table names, mirroring the schema-init hook's DDL. */
+export const telegramPluginTableNames = [
+  "telegram_project_topics",
+  "telegram_questions",
+  "telegram_processed_updates",
+  "telegram_inbound_state",
+  "telegram_token_lease",
+] as const;

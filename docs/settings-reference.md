@@ -434,6 +434,31 @@ When `id` is `"webhook"`, the provider `config` supports:
 | `webhookFormat` | `"slack" \| "discord" \| "generic"` | `"generic"` | Invalid/omitted values fall back to `"generic"`. |
 | `events` | `string[]` | `[]` | Event filter list. Empty/omitted means all events are sent. Includes `memory-dreams-processed` for DREAMS.md updates from manual dream processing and `workflow-notify` for workflow `notify` nodes when explicitly filtered. |
 
+##### Generic webhook payload
+
+With `webhookFormat: "generic"` the provider POSTs one JSON object per event:
+
+```json
+{
+  "event": "planning-awaiting-input",
+  "timestamp": "2026-11-20T04:21:00.000Z",
+  "project": { "id": "project-a" },
+  "task": { "id": "RUFU-782", "title": "Telegram bridge" },
+  "metadata": { "pausedReason": "workflow-input:ask-branch@…: Which branch?" },
+  "clickUrl": "http://127.0.0.1:4040/?projectId=project-a&taskId=RUFU-782"
+}
+```
+
+`project.id` is the configured `projectId` and is what a receiver must route on: task ids are project-local
+(see [docs/multi-project.md](multi-project.md)), so `task.id` alone cannot identify a card. The key is
+**absent** when no project id is configured, rather than `{ "id": null }`, so a receiver can tell "no project
+was configured" from an empty-string id. `clickUrl` is a deep link for humans and is not a routing field.
+
+The bundled **Telegram Bridge** plugin (`plugins/fusion-plugin-telegram`) is the in-repo consumer of this
+payload: point `webhookUrl` at `POST /api/plugins/fusion-plugin-telegram/fusion?key=<ingestSecret>` and it
+delivers each project's events into its own Telegram topic and turns an operator's answer into a steering
+comment that resumes the parked card. See the plugin README for the BotFather setup and its settings.
+
 #### ntfy provider config
 
 When `id` is `"ntfy"` in `notificationProviders`, the provider `config` supports:

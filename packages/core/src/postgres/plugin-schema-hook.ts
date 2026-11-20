@@ -861,6 +861,83 @@ export const cliPressPluginSchemaInit: PluginSchemaInitHook = {
 };
 
 /**
+ * FNXC:TelegramBridge 2026-11-20-03:29 (RUFU-782):
+ * The Telegram bridge is one bot per Fusion instance serving every project, so its durable state is the
+ * one place where a missing project_id would not merely leak a row but act on the wrong card: an answer
+ * correlated across projects would resume someone else's parked task. Every key therefore leads with
+ * project_id, and the secondary indexes are declared through `ensureProjectIndexes` so PostgreSQL can
+ * prune other tenants before the status or time predicate.
+ *
+ * `uqTelegramQuestionsOpenTask` is a partial unique index rather than an application check: a card may
+ * hold at most one OPEN question. Two concurrent events for the same card must not both leave a row that
+ * later resolves to two competing resumes of the same park.
+ *
+ * The lease table stores a hash of the bot token (`bot_token_id`), never the token itself, so a readable
+ * table cannot hand out a credential (docs/secrets.md).
+ */
+export const telegramPluginSchemaInit: PluginSchemaInitHook = {
+  pluginId: "fusion-plugin-telegram",
+  async init(db) {
+    await db.execute(sql.raw(`
+      CREATE TABLE IF NOT EXISTS project.telegram_project_topics (
+        project_id text NOT NULL,
+        chat_id text NOT NULL,
+        thread_id bigint NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL,
+        PRIMARY KEY (project_id, chat_id)
+      );
+      CREATE TABLE IF NOT EXISTS project.telegram_questions (
+        project_id text NOT NULL,
+        question_id text NOT NULL,
+        task_id text,
+        chat_id text NOT NULL,
+        thread_id bigint,
+        bot_message_id bigint NOT NULL,
+        kind text NOT NULL,
+        options text,
+        question_text text NOT NULL,
+        status text NOT NULL,
+        created_at text NOT NULL,
+        answered_at text,
+        PRIMARY KEY (project_id, question_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "uqTelegramQuestionsOpenTask"
+        ON project.telegram_questions(project_id, task_id) WHERE status = 'open' AND task_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS project.telegram_processed_updates (
+        project_id text NOT NULL,
+        update_id bigint NOT NULL,
+        chat_id text NOT NULL,
+        received_at text NOT NULL,
+        PRIMARY KEY (project_id, update_id)
+      );
+      CREATE TABLE IF NOT EXISTS project.telegram_inbound_state (
+        project_id text NOT NULL,
+        chat_id text NOT NULL,
+        last_update_offset bigint NOT NULL,
+        updated_at text NOT NULL,
+        PRIMARY KEY (project_id, chat_id)
+      );
+      CREATE TABLE IF NOT EXISTS project.telegram_token_lease (
+        project_id text NOT NULL,
+        bot_token_id text NOT NULL,
+        holder_id text NOT NULL,
+        acquired_at text NOT NULL,
+        renewed_at text NOT NULL,
+        expires_at text NOT NULL,
+        PRIMARY KEY (project_id, bot_token_id)
+      );
+    `));
+
+    await ensureProjectIndexes(db, [
+      { name: "idxTelegramQuestionsTask", table: "telegram_questions", columns: "project_id, task_id, status, created_at, question_id" },
+      { name: "idxTelegramQuestionsMessage", table: "telegram_questions", columns: "project_id, chat_id, bot_message_id" },
+      { name: "idxTelegramProcessedUpdatesRetention", table: "telegram_processed_updates", columns: "project_id, received_at, update_id" },
+    ]);
+  },
+};
+
+/**
  * The default set of plugin schema-init hooks. The schema applier runs each
  * registered hook after the core baseline migration lands.
  */
@@ -871,6 +948,7 @@ export const DEFAULT_PLUGIN_SCHEMA_INIT_HOOKS: readonly PluginSchemaInitHook[] =
   evenRealitiesPluginSchemaInit,
   reportsPluginSchemaInit,
   cliPressPluginSchemaInit,
+  telegramPluginSchemaInit,
 ];
 
 const POSTGRES_PLUGIN_SCHEMA_HOOKS = new Map(

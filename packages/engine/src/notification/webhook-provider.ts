@@ -245,9 +245,20 @@ export class WebhookNotificationProvider implements NotificationProvider {
     const roomLabel = resolveRoomLabel(payload.metadata);
     const roomSenderLabel = resolveRoomSenderLabel(payload.metadata);
 
+    /*
+    FNXC:WebhookPayload 2026-11-20-02:49 (RUFU-782):
+    Task ids are project-local (docs/multi-project.md), so a receiver of the generic payload could not
+    tell which project an event belonged to: the project only appeared inside `clickUrl`, which is a
+    deep-link string and not a field a receiver may parse for routing. The Telegram bridge plugin needs
+    `project.id` to pick the per-project topic and the project's own TaskStore, so the payload now
+    carries it as a first-class key. Additive only - `projectId` is the already-configured value used
+    by buildNtfyClickUrl, and when it is unset the `project` key is absent rather than `{ id: undefined }`,
+    so a receiver can distinguish "no project was configured" from "the project id is the empty string".
+    */
     return {
       event: payload.event,
       timestamp: new Date().toISOString(),
+      ...(this.config.projectId ? { project: { id: this.config.projectId } } : {}),
       task: {
         id: payload.taskId,
         title: payload.taskTitle,

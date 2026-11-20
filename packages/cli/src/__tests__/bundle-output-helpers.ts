@@ -18,6 +18,9 @@ const cliPrintingPressPluginBundledPath = join(
   "bundled.js",
 );
 const whatsappChatPluginBundledPath = join(cliRoot, "dist", "plugins", "fusion-plugin-whatsapp-chat", "bundled.js");
+// FNXC:BundledPlugins 2026-11-20-04:21 (RUFU-782): the Telegram bridge is bundled like its template, so a
+// published CLI must actually contain its install-safe output, not just stage its manifest.
+const telegramPluginBundledPath = join(cliRoot, "dist", "plugins", "fusion-plugin-telegram", "bundled.js");
 const compoundEngineeringSkillPath = join(
   cliRoot,
   "dist",
@@ -52,6 +55,7 @@ export const requiredBuildAssetPaths = [
   reportsPluginBundledPath,
   cliPrintingPressPluginBundledPath,
   whatsappChatPluginBundledPath,
+  telegramPluginBundledPath,
   compoundEngineeringSkillPath,
   openclawMcpSchemaServerPath,
   droidPluginMcpServerPath,

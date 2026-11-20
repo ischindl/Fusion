@@ -63,6 +63,8 @@ const dependencyGraphPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-
 const dependencyGraphPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-dependency-graph");
 const whatsappChatPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-whatsapp-chat");
 const whatsappChatPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-whatsapp-chat");
+const telegramPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-telegram");
+const telegramPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-telegram");
 const roadmapPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-roadmap");
 const roadmapPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-roadmap");
 const todosPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-todos");
@@ -643,6 +645,18 @@ const cliBuildConfig = {
        * with jimp even though bundlePluginEntry also default-externalizes the sharp family.
        */
       external: ["jimp", "link-preview-js", "qrcode-terminal", "sharp"],
+    });
+
+    /*
+     * FNXC:BundledPlugins 2026-11-20-04:21 (RUFU-782):
+     * The Telegram bridge ships through the same install-safe bundling the WhatsApp template needed, and needs
+     * no `external` list: the Bot API is reached with global fetch, so the plugin declares no runtime
+     * dependencies and the whole bundle is self-contained under node_modules.
+     */
+    await bundlePluginEntry({
+      pluginId: "fusion-plugin-telegram",
+      srcDir: telegramPluginSrc,
+      destDir: telegramPluginDest,
     });
 
     await bundlePluginEntry({

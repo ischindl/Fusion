@@ -121,6 +121,59 @@ describe("createAuthMiddleware", () => {
     expect(mockRes.status).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:PluginAuth 2026-11-20-02:49 (RUFU-782):
+  The Telegram ingest route is exempted because the generic webhook provider posts no bearer, and the
+  exemption is only safe because that single route authenticates its shared secret itself. These cases
+  pin the width of the exemption: exactly one plugin path, its siblings still gated, and the query
+  string irrelevant because the match runs on `req.path`.
+  */
+  it("exempts the telegram plugin ingest POST without a daemon token", () => {
+    mockReq.path = "/api/plugins/fusion-plugin-telegram/fusion";
+    mockReq.method = "POST";
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(nextFn).toHaveBeenCalled();
+    expect(mockRes.status).not.toHaveBeenCalled();
+    expect(hasVerifiedDaemonRequest(mockReq as Request)).toBe(false);
+  });
+
+  it("still requires a daemon token on the sibling telegram status route", () => {
+    mockReq.path = "/api/plugins/fusion-plugin-telegram/status";
+    mockReq.method = "GET";
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(nextFn).not.toHaveBeenCalled();
+  });
+
+  it("leaves another plugin's route protected", () => {
+    mockReq.path = "/api/plugins/fusion-plugin-whatsapp-chat/status";
+    mockReq.method = "GET";
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(nextFn).not.toHaveBeenCalled();
+  });
+
+  it("matches the ingest exemption even when the request carries projectId and key query params", () => {
+    mockReq.path = "/api/plugins/fusion-plugin-telegram/fusion";
+    mockReq.url = "/api/plugins/fusion-plugin-telegram/fusion?projectId=p1&key=s3cret";
+    mockReq.method = "POST";
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(nextFn).toHaveBeenCalled();
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
   it("handles tokens of different lengths without crashing", () => {
     // Test with shorter token
     mockReq.headers = { authorization: "Bearer short" };

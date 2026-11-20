@@ -167,6 +167,19 @@ export const BUILTIN_PLUGINS: BuiltinPlugin[] = [
     category: "integration",
     path: "./plugins/fusion-plugin-whatsapp-chat",
   },
+  /*
+   * FNXC:PluginManager 2026-11-20-04:21 (RUFU-782):
+   * RUFU-782 registers the Telegram bridge in this catalog because a bundled plugin a user cannot enable from
+   * Plugin Manager is the FN-7454 failure mode again: the package, registry entry, and routes exist, but the
+   * only way to turn it on would be editing settings by hand.
+   */
+  {
+    id: "fusion-plugin-telegram",
+    name: "Telegram Bridge",
+    description: "Delivers agent questions and card events into per-project Telegram topics and turns an operator reply into a steering comment that resumes the parked card.",
+    category: "integration",
+    path: "./plugins/fusion-plugin-telegram",
+  },
   {
     id: "fusion-plugin-cli-printing-press",
     name: "CLI Printing Press",

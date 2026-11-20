@@ -50,6 +50,12 @@ COPY plugins/fusion-plugin-omp-runtime/package.json ./plugins/fusion-plugin-omp-
 COPY plugins/fusion-plugin-quality/package.json ./plugins/fusion-plugin-quality/package.json
 COPY plugins/fusion-plugin-agent-browser/package.json ./plugins/fusion-plugin-agent-browser/package.json
 COPY plugins/fusion-plugin-whatsapp-chat/package.json ./plugins/fusion-plugin-whatsapp-chat/package.json
+# FNXC:DockerBuild 2026-11-20-02:49 (RUFU-782): a workspace member whose package.json is not staged here
+# breaks `docker build` while lint, typecheck, build and every test stay green locally - the drift the
+# antigravity-runtime block above records (RUFU-763) and that
+# scripts/check-docker-workspace-manifests.mjs now refuses inside the blocking static gate. The Telegram
+# bridge COPY therefore lands in the same commit as its pnpm-workspace.yaml entry.
+COPY plugins/fusion-plugin-telegram/package.json ./plugins/fusion-plugin-telegram/package.json
 COPY plugins/fusion-plugin-roadmap/package.json ./plugins/fusion-plugin-roadmap/package.json
 COPY plugins/fusion-plugin-even-realities-glasses/package.json ./plugins/fusion-plugin-even-realities-glasses/package.json
 COPY plugins/fusion-plugin-reports/package.json ./plugins/fusion-plugin-reports/package.json

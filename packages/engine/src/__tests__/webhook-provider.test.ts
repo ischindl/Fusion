@@ -103,6 +103,52 @@ describe("WebhookNotificationProvider", () => {
     expect(payload.clickUrl).toBe("http://dash/?project=p1&task=FN-1#message-msg-1");
   });
 
+  /*
+  FNXC:WebhookPayload 2026-11-20-02:49 (RUFU-782):
+  Task ids are project-local, so a generic-webhook receiver must be able to scope an event to a
+  project without parsing `clickUrl`. These two cases pin both halves of the contract: the key is
+  present next to the existing top-level keys, and it is ABSENT (not `{ id: undefined }`, which
+  survives a JSON round-trip as an empty object) when no project was configured.
+  */
+  it("generic payload carries project.id alongside the existing top-level keys", async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, statusText: "OK" });
+    await provider.initialize({
+      webhookUrl: "https://example.com/hook",
+      webhookFormat: "generic",
+      dashboardHost: "http://dash",
+      projectId: "p1",
+    });
+
+    await provider.sendNotification("planning-awaiting-input", {
+      taskId: "FN-9",
+      taskTitle: "Parked card",
+      event: "planning-awaiting-input",
+      metadata: { pausedReason: "workflow-input:step-execute@1700000000000: Which branch?" },
+    });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(requestInit.body));
+    expect(payload.project).toEqual({ id: "p1" });
+    expect(payload.event).toBe("planning-awaiting-input");
+    expect(payload.timestamp).toEqual(expect.any(String));
+    expect(payload.task).toEqual({ id: "FN-9", title: "Parked card" });
+    expect(payload.metadata).toEqual(
+      expect.objectContaining({ pausedReason: expect.stringContaining("workflow-input:") }),
+    );
+  });
+
+  it("generic payload omits the project key entirely when no projectId is configured", async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, statusText: "OK" });
+    await provider.initialize({ webhookUrl: "https://example.com/hook", webhookFormat: "generic" });
+
+    await provider.sendNotification("in-review", { taskId: "FN-1", taskTitle: "My Task", event: "in-review" });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(requestInit.body));
+    expect("project" in payload).toBe(false);
+    expect(payload.task).toEqual({ id: "FN-1", title: "My Task" });
+  });
+
   it("sendNotification returns success on HTTP 200", async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, statusText: "OK" });
     await provider.initialize({ webhookUrl: "https://example.com/hook", webhookFormat: "generic" });

@@ -1,0 +1,8 @@
+{
+  "id": "fusion-plugin-telegram",
+  "name": "Telegram Bridge",
+  "version": "0.1.0",
+  "description": "Telegram async discussion channel: one bot per instance, one topic per project, agent questions answered from Telegram resume the parked card.",
+  "author": "Fusion Team",
+  "fusionVersion": ">=0.1.0"
+}

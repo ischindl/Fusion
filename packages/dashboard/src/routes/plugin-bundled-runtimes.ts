@@ -36,10 +36,18 @@ export const BUNDLED_PLUGIN_RUNTIMES: Array<{
     version: "1.0.0",
   },
 ];
+/*
+ * FNXC:BundledPlugins 2026-11-20-04:21 (RUFU-782):
+ * RUFU-782 adds the Telegram bridge id below. A route that serves a bundled plugin's files must recognize
+ * exactly the ids the CLI stages, or a shipped plugin cannot be resolved from the dashboard. The note sits
+ * above the declaration rather than inside the initializer because the retention ratchet derives its entry
+ * count from that literal, and a comment inside it changes what the scan can see.
+ */
 const BUNDLED_PLUGIN_IDS = new Set([
   "fusion-plugin-dependency-graph",
   "fusion-plugin-reports",
   "fusion-plugin-whatsapp-chat",
+  "fusion-plugin-telegram",
   "fusion-plugin-roadmap",
   "fusion-plugin-todos",
   "fusion-plugin-hermes-runtime",

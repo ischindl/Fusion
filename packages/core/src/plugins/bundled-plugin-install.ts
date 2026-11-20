@@ -33,6 +33,9 @@ export const BUNDLED_PLUGIN_IDS = [
   "fusion-plugin-dependency-graph",
   "fusion-plugin-reports",
   "fusion-plugin-whatsapp-chat",
+  // FNXC:BundledPlugins 2026-11-20-04:21 (RUFU-782): bundled so a Fusion instance can offer the Telegram
+  // bridge without a manual install. It loads inert: with no bot token it delivers nothing and polls nothing.
+  "fusion-plugin-telegram",
   "fusion-plugin-roadmap",
   "fusion-plugin-todos",
   "fusion-plugin-hermes-runtime",

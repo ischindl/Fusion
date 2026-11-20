@@ -97,6 +97,20 @@
       ]
     },
     {
+      "id": "fusion-plugin-telegram",
+      "name": "Telegram Bridge",
+      "description": "Bridges agent questions and card events into per-project Telegram topics, and turns an operator's reply into a steering comment that resumes the parked card.",
+      "version": "0.1.0",
+      "author": "Fusion",
+      "category": "integration",
+      "path": "./plugins/fusion-plugin-telegram",
+      "tags": [
+        "chat",
+        "telegram",
+        "bridge"
+      ]
+    },
+    {
       "id": "fusion-plugin-cli-printing-press",
       "name": "CLI Printing Press",
       "description": "Guided wizard for drafting external service CLI definitions.",
