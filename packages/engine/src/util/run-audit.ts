@@ -764,6 +764,35 @@ export type DatabaseMutationType =
   per catalogued event and this event is not delivery-pipeline telemetry.
   */
   | "task:review-dispatch-declined"
+  /*
+  FNXC:WorkflowStepTimeoutLane 2026-11-19-05:38 (RUFU-684):
+  `task:workflow-step-timeout` is written once per PROMPT-MODE workflow-step session attempt that ran out
+  of its per-attempt budget — the moment the engine disposes that session. Before it existed the class was
+  recorded ONLY as a task-log line, and `tasks.log` is capped with the overflow deleted, so the question
+  "how often does the review lane time out, and in which step?" was unanswerable after retention. Measured
+  on this board: 456 retained timeout lines across the review/plan/verification lanes against ZERO durable
+  rows, while 54 persisted gate episodes exceed one armed 900 s budget by wall time alone — a floor on the
+  true rate, because a timed-out attempt that its secondary then rescued left nothing behind at all.
+
+  Metadata is the closed set { taskId, lane, workflowStepId, attemptKind, budgetMs, phase, outcome }
+  (+ `repoRelPath` on the per-repository workspace review path, which opens one session per repository and
+  therefore legitimately emits several rows in one episode). `lane` is the shared vocabulary of
+  `packages/core/src/workflows/workflow-step-timeout-lane.ts`, so this row, the budget decision, and
+  `scripts/workflow-step-timeout-census.mjs` name the same population. `outcome` is fixed:
+  `attempt-remaining` when the timed-out attempt was the primary (one of the two documented attempts is
+  still unspent — it is NOT a promise that a second session was created, a graph cancellation can still
+  intervene) and `budget-exhausted` when the timed-out attempt was already the secondary, i.e. the
+  fail-closed two-attempt bound is spent. Prompt text, model output, review notes, findings, fingerprints,
+  and the engine's own timeout sentence never enter the row.
+
+  Declared deliberately OUTSIDE the curated `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS` catalogue, which
+  `run-audit-catalogue.test.ts` locks table-for-table against `docs/run-audit.md` (the same placement as
+  RUFU-531's `task:review-verdict-recorded`, RUFU-279's `memory:*` trio and RUFU-462's
+  `runtime:heap-ceiling`); documented as prose in `docs/run-audit.md` instead. Emission is through
+  `emitBoundedRunAudit` and is detached, so an absent, throwing, rejecting, hanging, or late-settling sink
+  cannot alter the timeout disposition, the session disposal, or the secondary-attempt decision.
+  */
+  | "task:workflow-step-timeout"
   /**
    * Planning admission was withheld because no top-level slot was reservable.
    * Metadata: { blockedBy, maxConcurrent, claimed, projectRoom, eligibleCount, eligibleTaskIds,

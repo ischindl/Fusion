@@ -147,6 +147,18 @@ const DISPLAY: Record<string, WorkflowSettingDisplay> = {
   workflowStepTimeoutMs: {
     group: "steps",
     label: "Step timeout",
+    /*
+     * FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+     * The two timeout knobs must not read as one: naming the excluded lanes here is what stops an operator
+     * from widening this field and expecting reviews to get the extra room (reviews read
+     * workflowReviewStepTimeoutMs), or from leaving it at 15 minutes and thinking reviews are bounded there.
+     */
+    description: "Per-attempt ceiling for every step EXCEPT review-type ones (those use Review step timeout, and never below this value).",
+  },
+  workflowReviewStepTimeoutMs: {
+    group: "steps",
+    label: "Review step timeout",
+    description: "Per-attempt ceiling for Plan Review, Code Review, and other review-type steps. Reviews use the larger of this and Step timeout, so a raised Step timeout keeps bounding them. A review needing both attempts costs two of these; every other step keeps the shorter Step timeout.",
   },
   workflowStepScopeEnforcement: {
     group: "steps",

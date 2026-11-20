@@ -481,10 +481,34 @@ export {
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   DEFAULT_PLANNING_TIMEOUT_MS,
   DEFAULT_PLAN_REVIEW_REPLAN_CAP,
+  DEFAULT_WORKFLOW_STEP_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
   MEMORY_CONSOLIDATION_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
 } from "./workflows/builtin-workflow-settings.js";
+/*
+FNXC:WorkflowStepTimeoutLane 2026-11-18-02:25 (RUFU-684):
+Mirrored from index.ts per this file's maintenance rule. It must be mirrored, not skipped, because the
+executor module that consumes it (`executor/execute-workflow-step.ts`) is reached transitively by graph
+nodes, and RUFU-453 measured what an export the gate barrel lacks does to a statically-analyzable import:
+the binding is `undefined` and the call throws inside whichever lane happened to load it.
+*/
+export {
+  WORKFLOW_STEP_TIMEOUT_LANES,
+  WORKFLOW_STEP_TIMEOUT_FLOOR_MS,
+  asWorkflowStepTimeoutLane,
+  isPlanReviewPromptStep,
+  isReviewTypePromptStep,
+  classifyWorkflowPromptStepLane,
+  resolveWorkflowStepTimeoutBudget,
+} from "./workflows/workflow-step-timeout-lane.js";
+export type {
+  WorkflowStepTimeoutLane,
+  WorkflowStepTimeoutKnob,
+  WorkflowStepTimeoutBudget,
+  WorkflowPromptStepInput,
+} from "./workflows/workflow-step-timeout-lane.js";
 export {
   BUILTIN_SEAM_PROMPTS,
   builtinPromptConfig,

@@ -112,7 +112,7 @@ async function runReview(
     baseTask(),
     reviewStep(overrides),
     "/tmp/fn-240-wt",
-    { workflowStepTimeoutMs: 60_000 },
+    { workflowStepTimeoutMs: 60_000, workflowReviewStepTimeoutMs: 60_000 },
     undefined,
   );
   return { outcome, sessions, store };
@@ -297,7 +297,7 @@ describe("workflow-step verdict note repair", () => {
     } as any);
 
     const aggregate = await reviewWorkspacePerRepo(task, async (cwd) => toWorkspaceRepoReviewResult(
-      await (executor as any).executeWorkflowStep(task, reviewStep(), cwd, { workflowStepTimeoutMs: 60_000 }, undefined),
+      await (executor as any).executeWorkflowStep(task, reviewStep(), cwd, { workflowStepTimeoutMs: 60_000, workflowReviewStepTimeoutMs: 60_000 }, undefined),
     ), {
       workspaceRepos: ["repo-a", "repo-b"],
       workspaceRootDir: "/workspace",
@@ -332,7 +332,7 @@ describe("workflow-step verdict note repair", () => {
     } as any);
 
     const aggregate = await reviewWorkspacePerRepo(task, async (cwd) => toWorkspaceRepoReviewResult(
-      await (executor as any).executeWorkflowStep(task, reviewStep(), cwd, { workflowStepTimeoutMs: 60_000 }, undefined),
+      await (executor as any).executeWorkflowStep(task, reviewStep(), cwd, { workflowStepTimeoutMs: 60_000, workflowReviewStepTimeoutMs: 60_000 }, undefined),
     ), {
       workspaceRepos: ["repo-a", "repo-b"],
       workspaceRootDir: "/workspace",

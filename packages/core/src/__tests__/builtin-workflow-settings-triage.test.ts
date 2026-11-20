@@ -6,6 +6,8 @@ import {
   BUILTIN_TRIAGE_POLICY_SETTINGS,
   BUILTIN_WORKFLOW_SETTINGS,
   DEFAULT_PLANNING_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_STEP_TIMEOUT_MS,
   renderTriagePolicyPlaceholders,
 } from "../workflows/builtin-workflow-settings.js";
 import { MOVED_SETTINGS_KEYS } from "../config/moved-settings.js";
@@ -88,6 +90,14 @@ describe("workflow-native built-in workflow settings", () => {
       "reviewArbitrationProvider",
       "reviewArbitrationModelId",
       "planReviewReplanCap",
+      /*
+      FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+      The review lane's own per-attempt ceiling joins this catalog (not the moved-key one) because one
+      shared number could not fit lanes whose real durations differ by an order of magnitude. Appended
+      last: the catalog order is the Workflow Editor's render order, and inserting it mid-list would move
+      unrelated controls under a new heading for every existing workflow.
+      */
+      "workflowReviewStepTimeoutMs",
     ]);
     for (const id of ["reviewConvergenceEscalationEnabled", "reviewArbitrationEnabled"]) {
       const setting = revisionById.get(id);
@@ -123,6 +133,25 @@ describe("workflow-native built-in workflow settings", () => {
     }
     expect(revisionById.get("planReviewBlockingSeverity")?.default).toBe("high");
     expect(revisionById.get("codeReviewBlockingSeverity")?.default).toBe("critical");
+    /*
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+    The review-lane timeout is declared here, defaulted from the code-owned constant (not a literal), and
+    bounded at the same 60 s floor the engine clamps to. Two facts are worth pinning in the catalog rather
+    than only at the read site: the shared `workflowStepTimeoutMs` default is UNCHANGED (the anti-appeasement
+    clause -- a global raise would also slow hang detection in lanes that finish in minutes), and this key
+    is workflow-native, so it must never appear in the moved catalog or `MOVED_SETTINGS_KEYS`.
+    */
+    const reviewTimeout = revisionById.get("workflowReviewStepTimeoutMs");
+    expect(reviewTimeout).toMatchObject({
+      type: "number",
+      default: DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS,
+      minimum: 60_000,
+      integer: true,
+    });
+    expect(DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS).toBeGreaterThan(DEFAULT_WORKFLOW_STEP_TIMEOUT_MS);
+    expect(fullIds.has("workflowReviewStepTimeoutMs")).toBe(true);
+    expect(movedIds.has("workflowReviewStepTimeoutMs")).toBe(false);
+    expect(movedKeyIds.has("workflowReviewStepTimeoutMs")).toBe(false);
     const inlineFixes = revisionById.get("reviewerInlineFixes");
     expect(inlineFixes).toMatchObject({
       type: "boolean",
@@ -164,6 +193,25 @@ describe("workflow-native built-in workflow settings", () => {
     expect(validateSettingValuePatch(BUILTIN_REVIEW_REVISION_SETTINGS, {
       planReviewReplanCap: 0,
     }).accepted).toEqual({ planReviewReplanCap: 0 });
+  });
+
+  it("rejects a review step timeout below the 60 s floor", () => {
+    /*
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+    This refusal is why the engine's `Math.max(60_000, ...)` floor is the SECOND guard and not the first:
+    an operator cannot store an absurd value through the editor, but a hand-built settings map, a resumed
+    run, or a non-graph caller can still reach the seam, so the clamp stays. Measured while writing the
+    engine cases: a stored `1` is dropped here and the lane keeps its declaration default.
+    */
+    const rejected = validateSettingValuePatch(BUILTIN_REVIEW_REVISION_SETTINGS, {
+      workflowReviewStepTimeoutMs: 1,
+    });
+    expect(rejected.rejections).toEqual([
+      expect.objectContaining({ settingId: "workflowReviewStepTimeoutMs", code: "type-mismatch" }),
+    ]);
+    expect(validateSettingValuePatch(BUILTIN_REVIEW_REVISION_SETTINGS, {
+      workflowReviewStepTimeoutMs: 60_000,
+    }).accepted).toEqual({ workflowReviewStepTimeoutMs: 60_000 });
   });
 
   it("declares planner oversight level as a workflow-native enum outside moved/project settings", () => {

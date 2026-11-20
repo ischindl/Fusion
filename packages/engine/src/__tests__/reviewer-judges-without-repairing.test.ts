@@ -95,7 +95,7 @@ async function dispatchReview(options: {
     task,
     codeReviewStep(),
     task.worktree,
-    { workflowStepTimeoutMs: 60_000, ...(options.baseSettings ?? {}) },
+    { workflowStepTimeoutMs: 60_000, workflowReviewStepTimeoutMs: 60_000, ...(options.baseSettings ?? {}) },
     undefined,
   );
   return captured.at(-1);

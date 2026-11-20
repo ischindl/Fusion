@@ -85,7 +85,17 @@ describe("workflow-settings fallback alignment (KTD-3, item 4)", () => {
     // VALUES here are the audited read-site literals; the assertion ties each to
     // the declaration default so the table cannot silently drift.
     const audited: Record<string, unknown> = {
-      workflowStepTimeoutMs: 900_000, // executor.ts: ?? 900_000
+      workflowStepTimeoutMs: 900_000, // execute-workflow-step.ts: non-review lanes, via resolveWorkflowStepTimeoutBudget -> DEFAULT_WORKFLOW_STEP_TIMEOUT_MS
+      /*
+      FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+      The review lanes stopped reading the line above: they resolve `workflowReviewStepTimeoutMs` from the
+      MERGED effective settings through the same resolver. Neither read site inlines a literal any more --
+      case (b) above scans for `settings.<key> ?? <literal>` and finds none for either key -- so this table
+      is the only place the two armed values are written down next to each other, which is the point: the
+      shared default staying at 900 s while the review default moved is the whole anti-appeasement claim,
+      and a future edit that raises both is exactly what these two rows make visible.
+      */
+      workflowReviewStepTimeoutMs: 1_800_000, // execute-workflow-step.ts: review-type lanes, via DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS
       workflowStepScopeEnforcement: "block", // executor.ts: ?? "block"
       planOnlyScopeLeakEnforcement: "warn", // executor.ts: ?? "warn"
       workflowRevisionForkOnScopeMismatch: true, // executor.ts: !== false (default-true)

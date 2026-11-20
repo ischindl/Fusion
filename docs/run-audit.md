@@ -2041,3 +2041,66 @@ These rows sit deliberately OUTSIDE the curated delivery-pipeline catalogue that
 locks table-for-table against the category tables above: a sweep that could not inspect its own project root is
 not a step every card is expected to pass through, and a documentation **table row** for it would fail that
 test — this section is prose for exactly that reason.
+
+### The prompt-mode step that ran out of its budget (RUFU-684)
+
+`task:workflow-step-timeout` records one PROMPT-MODE workflow-step session attempt that reached its
+per-attempt budget and was disposed — one row per attempt, so a step that times out twice writes two rows,
+never one row about the step. The emitter is the timeout branch of `executeWorkflowStep`
+(`packages/engine/src/executor/execute-workflow-step.ts`), and the write is DETACHED:
+`void emitBoundedRunAudit(...)` over the FN-9175 bounded seam, never an await. A step that has already
+burned its budget must be disposed at once, so a stalled audit sink may not delay that disposal, and the
+two-attempt fail-closed contract must not become a consumer of telemetry health. `workflow-step-timeout-run-audit.test.ts`
+proves the promise behaviorally: absent, throwing, rejecting, hanging, late-resolving, and late-rejecting
+sinks all leave the returned disposition, the session disposal, and the secondary-attempt decision
+byte-identical, and raise no unhandled rejection.
+
+The event exists because the class was invisible rather than rare. Before it, the only artifact of a timeout
+was a `logEntry` line, and `tasks.log` is capped with its overflow deleted — the retention census this card
+opened with read the surviving mirrors and found 361 primary timeouts across 95 cards in the retained agent
+logs against ZERO durable rows, i.e. a lower bound, not a rate. On the same board the surviving History
+windows held 456 timeout lines and 298 second-attempt re-arms while the durable `tasks.workflowStepResults`
+carried the canonical timeout sentence in one row, because an expired primary that the secondary rescued
+then approves leaves no terminal trace at all. Nothing countable survived: neither the rate, nor its
+distribution by lane, nor whether a timeout is common or pathological, could be answered after retention.
+
+Metadata is a closed ids/counts/fixed-enum set: `{ taskId, lane, workflowStepId, attemptKind, budgetMs,
+phase, outcome }`, plus `repoRelPath` on the per-repository workspace review path, which opens one session
+per repository and so legitimately writes several rows in one episode — without that key a two-repository
+timeout would count as one. `lane` is the shared five-value vocabulary of
+`packages/core/src/workflows/workflow-step-timeout-lane.ts` (`plan-review`, `code-review`,
+`post-merge-verification`, `completion-summary`, `other-prompt-step`), and `attemptKind` is `primary`,
+`same-model-retry`, or `configured-fallback` — the same three attempts the retry contract names, so "timed
+out once" and "timed out twice" are distinguishable without reading prose. `outcome` says which side of the
+fail-closed bound the row sits on: `attempt-remaining` for a timed-out primary (one documented attempt is
+still unspent — it is NOT a claim that a second session was created, since a graph cancellation can still
+intervene) and `budget-exhausted` for a timed-out secondary. Prompt text, model output, review notes,
+findings, fingerprints, and the engine's own timeout sentence never enter the row.
+
+`lane`, `workflowStepId`, `budgetMs` and `attemptKind` are exactly what `scripts/workflow-step-timeout-census.mjs`
+needs to answer the question that motivated the card, and the census reads the same classifier through
+`@fusion/core` rather than re-deriving it: a census script cannot import the engine's executor, so an
+engine-only predicate would leave the measurement and the budget decision spelling the lanes differently by
+construction. `phase` is the node's own `pre-merge`/`post-merge`, or `unspecified` when the caller had none
+— defaulting an absent phase to `pre-merge` would turn an unknown into a claim about which side of the
+merge the attempt ran on. When no run context is available (per-repository workspace reviews, resumed runs,
+non-run callers) the row still lands under the synthetic identity `workflow-step-timeout` with run id
+`workflow-step-timeout:<taskId>:<workflowStepId>:<attemptKind>`, following RUFU-259's
+`task-comment-delivery` and FN-8600's synthetic `triage` precedent: a row that only survived when a run
+happened to be trackable would leave the population this event was created to count exactly as invisible as
+it was before.
+
+The row sits deliberately OUTSIDE the curated delivery-pipeline catalogue that
+`run-audit-catalogue.test.ts` locks table-for-table against the category tables above — a timeout is not a
+step every card is expected to pass through, and a catalogue row would imply one. This is the same placement
+as RUFU-531's `task:review-verdict-recorded`, RUFU-279's `memory:*` trio, and RUFU-462's
+`runtime:heap-ceiling`: documented here in prose, declared in the engine's `DatabaseMutationType`, kept out
+of the locked tables. To count the class, group the rows by lane and attempt kind:
+
+```sql
+SELECT metadata->>'lane', metadata->>'attemptKind', count(*)
+FROM run_audit_events
+WHERE mutation_type = 'task:workflow-step-timeout'
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+```

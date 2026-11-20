@@ -307,7 +307,7 @@ describe("FN-9172 executor run-audit emitter isolation", () => {
     };
 
     const outcome = await settleBounded(
-      () => executor.executeWorkflowStep(task, step, task.worktree, { workflowStepTimeoutMs: 60_000 }),
+      () => executor.executeWorkflowStep(task, step, task.worktree, { workflowStepTimeoutMs: 60_000, workflowReviewStepTimeoutMs: 60_000 }),
       bounded,
     );
 

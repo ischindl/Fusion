@@ -114,7 +114,7 @@ async function runStep(repliesBySession: Reply[][], options: { verdictRequired?:
     task(),
     step,
     "/tmp/fn-288-verdict",
-    { workflowStepTimeoutMs: 180_000 },
+    { workflowStepTimeoutMs: 180_000, workflowReviewStepTimeoutMs: 180_000 },
     undefined,
   );
   return { outcome, prompts, store };

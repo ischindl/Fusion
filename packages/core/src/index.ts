@@ -583,11 +583,34 @@ export {
   DEFAULT_MAX_POST_REVIEW_FIXES,
   DEFAULT_PLANNING_TIMEOUT_MS,
   DEFAULT_PLAN_REVIEW_REPLAN_CAP,
+  DEFAULT_WORKFLOW_STEP_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS,
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
   MEMORY_CONSOLIDATION_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
 } from "./workflows/builtin-workflow-settings.js";
+/*
+FNXC:WorkflowStepTimeoutLane 2026-11-18-02:25 (RUFU-684): the one lane vocabulary the executor's budget
+decision, the `task:workflow-step-timeout` audit row and scripts/workflow-step-timeout-census.mjs share.
+Exported from the package barrel so an operator script reaches it through the same staged-dist seam every
+other core helper uses instead of re-spelling the classification.
+*/
+export {
+  WORKFLOW_STEP_TIMEOUT_LANES,
+  WORKFLOW_STEP_TIMEOUT_FLOOR_MS,
+  asWorkflowStepTimeoutLane,
+  isPlanReviewPromptStep,
+  isReviewTypePromptStep,
+  classifyWorkflowPromptStepLane,
+  resolveWorkflowStepTimeoutBudget,
+} from "./workflows/workflow-step-timeout-lane.js";
+export type {
+  WorkflowStepTimeoutLane,
+  WorkflowStepTimeoutKnob,
+  WorkflowStepTimeoutBudget,
+  WorkflowPromptStepInput,
+} from "./workflows/workflow-step-timeout-lane.js";
 export {
   BUILTIN_SEAM_PROMPTS,
   builtinPromptConfig,

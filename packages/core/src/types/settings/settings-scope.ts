@@ -2818,6 +2818,19 @@ export interface Settings extends GlobalSettings, ProjectSettings {
    *  or node `maxRevisions` budget is a stricter, earlier gate and wins. Unset uses
    *  {@link DEFAULT_PLAN_REVIEW_REPLAN_CAP}; `0` parks on the first REVISE. */
   planReviewReplanCap?: number;
+  /** Wall-clock timeout (ms) for ONE session attempt of a review-type prompt step (Plan Review, Code
+   *  Review, Browser Verification, Post-merge verification, and any step whose declared name marks it a
+   *  review or verification surface).
+   *
+   *  FNXC:WorkflowStepTimeoutLane 2026-11-18-02:25 (RUFU-684):
+   *  Workflow-native like `planningTimeoutMs` above — it never lived in project or global settings and
+   *  must never be added to `MOVED_SETTINGS_KEYS`. It exists because one shared number did not fit every
+   *  lane: the review lanes hit the 900 s ceiling as their COMMON case while execution, completion-summary
+   *  and post-merge attempts finish in minutes, so the ceiling was simultaneously too small for reviews
+   *  (each miss disposes a full-length session and re-runs the whole attempt) and about the right size for
+   *  everything else. Non-review lanes keep reading `workflowStepTimeoutMs` unchanged. Unset uses
+   *  {@link DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS}; the per-session-attempt floor stays 60 s either way. */
+  workflowReviewStepTimeoutMs?: number;
   /** Index signature for dynamic settings access */
   [key: string]: unknown;
 }

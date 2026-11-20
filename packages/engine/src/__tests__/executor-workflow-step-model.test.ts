@@ -589,6 +589,7 @@ describe("executor workflow-step model resolution", () => {
         validatorProvider: "primary-provider",
         validatorModelId: "primary-model",
         workflowStepTimeoutMs: 60_000,
+        workflowReviewStepTimeoutMs: 60_000,
         ...fallbackSettings,
       },
       [
@@ -639,6 +640,7 @@ describe("executor workflow-step model resolution", () => {
         validatorFallbackProvider: "fallback-provider",
         validatorFallbackModelId: "fallback-model",
         workflowStepTimeoutMs: 60_000,
+        workflowReviewStepTimeoutMs: 60_000,
       },
       [
         { kind: "pending" },

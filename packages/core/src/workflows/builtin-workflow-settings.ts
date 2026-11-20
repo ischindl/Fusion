@@ -15,6 +15,39 @@ FNXC:PlanReviewReplan 2026-09-13-04:34:
 `planReviewReplanCap` remains the operator-configurable Plan Review ceiling and 15 remains its legacy fallback. Runtime admission chooses the lower of this value, an explicit revision budget, and the shared absolute review backstop; operators can tighten the policy but cannot raise it above the safety boundary.
 */
 export const DEFAULT_PLAN_REVIEW_REPLAN_CAP = 15;
+
+/*
+FNXC:WorkflowStepTimeoutLane 2026-11-18-02:25 (RUFU-684):
+Single source for the shared prompt-mode step ceiling, same shape as DEFAULT_PLANNING_TIMEOUT_MS above:
+the declaration default and the engine's read site must not drift into two literals. 900 s is the
+long-standing value and stays unchanged — raising it globally was explicitly rejected (it would also
+bound execution, completion-summary and post-merge attempts, delaying detection of a genuinely hung
+session in lanes whose work is minutes long).
+*/
+export const DEFAULT_WORKFLOW_STEP_TIMEOUT_MS = 900_000;
+
+/*
+FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+The review lane's own per-session-attempt ceiling, so fitting it cannot slow hang detection in the lanes
+that finish in minutes. FITTED from the durable census this card added (`scripts/workflow-step-timeout-census.mjs`, RunFusion
+board, 1047 cards / 1072 persisted gate episodes):
+ - among the episodes that delivered inside ONE armed 900 s budget, Code Review runs p50 8 m / p90 13 m /
+   p95 14 m and its MAX equals the ceiling exactly (Plan Review 5/9/11 m, Post-merge verification 6/11/12 m,
+   same pinning). A distribution whose top percentile ends 60 s below the cut and whose max sits ON the cut
+   is clipped by it, not slack under it -- the surviving p95 is a floor for the real one;
+ - 54 of 1072 episodes (5.0 %) needed more than one armed budget, i.e. held at least one disposed session:
+   Code Review 28/380 (7.4 %), Plan Review 22/598 (3.7 %), Post-merge verification 4/94 (4.3 %);
+ - observed episode wall time for Code Review is p50 19 m, max 64 m today, i.e. the lane already spans more
+   than two 900 s budgets when it needs to.
+So 30 m = 2x the shared budget: one clean multiple an operator can read against the knob it replaces, with
+headroom for the censored tail. Worst case stays inside the documented contract -- two sequential attempts,
+60 m -- which is what this lane's own measured maximum already costs. The rejected alternative (fit the
+review lane's MODEL so attempts finish inside 900 s) is recorded in the engine's FNXC note and in the PR:
+the census shows timeouts spread across all three review lanes and both secondary-attempt kinds, and the
+durable gate rows carry no model identity at all, so nothing in the durable sources supports a
+model-identity explanation. `workflowStepTimeoutMs` stays 900 s exactly for that reason.
+*/
+export const DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS = 1_800_000;
 import {
   DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
   DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
@@ -79,9 +112,14 @@ export const BUILTIN_MOVED_WORKFLOW_SETTINGS: WorkflowSettingDefinition[] = [
     /*
      * FNXC:WorkflowReview 2026-07-01-08:09:
      * Code Review steps can exceed the old six-minute default on ordinary dashboard changes. Use a fifteen-minute workflow-step default so every project without an override gets enough reviewer time while keeping runaway sessions bounded.
+     *
+     * FNXC:WorkflowStepTimeoutLane 2026-11-18-02:25 (RUFU-684):
+     * The literal moved to DEFAULT_WORKFLOW_STEP_TIMEOUT_MS so this declaration and the engine read site
+     * share one number. The value is UNCHANGED on purpose: review lanes now read their own knob, so a
+     * global raise would have paid for the review lane by slowing down hang detection everywhere else.
      */
-    default: 900_000,
-    description: "Maximum time a single workflow step may run before it is timed out.",
+    default: DEFAULT_WORKFLOW_STEP_TIMEOUT_MS,
+    description: "Maximum time a single workflow step may run before it is timed out. Review-type steps use workflowReviewStepTimeoutMs instead.",
   },
   {
     id: "workflowStepScopeEnforcement",
@@ -684,6 +722,26 @@ export const BUILTIN_REVIEW_REVISION_SETTINGS: WorkflowSettingDefinition[] = [
      */
     description:
       "Maximum automatic plan → REVISE → replan iterations before manual approval. Leave unset to use the built-in default; set 0 to require approval after the first REVISE.",
+  },
+  {
+    id: "workflowReviewStepTimeoutMs",
+    name: "Review step timeout (ms)",
+    type: "number",
+    minimum: 60_000,
+    integer: true,
+    /*
+     * FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+     * Workflow-native like `planningTimeoutMs` in the triage catalog: it never lived in project/global
+     * settings and must
+     * never be added to MOVED_SETTINGS_KEYS. It exists because one shared ceiling cannot fit lanes whose
+     * real durations differ by an order of magnitude -- see the measurement on
+     * DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS. Bounds one session ATTEMPT of a review-type step, so a
+     * review that needs both documented attempts still costs two of these budgets; it does not bound the
+     * card and does not widen the notes/verdict repair windows, which keep their own caps.
+     */
+    default: DEFAULT_WORKFLOW_REVIEW_STEP_TIMEOUT_MS,
+    description:
+      "Maximum time a single review-type step attempt may run before its session is disposed. Applies to Plan Review, Code Review, Browser/Post-merge verification and other review-type steps only; every other step keeps the shorter workflowStepTimeoutMs, so a hung execution or summary session is still detected at 15 minutes.",
   },
 ];
 

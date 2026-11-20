@@ -14,6 +14,7 @@ import type {
   Settings,
   Task,
   TaskStore,
+  WorkflowPromptStepInput,
   WorkflowReviewKind,
   WorkflowStep,
   WorkflowStepResult,
@@ -30,6 +31,7 @@ import {
   resolveExecutorFallbackModel,
   resolvePersistAgentThinkingLog,
   resolveReviewBlockingSeverity,
+  resolveWorkflowStepTimeoutBudget,
   resolveWorkflowStepVerdictRequirement,
   requiresContentReviewProof,
   resolveValidatorFallbackModel,
@@ -136,6 +138,18 @@ const execAsync = promisify(exec);
 
 export const WORKFLOW_STEP_NOTES_REPAIR_TIMEOUT_MS = 120_000;
 export const WORKFLOW_STEP_VERDICT_REPAIR_TIMEOUT_MS = 120_000;
+
+/*
+FNXC:WorkflowStepTimeoutLane 2026-11-19-05:38 (RUFU-684):
+Identity and enum constants for the `task:workflow-step-timeout` row. The synthetic agent identity exists
+so a timed-out attempt is still counted when the caller has no run context (per-repository workspace
+reviews and non-run callers routinely do not) -- a row that only lands when a run happened to be
+trackable would leave the exact population this event was created to measure invisible. The phase value
+names what the caller actually omitted: `WorkflowStep.phase` is optional, and defaulting it to
+`pre-merge` would turn an unknown into a claim about which side of the merge the attempt ran on.
+*/
+const WORKFLOW_STEP_TIMEOUT_AUDIT_AGENT_ID = "workflow-step-timeout";
+const WORKFLOW_STEP_TIMEOUT_PHASE_UNSPECIFIED = "unspecified";
 
 type WorkflowStepNotesRepairOutcome = "repaired" | Exclude<WorkflowStepVerdictNoNotesReason, "reused-empty">;
 type WorkflowStepVerdictRepairOutcome = "repaired" | "empty" | "timed-out" | "failed-soft" | "unavailable";
@@ -984,7 +998,36 @@ CRITICAL SCOPING RULES — read before doing anything else:
       : "settings.executionFallbackProvider/executionFallbackModelId or fallbackProvider/fallbackModelId";
     const fallbackLaneLabel = isReviewTypeWorkflowStep ? "validator" : "executor";
 
-    const timeoutMs = Math.max(60_000, settings.workflowStepTimeoutMs ?? 900_000);
+    /*
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-05:38 (RUFU-684):
+    The prompt-mode timeout was previously ONE project-wide number that the engine read inline, and the
+    only durable record of a session that ran past it was a task-log line that log retention later deletes.
+    The lane and the budget now come from one call into the code-owned vocabulary in
+    `packages/core/src/workflows/workflow-step-timeout-lane.ts`, so the budget decision, the
+    `task:workflow-step-timeout` audit row, and `scripts/workflow-step-timeout-census.mjs` cannot disagree
+    about which lane a step belongs to -- a census script cannot import this executor, so an engine-only
+    classifier would leave the measurement and the fix spelling the lanes differently by construction.
+
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+    The budget is resolved from `effectiveReviewSettings`, NOT from the `settings` argument. Graph
+    execution hands this method the raw project settings map, in which a workflow-owned key is absent
+    (FNXC:WorkflowReviewers 2026-09-03-05:40 above records the same trap for `reviewerInlineFixes`), so
+    reading the raw map would have made an operator's stored `workflowReviewStepTimeoutMs` unreachable and
+    left the declaration default as the only reachable value. For a non-review step
+    `effectiveReviewSettings` IS `settings`, so the non-review budget is untouched by this call.
+    */
+    const timeoutLaneInput: WorkflowPromptStepInput = {
+      nodeId: workflowStep.id,
+      stepId: effectiveWorkflowStepId,
+      name: workflowStep.name,
+      phase: workflowStep.phase,
+      optionalGroupId,
+      reviewKind: workflowStepMetadata.reviewKind,
+      reviewCanFixInline: workflowStepMetadata.reviewCanFixInline,
+    };
+    const timeoutBudget = resolveWorkflowStepTimeoutBudget(effectiveReviewSettings, timeoutLaneInput);
+    const timeoutLane = timeoutBudget.lane;
+    const timeoutMs = timeoutBudget.timeoutMs;
     const dispatchLabel = stepOptions?.dispatchLabel?.trim() || undefined;
 
     /*
@@ -1006,6 +1049,44 @@ CRITICAL SCOPING RULES — read before doing anything else:
       if (attempt.kind === "configured-fallback") return "configured fallback";
       if (attempt.kind === "same-model-retry") return "same-model retry";
       return "primary";
+    };
+
+    /*
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-05:38 (RUFU-684):
+    One durable row per timed-out prompt-mode session attempt. The row is what makes the class countable:
+    task-log retention (1000 entries, overflow deleted) removed every historical timeout line this card was
+    opened with, so the timeout RATE could not be recovered or trended at all.
+
+    The emit is deliberately DETACHED -- a stalled audit sink may not delay the disposal of a session that
+    has already overrun its budget, and the two-attempt fail-closed contract must not become a consumer of
+    telemetry health. A live run context is preferred so the row correlates to the dispatch that spent the
+    budget; when there is none (per-repository workspace reviews, resumed runs, non-run callers) the row
+    still lands under a synthetic identity, because dropping it on the floor is the exact gap this event
+    exists to close (precedents: RUFU-259 `task-comment-delivery`, FN-8600's synthetic `triage` run).
+    */
+    const emitStepTimeoutAudit = (attempt: Attempt): void => {
+      const context = deps.getRunContextFor(task.id);
+      void emitBoundedRunAudit(deps.store, {
+        taskId: task.id,
+        agentId: context?.agentId ?? WORKFLOW_STEP_TIMEOUT_AUDIT_AGENT_ID,
+        runId: context?.runId
+          ?? `workflow-step-timeout:${task.id}:${sameGateStepId}:${attempt.kind}`,
+        domain: "database",
+        mutationType: "task:workflow-step-timeout",
+        target: task.id,
+        metadata: {
+          taskId: task.id,
+          lane: timeoutLane,
+          workflowStepId: sameGateStepId,
+          attemptKind: attempt.kind,
+          budgetMs: timeoutMs,
+          phase: workflowStep.phase ?? WORKFLOW_STEP_TIMEOUT_PHASE_UNSPECIFIED,
+          // Fixed two-value enum: a timed-out primary leaves one of the two documented attempts unspent;
+          // a timed-out secondary spends the fail-closed bound. Neither value claims a session was created.
+          outcome: attempt.kind === "primary" ? "attempt-remaining" : "budget-exhausted",
+          ...(dispatchLabel ? { repoRelPath: dispatchLabel } : {}),
+        },
+      });
     };
 
     const runOnce = async (
@@ -1451,6 +1532,8 @@ CRITICAL SCOPING RULES — read before doing anything else:
           await accumulateSessionTokenUsage(deps.store, task.id, session, { agentId: task.assignedAgentId ?? undefined, role: "executor", lane: "workflow-step" });
           try { session.dispose(); } catch { /* best-effort */ }
           await agentLogger.flush();
+          // Detached: telemetry about an expired attempt must never delay or reshape its disposition.
+          emitStepTimeoutAudit(attempt);
           return {
             success: false,
             error: `workflow step timed out after ${timeoutMs}ms`,

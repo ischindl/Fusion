@@ -404,7 +404,16 @@ async function startGraphScenario(
 
   const settings = {
     experimentalFeatures: { workflowGraphExecutor: true },
+    /*
+    FNXC:WorkflowStepTimeoutLane 2026-11-19-06:45 (RUFU-684):
+    Both knobs are armed at the same 60 s. Every scenario in this file is a review-type gate, and a
+    review-type step now resolves `workflowReviewStepTimeoutMs`; a fixture arming only the shared
+    `workflowStepTimeoutMs` would silently give these scenarios a 30-minute budget and this file's whole
+    subject -- "the primary attempt expires, exactly one secondary is armed" -- would stop being tested.
+    Arming both keeps the intent ("the budget this step runs on is 60 s") true for either resolution path.
+    */
     workflowStepTimeoutMs: 60_000,
+    workflowReviewStepTimeoutMs: 60_000,
     validatorProvider: "validator-provider",
     validatorModelId: "validator-model",
     executionProvider: "executor-provider",

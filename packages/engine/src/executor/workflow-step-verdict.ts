@@ -214,7 +214,9 @@ export interface WorkflowStepOutcome {
   supersededFindingSourceWorkflowStepId?: string;
   /** Explicit prior-lane finding IDs this review step claims are now superseded. */
   supersededFindingIds?: string[];
-  /** Set when the call exceeded `settings.workflowStepTimeoutMs`. Signals the
+  /** Set when the call exceeded its lane's per-attempt budget --
+   *  `settings.workflowReviewStepTimeoutMs` for a review-type step, otherwise
+   *  `settings.workflowStepTimeoutMs` (resolved by `resolveWorkflowStepTimeoutBudget`). Signals the
    *  caller to escalate to the fallback model rather than treat the failure
    *  as a generic revision request. */
   timedOut?: boolean;
