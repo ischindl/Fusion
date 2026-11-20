@@ -19,6 +19,18 @@ export type ReportHealthBucket =
    */
   | "delivery-skipped"
   | "stuck"
+  /**
+   * FNXC:ReportsHealth 2026-11-20-02:16 (RUFU-783):
+   * The lane says `running` and its last delivered heartbeat is old, but NOTHING on the row or in the run
+   * registry says work is open: no unclosed run, or a run whose `fn_heartbeat_done` the engine already
+   * accepted, and no session behind it. That is a bookkeeping desync the reclaim owns, not a lane the
+   * operator or a manager must chase — so the bucket is non-actionable: no bold, no `stuck`/`stale`
+   * substring, and it joins no `hasStale` / `hasStuck` / `hasOperatorActionable` set. Before it existed,
+   * the only word for this shape was `**stuck**`, and the manager's prompt paired with it ordered "create a
+   * follow-up task to investigate" for a colleague that had finished its round minutes earlier (measured on
+   * a 1 h lane: the badge survived the whole cadence).
+   */
+  | "desynced"
   | "paused"
   | "operator-actionable"
   | "rate-limited";
@@ -57,6 +69,19 @@ export interface ReportHealthInput {
    * too-old fire — and the row falls through to the ordinary verdicts.
    */
   deliverySkip?: ReportHealthDeliverySkip | null;
+  /**
+   * RUFU-783: positive evidence about the RUN behind a `running` badge, all three derived by the caller —
+   * the classifier deliberately sees no store and no `metadata`:
+   * - `hasUnclosedRun`: the registry still holds an `active` run row for this agent.
+   * - `hasAcceptedDone`: that row carries the engine's acknowledgement that the run said it was finished
+   *   (`hasAcceptedHeartbeatDone` on its `resultJson`, the one predicate that owns the question).
+   * - `hasLiveSession`: this process holds a heartbeat run in flight for the agent.
+   * Absent means unknown, and unknown is NOT evidence: `stuck` is withheld and the row lands in `desynced`.
+   * Age may still excuse a lane from ever being judged; nothing about age can substitute for proof.
+   */
+  hasUnclosedRun?: boolean;
+  hasAcceptedDone?: boolean;
+  hasLiveSession?: boolean;
 }
 
 export interface ReportHealthClassification {
@@ -186,8 +211,30 @@ export function classifyReportHealth(input: ReportHealthInput): ReportHealthClas
       };
     }
   }
+  /*
+  FNXC:ReportsHealth 2026-11-20-02:16 (RUFU-783):
+  `**stuck**` used to be two fields: a `running` state column and an age past twice the heartbeat timeout.
+  Those two are true of a healthy lane every time a durable agent finishes a round and the engine has not
+  settled its row, which is how a report lane on a 1 h cadence spent an hour ordered investigated. Age is
+  still what EXCUSES a lane from judgement — below `heartbeatTimeoutMs × 2` nothing here fires — but the
+  verdict itself now needs one of two proofs:
+  - the registry still holds a run for this agent that was never closed and never acknowledged finished, or
+  - a session in this process is genuinely in flight behind the badge.
+  With neither, the honest word is `desynced`: the badge is wrong, the reclaim owns it, and a manager has
+  nothing to do. The accepted-done case says so in the cell because "finished, awaiting reclaim" is the fact
+  a human reading the table needs, not a hedge.
+  */
   if (input.state === "running" && input.heartbeatAgeMs > input.heartbeatTimeoutMs * 2) {
-    return { bucket: "stuck", cellText: "**stuck**" };
+    const unclosedRunProven = input.hasUnclosedRun === true && input.hasAcceptedDone !== true;
+    if (unclosedRunProven || input.hasLiveSession === true) {
+      return { bucket: "stuck", cellText: "**stuck**" };
+    }
+    return {
+      bucket: "desynced",
+      cellText: input.hasAcceptedDone === true
+        ? "done accepted, engine reclaim pending"
+        : "no live run behind the running badge",
+    };
   }
   if ((input.state === "active" || input.state === "idle") && input.heartbeatAgeMs > input.staleThresholdMs) {
     return { bucket: "stale", cellText: "**stale**" };

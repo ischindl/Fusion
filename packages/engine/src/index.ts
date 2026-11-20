@@ -1136,6 +1136,18 @@ silently dropped at one boundary and the tick that earned the cheap turn quietly
 `asWakeSignalKind` makes drift impossible rather than merely undesirable.
 */
 export { asWakeSignalKind, isIdleLadderEligibleWakeSignal, type WakeSignalKind } from "./heartbeat-wake-signals.js";
+/*
+FNXC:HeartbeatTerminalBoundary 2026-11-20-01:07 (RUFU-783):
+`hasAcceptedHeartbeatDone` is public for the same reason the wake gate reads it: the reclaim that decides
+whether an aged `active` row is crash residue or finished work, and the health classifier that must stop
+calling a healthy idle lane `**stuck**`, both need the SAME answer to "did this run say it was done?".
+Any surface that instead infers it from elapsed time is the defect this card removes.
+*/
+export {
+  hasAcceptedHeartbeatDone,
+  HEARTBEAT_DONE_ACCEPTED_FIELD,
+  HEARTBEAT_DONE_AT_FIELD,
+} from "./heartbeat-wake-signals.js";
 export { TokenCapDetector, type TokenCapCheckResult } from "./errors/token-cap-detector.js";
 /*
 FNXC:ChatContextGuard 2026-08-18-18:06:

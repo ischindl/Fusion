@@ -897,6 +897,76 @@ describe("executeHeartbeat", () => {
       expect(section).not.toContain("delivery skipped");
     });
 
+    /*
+    FNXC:ReportsHealth 2026-11-20-02:18 (RUFU-783):
+    The reported badge itself, driven through the table a manager actually reads. On a 1 h report lane the
+    engine accepted the run's `fn_heartbeat_done`, never closed the row, and this section rendered
+    `| Audit Executor | running | — | 3m ago | **stuck** |` followed by "create a follow-up task to
+    investigate" — for an hour, on every heartbeat, about a colleague that had finished its round. Both
+    halves of the defect are asserted here: the cell must carry the reclaim-pending wording with no bold and
+    no `stuck`, and the section must not order an investigation. The interval is the reported 1 h cadence and
+    the timeout stays the default 60 000 ms, so the age is past twice the timeout exactly as reported — no
+    threshold is tuned to make this pass.
+    */
+    it("RUFU-783: a running lane with no run behind it renders a non-actionable cell and no investigation line", async () => {
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      const aged = new Date(Date.now() - 3 * 60_000).toISOString();
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        {
+          id: "agent-report-lane",
+          name: "Audit Executor",
+          state: "running",
+          taskId: null,
+          lastHeartbeatAt: aged,
+          updatedAt: aged,
+        } as unknown as Agent,
+      ]);
+      vi.mocked(store.getActiveHeartbeatRun).mockResolvedValue(null);
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Audit Executor \| running \| — \| .* \| no live run behind the running badge \|/);
+      expect(section).not.toContain("**stuck**");
+      expect(section).not.toContain("create a follow-up task to investigate");
+      // The verdict has to stay diagnosable from the log alone, and its literal is distinct from `stale`.
+      expect(heartbeatLog.log).toHaveBeenCalledWith(
+        expect.stringContaining("[reports-health] running badge with no open run agent-report-lane hasUnclosedRun=false"),
+      );
+      expect(heartbeatLog.log).not.toHaveBeenCalledWith(expect.stringContaining("[reports-health] stale report agent-report-lane"));
+    });
+
+    it("RUFU-783: an accepted-done lane says so, and an open run with no done is still stuck", async () => {
+      const store = createStoreWithAgentForExec();
+      wireSuppressedLaneStore(store);
+      const aged = new Date(Date.now() - 3 * 60_000).toISOString();
+      vi.mocked(store.getAgentsByReportsTo).mockResolvedValue([
+        { id: "agent-a", name: "Closed Acknowledged", state: "running", taskId: null, lastHeartbeatAt: aged, updatedAt: aged } as unknown as Agent,
+        { id: "agent-b", name: "Open No Ack", state: "running", taskId: null, lastHeartbeatAt: aged, updatedAt: aged } as unknown as Agent,
+      ]);
+      // One store, two lanes: the run read is per-agent, which is what makes the two cells disagree.
+      vi.mocked(store.getActiveHeartbeatRun).mockImplementation(async (agentId: string) =>
+        agentId === "agent-a"
+          ? { id: "run-a", agentId, status: "active", startedAt: aged, resultJson: { heartbeatDoneAccepted: true } } as unknown as AgentHeartbeatRun
+          : { id: "run-b", agentId, status: "active", startedAt: aged, resultJson: {} } as unknown as AgentHeartbeatRun,
+      );
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+
+      expect(section).toMatch(/\| Closed Acknowledged \| running \| — \| .* \| done accepted, engine reclaim pending \|/);
+      expect(section).toMatch(/\| Open No Ack \| running \| — \| .* \| \*\*stuck\*\* \|/);
+      /*
+      FNXC:ReportsHealth 2026-11-20-02:19 (RUFU-783):
+      The relief stays targeted: the lane with a genuinely open run still earns the FN-8410 live-work check
+      (that is the `stuck` instruction in this section — the "create a follow-up task" line belongs to
+      `stale`). A desynced row contributes no line of its own; only this proof-backed sibling produces one.
+      */
+      expect(section).toContain("For **stuck** reports: first check task-log/step progress");
+      expect(section).not.toContain("create a follow-up task to investigate");
+    });
+
     it("buildReportsHealthSection preserves AgentStore method binding for direct-report lookups", async () => {
       const now = new Date().toISOString();
       const report = { id: "agent-004", name: "bound-report", state: "active", taskId: "FN-102", reportsTo: "agent-001", lastHeartbeatAt: now, updatedAt: now } as Agent;

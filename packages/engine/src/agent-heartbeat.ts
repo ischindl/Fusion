@@ -33,8 +33,11 @@ import {
   collectRoomSignal,
   collectWakeSignals,
   filterResolvableAssignedTasks,
+  hasAcceptedHeartbeatDone,
   isIdleLadderEligibleWakeSignal,
   parseHeartbeatWakeCursor,
+  HEARTBEAT_DONE_ACCEPTED_FIELD,
+  HEARTBEAT_DONE_AT_FIELD,
   type WakeRoomSignal,
   type WakeSignalKind,
 } from "./heartbeat-wake-signals.js";
@@ -247,6 +250,76 @@ FNXC:HeartbeatTerminalBoundary 2026-10-13-02:14:
 A heartbeat completion is a user-visible terminal boundary, not a suggestion for the provider. Pi only honors a tool batch's terminate hint when every result opts in, so the monitor owns a completion latch and aborts the session after the completion tool settles. This prevents mixed batches or a non-cooperative provider from buying another turn after fn_heartbeat_done.
 */
 const MAX_HEARTBEAT_TOOL_CALLS = 100;
+
+/*
+FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783):
+The sentinel identity `HeartbeatTriggerScheduler.start()` tests to announce that its in-process session
+guard is dead. A module-level sentinel rather than `undefined`, because an unwired seam has to be
+distinguishable from a wired one at runtime: this program has been bitten five times by a function nobody
+called or a parameter nobody passed, and each behaved exactly like the feature being absent.
+*/
+const UNWIRED_IN_PROCESS_SESSION_GUARD = (): boolean => false;
+
+/**
+ * Move a persisted `running` badge to `active` once the run behind it is closed.
+ *
+ * FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783):
+ * Shared by the done boundary, the orphan reconcile, and the scheduler's reclaim because all three now
+ * close the same shape of row, and a badge that only SOME closers settle is the RUFU-783 symptom itself:
+ * `running` with nothing running. It refuses rather than guesses — no agent row, or any state other than
+ * `running`, leaves the row untouched, which is what keeps every pause out of reach from here.
+ */
+async function settleRunningBadgeAfterRunClose(store: AgentStore, agentId: string): Promise<void> {
+  const agent = await store.getAgent(agentId);
+  if (!agent || agent.state !== "running") return;
+  if (typeof store.updateAgentState !== "function") return;
+  await store.updateAgentState(agentId, "active");
+  heartbeatLog.log(
+    `Heartbeat done settle agentId=${agentId} running -> active source=heartbeat-done`,
+  );
+}
+
+/**
+ * Close a run whose agent reported finished, as the completed run the evidence says it was.
+ *
+ * FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783):
+ * `completed`, never `terminated`: `endHeartbeatRun` records a `missed` heartbeat for a terminated close,
+ * so closing finished work that way would trade one false signal (a lane stuck at `running`) for another
+ * (a lane that missed its beat). Module-level rather than a monitor method because the scheduler reclaims
+ * rows too and owns no session ledger — two copies of the closing rule is how a boundary drifts.
+ *
+ * The settle step is injected: only a caller that can see whether THIS process still holds the lane may
+ * decide the badge is safe to move.
+ */
+async function closePersistedRunAtDoneBoundary(
+  store: AgentStore,
+  agentId: string,
+  runId: string,
+  settleAgentState: (agentId: string, runId: string) => Promise<void>,
+): Promise<void> {
+  const run = await store.getRunDetail(agentId, runId);
+  if (!run) {
+    heartbeatLog.warn(`Heartbeat done close refused reason=no-run-detail agentId=${agentId} runId=${runId}`);
+    return;
+  }
+  if (run.status !== "active") {
+    /*
+    Close-once, in both directions: an operator `stopRun`, a competing close, or a duplicate
+    `fn_heartbeat_done` under one runId must never turn a recorded terminal boundary into a second success
+    story.
+    */
+    heartbeatLog.log(
+      `Heartbeat done close skipped reason=already-terminal status=${run.status} agentId=${agentId} runId=${runId}`,
+    );
+    return;
+  }
+  await store.endHeartbeatRun(runId, "completed");
+  await settleAgentState(agentId, runId);
+  heartbeatLog.log(
+    `Heartbeat run closed at done boundary agentId=${agentId} runId=${runId} source=heartbeat-done`,
+  );
+}
+
 
 /*
 FNXC:HeartbeatRecovery 2026-07-11-00:00:
@@ -2277,6 +2350,17 @@ export class HeartbeatMonitor {
             heartbeatLog.log(
               `Heartbeat stale-run reap withheld reason=${heartbeatRunOwnerReasonCode(ownerVerdict)} agentId=${agent.id} runId=${activeRun.id}`,
             );
+          } else if (hasAcceptedHeartbeatDone(activeRun.resultJson)) {
+            /*
+            FNXC:HeartbeatTerminalBoundary 2026-11-20-01:07 (RUFU-783):
+            Same rule as the scheduler's reap, in the sweep that settles persisted `running` rows: an
+            accepted done is positive evidence of finished work, so the `heartbeatTimeoutMs × 3` work
+            budget is not what decides this row's fate. Closing it as `completed` (not `terminated`) keeps
+            the heartbeat event `ok`, and the reconcile below still settles the agent and logs its own
+            line, so nothing about the operator-visible story of this card changes except the verdict.
+            */
+            await this.closeHeartbeatRunAtDoneBoundary(agent.id, activeRun.id);
+            reason = "accepted done never closed the run";
           } else if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs > timeoutMs * 3) {
             try {
               await terminatePersistedHeartbeatRun(
@@ -2509,6 +2593,191 @@ export class HeartbeatMonitor {
     return run;
   }
 
+  /*
+  FNXC:HeartbeatTerminalBoundary 2026-11-20-01:07 (RUFU-783):
+
+  WHY THE COMPLETION BOUNDARY OWNS ITS OWN CLOSER.
+
+  `fn_heartbeat_done` is the heartbeat's terminal boundary: the agent said, in the run log, that its work
+  is finished. Until now accepting that line changed only an in-process boolean (`heartbeatCompletionLatched`)
+  and aborted the session, while every durable consequence — the acknowledgement on the run row, the
+  terminal `saveRun`, the agent leaving `running` — sat AFTER the awaited provider prompt in
+  `executeHeartbeat`. A session that never settles after the abort therefore loses all of it. Measured on
+  `agent-3ac88b82` (Audit Executor, cadence 3 600 000 ms): the run log ended with `fn_heartbeat_done`, the
+  row stayed `status: "active"` and the agent stayed `state: "running"`, and the only thing that ever
+  closed them was the cadence reclaim — `reason=orphaned-run-reaped elapsedMs=1502675`, then a second reap
+  at `elapsedMs=3600565` — while Reports Health rendered `**stuck**` and told a manager agent to file an
+  investigation task against a healthy, idle lane.
+
+  So the writes that express "this run is over" move to the boundary that proves it. The cadence sweeps
+  stay, demoted to what a reclaim is for: a crash backstop, reached only when no boundary ran.
+
+  Ordering inside the boundary is the contract:
+  1. the acknowledgement FIRST, so any other reader (the reclaim, the classifier, a later wake gate) sees
+     positive evidence of accepted work before it sees a terminal row;
+  2. the row closed as `completed`, which records a healthy heartbeat rather than the `missed` event a
+     `terminated` close would write;
+  3. the agent settled out of `running`.
+  Every step is refuse-don't-overwrite: a row that is already terminal (an operator `stopRun`, a competing
+  close) is left exactly as it is, because the close-once fence is what keeps a late settle from laundering
+  an operator-visible cancel into a success.
+  */
+
+  /**
+   * Persist the accepted-done acknowledgement onto the run row without touching its status or `endedAt`.
+   *
+   * Read-modify-write on purpose: the completion path owns this `resultJson` and writes it wholesale much
+   * later, so the boundary may only ADD its own keys. Never throws — an acknowledgement that cannot be
+   * written must not turn an accepted completion into a failed tool call.
+   */
+  private async persistHeartbeatDoneAcknowledgement(agentId: string, runId: string, summary?: string): Promise<void> {
+    try {
+      const run = await this.store.getRunDetail(agentId, runId);
+      if (!run) {
+        heartbeatLog.warn(`Heartbeat done ack refused reason=no-run-detail agentId=${agentId} runId=${runId}`);
+        return;
+      }
+      if (hasAcceptedHeartbeatDone(run.resultJson)) {
+        // Close-once: a repeat `fn_heartbeat_done` under one runId must not re-stamp the boundary instant.
+        return;
+      }
+      const acceptedAt = new Date().toISOString();
+      await this.store.saveRun({
+        ...run,
+        resultJson: {
+          ...(run.resultJson ?? {}),
+          [HEARTBEAT_DONE_ACCEPTED_FIELD]: true,
+          [HEARTBEAT_DONE_AT_FIELD]: acceptedAt,
+          ...(!run.resultJson?.summary && summary ? { summary } : {}),
+        },
+      });
+      heartbeatLog.log(
+        `Heartbeat done ack recorded agentId=${agentId} runId=${runId} acceptedAt=${acceptedAt} source=heartbeat-done`,
+      );
+    } catch (ackErr) {
+      heartbeatLog.warn(
+        `Heartbeat done ack refused reason=write-failed agentId=${agentId} runId=${runId} error=${ackErr instanceof Error ? ackErr.message : String(ackErr)}`,
+      );
+    }
+  }
+
+  /**
+   * Close the run whose agent declared the work finished, and settle the agent out of `running`.
+   *
+   * `completed`, never `terminated`: `endHeartbeatRun` records a `missed` heartbeat for a terminated
+   * close, so closing finished work that way would replace one false signal (a lane stuck at `running`)
+   * with another (a lane that missed its heartbeat). The accepted done is the evidence that this run
+   * reported in on time.
+   */
+  private async closeHeartbeatRunAtDoneBoundary(agentId: string, runId: string): Promise<void> {
+    await closePersistedRunAtDoneBoundary(this.store, agentId, runId, (a, r) =>
+      this.settleAgentStateAfterRunClose(a, r),
+    );
+  }
+
+  /**
+   * Settle a persisted `running` badge once its run is closed.
+   *
+   * Deliberately narrower than `reconcileOrphanedRunningAgents`: no `clearRunState`, because the session
+   * that just finished may still be alive in this process, and clearing here would release the wake-goal
+   * claim a live run owns. The run's own tail (or the next `startRun` cleanup) keeps that ownership.
+   *
+   * Refuses when a NEWER run owns the lane in this process — settling then would cancel the badge of work
+   * that is genuinely in flight — and when the agent is not `running` at all, which covers every pause:
+   * a paused agent's state is `paused`, so pause authority can never be stepped on from here.
+   */
+  private async settleAgentStateAfterRunClose(agentId: string, runId: string): Promise<void> {
+    const tracked = this.trackedAgents.get(agentId);
+    if (tracked && tracked.runId !== runId) {
+      heartbeatLog.log(
+        `Heartbeat done settle skipped reason=newer-run-in-flight agentId=${agentId} runId=${runId} trackedRunId=${tracked.runId}`,
+      );
+      return;
+    }
+    await settleRunningBadgeAfterRunClose(this.store, agentId);
+  }
+
+  /**
+   * The done boundary in one call: acknowledge, close, settle — in that order, and never throwing.
+   *
+   * The ordering is the contract every other reader depends on: the reclaim and the health classifier
+   * both ask the row for positive evidence of accepted work, and evidence that appears only after the
+   * row is terminal is a window in which a healthy lane is still reaped or still called `stuck`.
+   */
+  private async settleRunAtDoneBoundary(agentId: string, runId: string, summary?: string): Promise<void> {
+    try {
+      await this.persistHeartbeatDoneAcknowledgement(agentId, runId, summary);
+      await this.closeHeartbeatRunAtDoneBoundary(agentId, runId);
+    } catch (settleErr) {
+      // The completion tool call itself succeeded; a boundary that cannot persist must not fail it.
+      heartbeatLog.warn(
+        `Heartbeat done boundary refused reason=settle-threw agentId=${agentId} runId=${runId} error=${settleErr instanceof Error ? settleErr.message : String(settleErr)}`,
+      );
+    }
+  }
+
+  /**
+   * A prompt that settles AFTER its row is already terminal still owes the row what the closed row cannot
+   * know about itself — usage, the session id, and the wake-cursor acknowledgement.
+   *
+   * Before this, `completeRun` returned at the first sight of a terminal status, which is how an
+   * operator cancel or a cadence reclaim silently erased the run's accounting: the row kept no usage, no
+   * summary and no `wakeCursor`, so the next timer tick had nothing to compare its silence against and
+   * spent a full session re-deriving a board state that had not moved. Settling is also what this method
+   * does — the badge, not the status.
+   *
+   * What it must never do is relabel the boundary: `status`, `endedAt`, `stderrExcerpt` and the operator's
+   * `skipStateTransition` decision all stay exactly as the closing writer left them.
+   */
+  private async settleLateCompletionOnClosedRun(
+    agentId: string,
+    run: AgentHeartbeatRun,
+    result: {
+      usageJson?: { inputTokens: number; outputTokens: number; cachedTokens: number; cacheWriteTokens: number };
+      sessionIdAfter?: string;
+      resultJson?: Record<string, unknown>;
+    },
+    ownsAgentSlot: boolean,
+  ): Promise<void> {
+    if (ownsAgentSlot) {
+      try {
+        await this.store.saveRun({
+          ...run,
+          sessionIdAfter: run.sessionIdAfter ?? result.sessionIdAfter,
+          usageJson: run.usageJson ?? result.usageJson,
+          // The closed row wins every collision: this pass may add facts, never revise recorded ones.
+          resultJson: { ...(result.resultJson ?? {}), ...(run.resultJson ?? {}) },
+        });
+      } catch (enrichErr) {
+        heartbeatLog.warn(
+          `Heartbeat late enrich refused reason=write-failed agentId=${agentId} runId=${run.id} error=${enrichErr instanceof Error ? enrichErr.message : String(enrichErr)}`,
+        );
+      }
+      this.clearRunState(agentId);
+
+      if (result.usageJson) {
+        try {
+          const agent = await this.store.getAgent(agentId);
+          if (agent) {
+            await this.store.updateAgent(agentId, {
+              totalInputTokens: (agent.totalInputTokens ?? 0) + result.usageJson.inputTokens,
+              totalOutputTokens: (agent.totalOutputTokens ?? 0) + result.usageJson.outputTokens,
+            });
+          }
+        } catch (usageErr) {
+          heartbeatLog.warn(
+            `Agent ${agentId} usage update failed: ${usageErr instanceof Error ? usageErr.message : String(usageErr)} — continuing`,
+          );
+        }
+      }
+    }
+
+    await this.settleAgentStateAfterRunClose(agentId, run.id);
+    heartbeatLog.log(
+      `Heartbeat late completion settled on closed run reason=already-terminal status=${run.status} agentId=${agentId} runId=${run.id} enriched=${ownsAgentSlot}`,
+    );
+  }
+
   /**
    * Complete a heartbeat run with results.
    * @param agentId - The agent ID
@@ -2554,9 +2823,19 @@ export class HeartbeatMonitor {
     // Load and update the run
     const run = await this.store.getRunDetail(agentId, runId);
     if (!run) return;
-    // A late prompt can settle after stopRun has persisted a terminal boundary.
-    // Never let its normal completion path overwrite that operator-visible result.
-    if (run.status === "completed" || run.status === "failed" || run.status === "terminated") return;
+    /*
+    A late prompt can settle after stopRun or the cadence reclaim has persisted a terminal boundary.
+    Never let its normal completion path overwrite that operator-visible result — but never let it walk
+    away either. The early `return` this replaced also skipped `clearRunState` and the state transition,
+    which is the second half of RUFU-783: a row closed by anyone other than the run's own tail left the
+    agent persisted as `running` with no live run behind it, and the only thing that ever noticed was the
+    once-an-hour reconcile that logged `(no active run)`. So the terminal case now settles what is
+    unsettled and enriches what is missing, while status, endedAt and stderr stay untouched.
+    */
+    if (run.status === "completed" || run.status === "failed" || run.status === "terminated") {
+      await this.settleLateCompletionOnClosedRun(agentId, run, result, !tracked || ownsTrackedRun);
+      return;
+    }
 
     let completionResult = result;
 
@@ -3098,6 +3377,26 @@ export class HeartbeatMonitor {
    */
   getTrackedAgents(): string[] {
     return Array.from(this.trackedAgents.keys());
+  }
+
+  /**
+   * Does THIS process hold a heartbeat run in flight for exactly this runId?
+   *
+   * FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783):
+   * The in-process witness no persisted row can supply. `state === "running"` is a badge, and a session
+   * that finished its last tool call without reaching its own `fn_heartbeat_done` leaves that badge set
+   * while nothing runs; the row's age says only that the owner stopped reporting. The pending-run ledger is
+   * the opposite kind of fact: written when this process creates the run, released by the start-lock's
+   * finally when that run's own promise settles — so it reads true for a session still streaming or hung
+   * mid-prompt, and false for a process that died.
+   *
+   * Run identity is what makes it safe to act on. A predicate on the agent id alone would withhold every
+   * stale reclaim forever, because the ledger is cleared by exactly the tail a reaper exists to work
+   * around. Exposed rather than private because the reclaim and the Reports Health classifier ask the same
+   * question, and two slightly different answers to "is this lane actually working?" is the defect here.
+   */
+  hasInProcessHeartbeatRun(agentId: string, runId: string): boolean {
+    return this.pendingHeartbeatRuns.get(agentId)?.runId === runId;
   }
 
   /**
@@ -4457,7 +4756,7 @@ export class HeartbeatMonitor {
             heartbeatDoneRecorded = true;
             
             /*
-            FNXC:HeartbeatTerminalBoundaries 2026-10-13-07:18 (merge origin/main):
+            FNXC:HeartbeatTerminalBoundary 2026-10-13-07:18 (merge origin/main):
             Upstream FN-9544 latches completion and aborts the session; the RUFU-355 guard above keeps
             `fn_heartbeat_done` a one-record call. The latch keeps the run-level boundary, and the
             params.summary guard is RETAINED: upstream's shape assigns `heartbeatSummary = undefined`
@@ -4468,6 +4767,18 @@ export class HeartbeatMonitor {
               if (params.summary) {
                 heartbeatSummary = params.summary;
               }
+              /*
+              FNXC:HeartbeatTerminalBoundary 2026-11-20-01:07 (RUFU-783):
+              Completion is a terminal boundary, so the boundary owns the durable consequences: the
+              acknowledgement on the row, the row closed `completed`, and the agent settled out of
+              `running`. None of that may wait for the awaited provider prompt to settle - measured on
+              `agent-3ac88b82`, an aborted session that never settled meant none of it ever ran, the row
+              stayed `active` and the lane stayed `running` until the cadence reclaim reaped it twice
+              (elapsedMs=1502675, then elapsedMs=3600565 against thresholdMs=120000). `settleRunAtDoneBoundary`
+              swallows its own failures, so awaiting it can neither fail the accepted tool call nor delay
+              the abort by more than a couple of bounded store writes.
+              */
+              await this.settleRunAtDoneBoundary(agentId, run.id, params.summary);
               stopHeartbeatSession();
             }
             return {
@@ -4477,7 +4788,7 @@ export class HeartbeatMonitor {
               }],
               details: {},
               /*
-              FNXC:HeartbeatTerminalBoundaries 2026-10-13-07:18 (merge origin/main):
+              FNXC:HeartbeatTerminalBoundary 2026-10-13-07:18 (merge origin/main):
               One `terminate` serving both reasons: RUFU-355 ends the batch whose tool declared the
               heartbeat done, FN-9544 ends ordinary single-tool batches at the completion boundary.
               The latch/abort above additionally protects mixed batches, whose aggregate result cannot
@@ -6539,6 +6850,31 @@ export class HeartbeatMonitor {
       value only, exactly as RUFU-286 arranged for the throttle deadline above.
       */
       const deliverySkip = describeHeartbeatDeliverySkip(report, { nowMs: now, withinMs: staleThresholdMs });
+      /*
+      FNXC:ReportsHealth 2026-11-20-02:16 (RUFU-783):
+      The run evidence behind a `running` badge, read per row and only for a row that wears one. The
+      classifier is a pure function over declared inputs, so the store read belongs here — but the ANSWER
+      comes from the same two predicates every other surface uses (`getActiveHeartbeatRun` plus
+      `hasAcceptedHeartbeatDone`, and the monitor's own pending-run ledger), because a health cell and a
+      reclaim that disagree about whether work is open is the same defect wearing a different hat. A failed
+      read reports unknown, and unknown withholds the verdict rather than inventing it.
+      */
+      let runEvidence: { hasUnclosedRun?: boolean; hasAcceptedDone?: boolean; hasLiveSession?: boolean } = {};
+      if (report.state === "running") {
+        let unclosedRun: { resultJson?: unknown } | null = null;
+        try {
+          unclosedRun = await agentStore.getActiveHeartbeatRun(report.id);
+        } catch (runReadErr) {
+          heartbeatLog.warn(
+            `[reports-health] active-run read failed for ${report.id}: ${runReadErr instanceof Error ? runReadErr.message : String(runReadErr)}`,
+          );
+        }
+        runEvidence = {
+          hasUnclosedRun: unclosedRun !== null,
+          hasAcceptedDone: unclosedRun === null ? false : hasAcceptedHeartbeatDone(unclosedRun.resultJson),
+          hasLiveSession: this.pendingHeartbeatRuns.has(report.id) || this.trackedAgents.has(report.id),
+        };
+      }
       const classification = classifyReportHealth({
         state: report.state,
         pauseReason: report.pauseReason,
@@ -6548,6 +6884,7 @@ export class HeartbeatMonitor {
         staleParkedAssignment,
         throttleCooldownUntilAt: throttleDisplay?.kind === "throttle-cooldown" ? throttleDisplay.retryingAt : null,
         deliverySkip,
+        ...runEvidence,
       });
       if (classification.bucket === "stale") {
         heartbeatLog.log(`[reports-health] stale report ${report.id} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs}`);
@@ -6559,6 +6896,17 @@ export class HeartbeatMonitor {
         `stale` line, which stays byte-identical for a genuinely unexplained silence.
         */
         heartbeatLog.log(`[reports-health] delivery skipped ${report.id} reason=${deliverySkip?.reason} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs} timerFireAgeMs=${deliverySkip?.fireAgeMs}`);
+      } else if (classification.bucket === "desynced") {
+        /*
+        FNXC:ReportsHealth 2026-11-20-02:17 (RUFU-783):
+        The reclaim-pending verdict is logged, not announced. It names the evidence the verdict rested on,
+        because "why does this lane say running with no run" is the question this card exists to make
+        answerable without reading three tables. The lifecycle owns the repair, so there is no mailbox
+        notice and no follow-up-task instruction — and the `stale` line above stays byte-identical.
+        */
+        heartbeatLog.log(
+          `[reports-health] running badge with no open run ${report.id} hasUnclosedRun=${runEvidence.hasUnclosedRun ?? "unknown"} hasAcceptedDone=${runEvidence.hasAcceptedDone ?? "unknown"} hasLiveSession=${runEvidence.hasLiveSession ?? "unknown"} heartbeatAgeMs=${heartbeatAgeMs}`,
+        );
       }
 
       const task = renderedTask;
@@ -7562,6 +7910,12 @@ export class HeartbeatTriggerScheduler {
   private taskStore?: TaskStore;
   private shouldSuppressTimerWake?: (agent: Agent, context?: TimerWakeContext) => Promise<TimerWakeDecision>;
   /**
+   * FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783): see the constructor option. A stale-run
+   * reclaim is a terminal act against a run this very process may still be streaming into, and neither the
+   * persisted badge nor the row's age can tell the two apart.
+   */
+  private hasInProcessHeartbeatSession: (agentId: string, runId: string) => boolean;
+  /**
    * FNXC:HeartbeatRunOwnership 2026-11-11-00:07: decides whether THIS process may close a persisted
    * run. A run owned by another live Fusion host is not an orphan, and reaping it is what made two
    * hosts on one database fight over every agent (see the module's own note).
@@ -7704,6 +8058,14 @@ export class HeartbeatTriggerScheduler {
     classifyRunOwner?: (run: AgentHeartbeatRun) => HeartbeatRunOwnerVerdict;
     /** Owner-liveness deps, injected by tests; production takes the real process table. */
     runOwnerDeps?: HeartbeatRunOwnershipDeps;
+    /**
+     * FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783): can THIS process see a run it holds in
+     * flight? Production wires this to `HeartbeatMonitor.hasInProcessHeartbeatRun`; tests inject an answer,
+     * because a reclaim whose concurrency guarantee cannot be faked has one that cannot be tested. Left
+     * unwired it withholds nothing, so `start()` says so — an invisible seam is indistinguishable from no
+     * seam, which is the failure mode this program has hit five times.
+     */
+    hasInProcessHeartbeatSession?: (agentId: string, runId: string) => boolean;
   }) {
     this.store = store;
     this.callback = callback;
@@ -7711,6 +8073,7 @@ export class HeartbeatTriggerScheduler {
     this.isTaskExecuting = options?.isTaskExecuting;
     this.isAgentEffectivelyExecuting = options?.isAgentEffectivelyExecuting;
     this.shouldSuppressTimerWake = options?.shouldSuppressTimerWake;
+    this.hasInProcessHeartbeatSession = options?.hasInProcessHeartbeatSession ?? UNWIRED_IN_PROCESS_SESSION_GUARD;
     this.classifyRunOwner = options?.classifyRunOwner
       ?? ((run) => classifyHeartbeatRunOwner(run, options?.runOwnerDeps));
   }
@@ -7725,6 +8088,11 @@ export class HeartbeatTriggerScheduler {
     this.lastAuditRanAtMs = Date.now();
     this.watchAssignments();
     this.watchAgentLifecycle();
+    if (this.hasInProcessHeartbeatSession === UNWIRED_IN_PROCESS_SESSION_GUARD) {
+      heartbeatLog.warn(
+        "Heartbeat stale-run concurrency guard unwired reason=no-in-process-session-predicate a reclaim here cannot see a run this process is holding; pass hasInProcessHeartbeatSession",
+      );
+    }
     void this.auditTimerRegistrations("start");
     this.armTimerAuditInterval();
     this.armTimerAuditWatchdog();
@@ -8785,6 +9153,55 @@ export class HeartbeatTriggerScheduler {
 
     const thresholdMs = this.getActiveRunStaleThresholdMs(agent, staleMultiplier);
     const elapsedMs = getHeartbeatAgeMs(agent);
+    /*
+    FNXC:HeartbeatTerminalBoundary 2026-11-20-01:50 (RUFU-783):
+    The concurrency guard a cadence cannot supply by itself, whatever number it carries. A run this process
+    holds a live session for is not an orphan however old `lastHeartbeatAt` reads — and the first wake of a
+    session that ends without a further report produces exactly that shape. Reaping it closes a row the same
+    process is streaming into: the two-hosts-on-one-database failure reproduced inside one host. Withholding
+    also keeps the health story honest, because the classifier reads the same witness and calls busy work
+    `stuck` with a live session rather than describing it as crashed.
+    */
+    if (this.hasInProcessHeartbeatSession(agent.id, activeRun.id)) {
+      heartbeatLog.log(
+        `Heartbeat stale-run reap withheld reason=live-in-process-session agentId=${agent.id} runId=${activeRun.id} elapsedMs=${elapsedMs} thresholdMs=${thresholdMs} source=${reason}`,
+      );
+      return { reaped: false, elapsedMs, thresholdMs };
+    }
+    /*
+    FNXC:HeartbeatTerminalBoundary 2026-11-20-01:07 (RUFU-783):
+    A run whose row records an accepted `fn_heartbeat_done` is FINISHED WORK, and elapsed time has
+    nothing to say about that. Reaching this branch at all means the run's own tail never ran (the done
+    boundary above is the fix for that); the reclaim closes it here, immediately, rather than waiting for
+    the lane's cadence. Measured on `agent-3ac88b82` this is the path that eventually closed the row -
+    25 minutes late as `terminated`, then a second time an hour later - so the agent read `**stuck**` and
+    a manager agent was told to open an investigation task against a healthy, idle lane.
+
+    It closes as `completed` through the same closer the boundary uses, so the heartbeat event is `ok`
+    and the `running` badge goes with it. The ownership gate stays in front of it: age and an ack both
+    prove the OWNER stopped reporting, not that the run stopped running on another host.
+    */
+    if (hasAcceptedHeartbeatDone(activeRun.resultJson)) {
+      const doneOwnerVerdict = this.classifyRunOwner(activeRun);
+      if (!isHeartbeatRunReapAllowedForOwner(doneOwnerVerdict)) {
+        heartbeatLog.log(
+          `Heartbeat stale-run reap withheld reason=${heartbeatRunOwnerReasonCode(doneOwnerVerdict)} agentId=${agent.id} runId=${activeRun.id} source=${reason}`,
+        );
+        return { reaped: false, elapsedMs, thresholdMs };
+      }
+      /*
+      The scheduler may settle the badge unconditionally here: the row it is closing is the one the store
+      reports as the agent's only active run, and a live local session for it was refused above, so there
+      is no in-flight work whose badge this move could cancel.
+      */
+      await closePersistedRunAtDoneBoundary(this.store, agent.id, activeRun.id, async (agentId) => {
+        await settleRunningBadgeAfterRunClose(this.store, agentId);
+      });
+      heartbeatLog.log(
+        `Heartbeat stale-run closed reason=orphaned-run-done-claimed agentId=${agent.id} runId=${activeRun.id} elapsedMs=${elapsedMs} thresholdMs=${thresholdMs} source=${reason}`,
+      );
+      return { reaped: true, elapsedMs, thresholdMs };
+    }
     if (!Number.isFinite(elapsedMs) || elapsedMs <= thresholdMs) {
       return { reaped: false, elapsedMs, thresholdMs };
     }

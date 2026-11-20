@@ -294,6 +294,27 @@ A report whose heartbeat is overdue but whose heartbeat trigger demonstrably fir
 - Same fact, three surfaces, one reader: the reports-health cell, the dashboard health pill, and the fleet strip all resolve it through `describeHeartbeatDeliverySkip`. The pill returns `Healthy` with a reason naming the withheld cause and the fire age, so it leaves the fleet `noHeartbeat` bucket by label membership rather than by a second opinion inside the strip.
 - The cell reads `delivery skipped — <cause>, timer fired <age> ago`. It contains neither the word `stale` nor any instruction, and the bucket joins no action set, so a relieved lane contributes no line to the manager's "Actions for Unresponsive Reports". A genuinely unexplained silence still logs `**stale**` and still earns "create a follow-up task to investigate".
 
+### Running badge with no open run (`[reports-health] running badge with no open run`)
+
+A report that wears `running` past `2 × heartbeatTimeoutMs` but has neither an open run in the registry nor a
+live session in this process is classified `desynced` and logs:
+
+- Log shape: `[reports-health] running badge with no open run <agentId> hasUnclosedRun=<true|false|unknown> hasAcceptedDone=<true|false|unknown> hasLiveSession=<true|false|unknown> heartbeatAgeMs=<n>`
+- The three flags are the verdict's evidence, read per row from `getActiveHeartbeatRun`, `hasAcceptedHeartbeatDone`
+  on that row's `resultJson`, and the monitor's own pending-run ledger. `unknown` means the run read itself
+  failed; unknown withholds the verdict, it never invents one.
+- The cell reads `done accepted, engine reclaim pending` when the acknowledgement is on the run row, and
+  `no live run behind the running badge` otherwise. Neither contains `stuck` or `stale`, neither is bold, and
+  the bucket joins no action set, so the lane contributes no line to "Actions for Unresponsive Reports".
+- The companion literals live in the scheduler reap and the monitor's reconcile pass: `reason=orphaned-run-done-claimed`
+  (a done-claimed run closed ahead of its work budget) and `reason=live-in-process-session` (a reap refused
+  because this process still holds the session). The pre-existing `reason=orphaned-run-reaped`,
+  `reason=tick-proceeded-after-reap` and `Reconciled orphaned running agent …` literals are unchanged.
+- Why this exists: on a 1 h lane the engine accepted the run's `fn_heartbeat_done`, never closed the row, and
+  the table rendered `running | **stuck**` for the rest of the cadence while the log said
+  `heartbeat=ok — completed by fn_heartbeat_done`. If both lines appear for one agent, the closure path is
+  broken again and the reclaim is doing the closing late.
+
 ## Resume instrumentation (FN-5389, Phase 1)
 
 Dashboard Phase 1 resume instrumentation adds observation-only client/server traces for refetch/reconnect attribution. It does not change visibility/pageshow/SSE behavior; FN-5392 consumes this data for fixes.

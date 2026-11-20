@@ -53,7 +53,19 @@ describe("classifyReportHealth", () => {
   it("preserves existing state and freshness buckets when no marker exists", () => {
     expect(classifyReportHealth({ ...baseInput, state: "error" }).bucket).toBe("operator-actionable");
     expect(classifyReportHealth({ ...baseInput, staleParkedAssignment: true }).bucket).toBe("stale-assignment");
-    expect(classifyReportHealth({ ...baseInput, state: "running", heartbeatAgeMs: 20_001 }).bucket).toBe("stuck");
+    /*
+    FNXC:ReportsHealth 2026-11-20-02:18 (RUFU-783):
+    This matrix row used to be reachable from `state` plus an age alone. `stuck` now requires proof that a
+    run is actually open, so the row states that proof: the assertion still tests the same bucket it always
+    did, and the no-proof shape is asserted as `desynced` in the RUFU-783 block below rather than deleted.
+    */
+    expect(classifyReportHealth({
+      ...baseInput,
+      state: "running",
+      heartbeatAgeMs: 20_001,
+      hasUnclosedRun: true,
+      hasAcceptedDone: false,
+    }).bucket).toBe("stuck");
     expect(classifyReportHealth({ ...baseInput, state: "active", heartbeatAgeMs: 20_001 }).bucket).toBe("stale");
     expect(classifyReportHealth({ ...baseInput, state: "idle", heartbeatAgeMs: 20_001 }).bucket).toBe("stale");
     expect(classifyReportHealth({ ...baseInput, state: "paused" })).toEqual({ bucket: "paused", cellText: "paused" });
@@ -186,6 +198,14 @@ describe("classifyReportHealth", () => {
       state: "running",
       heartbeatAgeMs: 20_001,
       deliverySkip: freshFire,
+      /*
+      FNXC:ReportsHealth 2026-11-20-02:18 (RUFU-783):
+      The proof is stated here because RUFU-783 made `stuck` evidence-driven. What this case is about is
+      unchanged — withheld-delivery relief must not reach a running lane — and without an open run it would
+      answer a different question ("is there a run?") than the one it was written for.
+      */
+      hasUnclosedRun: true,
+      hasAcceptedDone: false,
     });
 
     expect(result.bucket).toBe("stuck");
@@ -239,5 +259,94 @@ describe("classifyReportHealth", () => {
     expect(result.bucket).toBe("delivery-skipped");
     expect(result.cellText).toContain("timer fired unknown ago");
     expect(result.cellText).not.toContain("NaN");
+  });
+
+  /*
+  FNXC:HeartbeatTerminalBoundary 2026-11-20-01:25 (RUFU-783):
+
+  `stuck` was DERIVED FROM ABSENCE. The classifier received no run or session evidence at all — only
+  `state`, `heartbeatAgeMs`, `heartbeatTimeoutMs`, `staleParkedAssignment`, and the two derived RUFU
+  inputs — so `running` plus age past `heartbeatTimeoutMs * 2` was the whole predicate, and the health
+  column fed the manager prompt's “lane is stuck, create a follow-up task to investigate.”
+
+  The measured consequence on `agent-3ac88b82` (Audit Executor, cadence 3 600 000 ms, timeout 60 000 ms):
+  the run had finished its work and recorded its closing `fn_heartbeat_done` 2.5 minutes earlier, but the
+  row was still `active` in the registry because the only closure available to that shape sits after a
+  provider prompt that never settled. Age said 3 minutes, the bound said 120 000 ms, so a healthy idle
+  lane rendered `**stuck**` and a manager agent was told to open an investigation task. The engine had
+  since reaped that same run twice on the cadence (`elapsedMs=1502675`, then `elapsedMs=3600565` against
+  `thresholdMs=120000`) — crash recovery being used as the routine closer.
+
+  These cases pin the replacement rule: `stuck` requires POSITIVE evidence — an unclosed run that carries
+  no accepted done, or a live session — and an aged `running` row with no such proof falls into a new
+  non-actionable `desynced` bucket. `stale` / `stale-assignment` / `healthy` / `delivery-skipped` belong
+  to RUFU-530 and RUFU-716 and are unchanged.
+  */
+  describe("run evidence, not age alone (RUFU-783)", () => {
+    const classify = (input: Partial<Parameters<typeof classifyReportHealth>[0]>) =>
+      classifyReportHealth({ ...baseInput, ...input });
+
+    /** The reported lane: 3 minutes of age against a 60 000 ms timeout, i.e. past `timeout × 2`. */
+    const AGED = { state: "running", heartbeatAgeMs: 180_000, heartbeatTimeoutMs: 60_000 };
+
+    it("keeps a positive-evidence stuck verdict: an unclosed run with no accepted done", () => {
+      const result = classify({ ...AGED, hasUnclosedRun: true, hasAcceptedDone: false, hasLiveSession: false });
+      expect(result.bucket).toBe("stuck");
+      expect(result.cellText).toBe("**stuck**");
+    });
+
+    it("keeps a positive-evidence stuck verdict: a live session behind the running row", () => {
+      const result = classify({ ...AGED, hasUnclosedRun: false, hasAcceptedDone: false, hasLiveSession: true });
+      expect(result.bucket).toBe("stuck");
+      expect(result.cellText).toBe("**stuck**");
+    });
+
+    it("reports a healthy-but-unclosed done as desynced, never stuck — the false badge itself", () => {
+      // The exact reported shape: an unclosed run whose done WAS accepted, so the verdict cannot be stuck.
+      const result = classify({ ...AGED, hasUnclosedRun: true, hasAcceptedDone: true, hasLiveSession: false });
+      expect(result.bucket).toBe("desynced");
+      expect(result.cellText).not.toContain("stuck");
+      expect(result.cellText).not.toContain("stale");
+      // Bold marks an actionable verdict in this column; a desync is none.
+      expect(result.cellText).not.toContain("**");
+    });
+
+    it("reports an aged running row with no run evidence at all as desynced, not stuck", () => {
+      const result = classify({ ...AGED, hasUnclosedRun: false, hasAcceptedDone: false, hasLiveSession: false });
+      expect(result.bucket).toBe("desynced");
+      expect(result.cellText).not.toContain("**");
+    });
+
+    it("stays healthy below twice the timeout whatever the proof says", () => {
+      expect(classify({ ...AGED, heartbeatAgeMs: 1_000, hasUnclosedRun: false, hasAcceptedDone: false }).bucket)
+        .toBe("healthy");
+      expect(classify({
+        ...AGED,
+        heartbeatAgeMs: 119_000,
+        hasUnclosedRun: true,
+        hasAcceptedDone: false,
+        hasLiveSession: true,
+      }).bucket).toBe("healthy");
+    });
+
+    it("does not outrank the verdicts that already won for a running lane", () => {
+      // A parked assignment and an operator pause still describe the lane; the new bucket is last.
+      expect(classify({ ...AGED, staleParkedAssignment: true }).bucket).toBe("stale-assignment");
+      expect(classify({ ...AGED, pauseReason: "error-unrecoverable" }).bucket).toBe("operator-actionable");
+      // RUFU-716's relief is gated to active/idle on purpose; a running lane keeps its run verdict.
+      expect(classify({
+        ...AGED,
+        deliverySkip: { reason: "wake-suppressed", firedAt: "2026-11-18T11:00:00.000Z", fireAgeMs: 60_000 },
+        hasUnclosedRun: true,
+        hasAcceptedDone: false,
+      }).bucket).toBe("stuck");
+    });
+
+    it("leaves the active/idle stale story untouched — desynced is a running-lane bucket only", () => {
+      for (const state of ["active", "idle"] as const) {
+        expect(classify({ state, heartbeatAgeMs: 20_001, hasUnclosedRun: false, hasAcceptedDone: false }).bucket)
+          .toBe("stale");
+      }
+    });
   });
 });

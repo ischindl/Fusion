@@ -142,12 +142,39 @@ export type WakeCursorParse =
   | { kind: "cursor"; cursor: HeartbeatWakeCursor };
 
 /**
+ * RUFU-783: the ONE reader of "this run's closing `fn_heartbeat_done` was accepted".
+ *
+ * Three surfaces need that fact and each used to hold its own copy of the field name or, worse, infer
+ * the fact from elapsed time: the wake gate (`parseHeartbeatWakeCursor` below), the reclaim that decides
+ * whether an aged `active` row is a crash residue or finished work, and the Reports Health classifier
+ * that must stop calling a healthy idle lane `**stuck**`. One literal, one predicate, one meaning:
+ * an acknowledgement written by the tool boundary, never inferred from an absence.
+ *
+ * It is deliberately a predicate over the persisted row rather than over a monitor's memory — the whole
+ * defect is that the in-process truth ("the agent said it was done") and the durable truth ("the run is
+ * closed") drifted apart for an hour, and every surface that argued from one of them was wrong.
+ */
+export const HEARTBEAT_DONE_ACCEPTED_FIELD = "heartbeatDoneAccepted";
+/** ISO instant the ack was accepted, written beside the ack field by the same boundary. */
+export const HEARTBEAT_DONE_AT_FIELD = "heartbeatDoneAt";
+
+/** True only when a run row positively records an accepted closing `fn_heartbeat_done`. */
+export function hasAcceptedHeartbeatDone(resultJson: unknown): boolean {
+  return isRecord(resultJson) && resultJson[HEARTBEAT_DONE_ACCEPTED_FIELD] === true;
+}
+
+/**
  * Reads the acknowledgement out of a persisted run row. Anything the module cannot prove —
  * no run, no cursor, a cursor whose shape it does not recognise — is reported as such so the
  * caller dispatches: suppression has to be earned, never assumed.
  */
 export function parseHeartbeatWakeCursor(resultJson: unknown): WakeCursorParse {
-  if (!isRecord(resultJson) || resultJson.heartbeatDoneAccepted !== true) {
+  /*
+  `isRecord` is here for the type narrowing, not for the verdict: `hasAcceptedHeartbeatDone` returns a
+  boolean, so without it the lines below read `.wakeCursor` off an `unknown`. The ack test stays in the one
+  predicate — a caller that re-derived "was work reported?" is the drift this card is about.
+  */
+  if (!isRecord(resultJson) || !hasAcceptedHeartbeatDone(resultJson)) {
     return { kind: "absent" };
   }
   const cursor = resultJson.wakeCursor;

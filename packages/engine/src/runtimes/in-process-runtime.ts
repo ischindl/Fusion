@@ -2531,6 +2531,16 @@ export class InProcessRuntime
             shouldSuppressTimerWake: async (agent, context) => this.heartbeatMonitor
               ? await this.heartbeatMonitor.decideTimerWake(agent, { source: "timer", intervalMs: context?.intervalMs })
               : { suppress: false },
+            /*
+            FNXC:HeartbeatTerminalBoundary 2026-11-20-01:35 (RUFU-783):
+            The stale-run reap needs an in-process fact the scheduler does not own: whether the monitor is
+            holding a run for this agent RIGHT NOW. Without it a cadence reap can close a row the same
+            process is streaming into, which is the two-hosts-on-one-database failure reproduced inside one
+            host. Wired here beside `shouldSuppressTimerWake` because the monitor owns the pending-run ledger
+            and this is the only place both objects are in scope.
+            */
+            hasInProcessHeartbeatSession: (agentId, runId) =>
+              this.heartbeatMonitor?.hasInProcessHeartbeatRun(agentId, runId) ?? false,
           },
         );
         this.laneGate.register({

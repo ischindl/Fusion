@@ -680,6 +680,88 @@ describe("HeartbeatTriggerScheduler", () => {
     });
 
     /*
+    FNXC:HeartbeatTerminalBoundary 2026-11-20-01:35 (RUFU-783):
+    Two facts the cadence was treating as one. A run whose row carries an accepted `fn_heartbeat_done` is
+    finished work, and a run this process is holding a session for is live work — neither is answerable from
+    `lastHeartbeatAt`, and measuring both by age is what produced a `**stuck**` badge on a healthy lane and
+    could close a row the same host was still streaming into.
+    */
+    describe("run evidence outranks the cadence (RUFU-783)", () => {
+      const idleCadenceAgent = (lastHeartbeatAt: string) => ({
+        id: "agent-001",
+        name: "Agent 001",
+        role: "executor",
+        state: "active",
+        lastHeartbeatAt,
+        runtimeConfig: { enabled: true, heartbeatIntervalMs: 3_600_000, heartbeatTimeoutMs: 10_000 },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        metadata: {},
+      }) as unknown as Agent;
+
+      it("reclaims a done-claimed active run before any cadence threshold elapsed, as completed", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T02:00:00.000Z"));
+        // One second of silence against a 10s staleness budget: the age gate below would never fire.
+        const agent = idleCadenceAgent("2026-01-01T01:59:59.000Z");
+        const doneRun = {
+          id: "run-done",
+          agentId: "agent-001",
+          startedAt: "2026-01-01T01:55:00.000Z",
+          status: "active",
+          processPid: process.pid,
+          resultJson: { heartbeatDoneAccepted: true, heartbeatDoneAt: "2026-01-01T01:59:58.000Z", summary: "nothing to report" },
+        } as any;
+        vi.mocked(store.listAgents).mockResolvedValue([agent]);
+        vi.mocked(store.getActiveHeartbeatRun).mockResolvedValue(doneRun);
+        vi.mocked(store.getRunDetail).mockResolvedValue(doneRun);
+
+        scheduler = new HeartbeatTriggerScheduler(store, callback);
+        scheduler.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(store.endHeartbeatRun).toHaveBeenCalledWith("run-done", "completed");
+        expect(store.endHeartbeatRun).not.toHaveBeenCalledWith("run-done", "terminated");
+        expect(heartbeatLog.log).toHaveBeenCalledWith(
+          expect.stringContaining("reason=orphaned-run-done-claimed agentId=agent-001 runId=run-done"),
+        );
+      });
+
+      it("refuses to reclaim a run this process holds a live session for, however old the row reads", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T02:00:00.000Z"));
+        const agent = idleCadenceAgent("2026-01-01T00:00:00.000Z");
+        const liveRun = {
+          id: "run-live",
+          agentId: "agent-001",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "active",
+          processPid: process.pid,
+        } as any;
+        vi.mocked(store.listAgents).mockResolvedValue([agent]);
+        vi.mocked(store.getActiveHeartbeatRun).mockResolvedValue(liveRun);
+        vi.mocked(store.getRunDetail).mockResolvedValue(liveRun);
+
+        scheduler = new HeartbeatTriggerScheduler(store, callback, undefined, {
+          hasInProcessHeartbeatSession: (agentId, runId) => agentId === "agent-001" && runId === "run-live",
+        });
+        scheduler.start();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(store.endHeartbeatRun).not.toHaveBeenCalled();
+        expect(heartbeatLog.log).toHaveBeenCalledWith(
+          expect.stringContaining("reason=live-in-process-session agentId=agent-001 runId=run-live"),
+        );
+
+        // The guard is run-scoped, not lane-scoped: a ledger naming a different run must not withhold.
+        vi.mocked(store.getActiveHeartbeatRun).mockResolvedValue({ ...liveRun, id: "run-other" } as any);
+        vi.mocked(store.getRunDetail).mockResolvedValue({ ...liveRun, id: "run-other" } as any);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(store.endHeartbeatRun).toHaveBeenCalledWith("run-other", "terminated");
+      });
+    });
+
+    /*
     FNXC:HeartbeatRunOwnership 2026-11-11-00:07:
     The reap above is correct for a run this host owns or whose owner died; it is the defect when the
     owner is a live peer. Measured 2026-11-10/11 with a `--no-engine` UI process beside a `fn serve`
