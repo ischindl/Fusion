@@ -214,6 +214,29 @@ During work only, the Retry confirmation offers a **Keep the work already produc
 
 Retry refuses workflow terminal columns, active merges across the whole merge pipeline (including its review phase), and columns without a workflow entry node of their own. An orphaned stale merge stamp remains retryable after Fusion confirms that no live merger owns it. A retry interrupted during publication leaves the card paused with `restart-stage-publishing`; this durable safety fence is retained for compatibility, and selecting **Retry** again safely resumes publication.
 
+### Merging a card in a project that is still starting
+
+<!--
+FNXC:ProjectTenancy 2026-11-19-22:38 (RUFU-518):
+Before this, merging a card in a second project whose engine had not started reported the card as
+missing, in well under a second, while the same card was readable on the board at that moment. The
+request had asked the LAUNCH project's engine, which has no such card. The operator-visible consequence
+is the sentence below and the rule that a fast "not found" is not a deletion.
+-->
+
+If you use **Merge** on a card that belongs to a second project whose engine is still starting, the button reports:
+
+> The project's engine is not running yet. Retry in a few seconds.
+
+Nothing was merged and nothing was changed — the card stays exactly where it was. Wait a few seconds and press **Merge** again; once that project has finished starting, the same click merges normally. A few reads of that project's board do not make this go away in advance: the project starts in the background and the first merge is still the one that arrives before it is ready.
+
+Two things this refusal deliberately never does:
+
+- It never says the task was **not found**. A `not found` that arrives almost instantly on a card you can see on the board was never evidence of a deleted card — it meant the request looked in a *different project*. Do not clean up, re-create, or delete anything on the strength of such a message; re-read the card and retry.
+- It never merges on behalf of another project. The project you launched Fusion into keeps behaving exactly as it always has, including its own **Automations**, **Routines**, and remote login links; only a *different* project can answer "still starting".
+
+The same answer appears on a project's Automations and Routines pages and on its remote login link while that project is starting, for the same reason: the alternative was serving those requests out of the launch project, which for a routine meant actually running it against the wrong project's data.
+
 ## Error screen technical details
 
 <!--

@@ -86,7 +86,9 @@ import { resolveGithubTrackingAuth } from "../github-auth.js";
 import { emitChatSnippetsUpdatedSseEvent, emitWorkflowSseEvent } from "../sse.js";
 import { generateRemoteToken, issueRemoteAuthToken, maskRemoteToken } from "../remote-auth.js";
 import { invalidateAllGlobalSettingsCaches } from "../project-store-resolver.js";
-import type { ApiRoutesContext } from "./types.js";
+import type { ApiRoutesContext, ProjectContext } from "./types.js";
+// FNXC:ProjectTenancy 2026-11-19-20:45 (RUFU-518): the shared retryable "project still starting" refusal.
+import { engineStartingError } from "./context.js";
 
 type SkillPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
 
@@ -558,6 +560,33 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       getRemoteTunnelManager?: () => { getStatus?: () => { url?: string | null } } | undefined;
     } | undefined)?.getRemoteTunnelManager?.();
     return manager?.getStatus?.().url ?? null;
+  }
+
+  /*
+  FNXC:ProjectTenancy 2026-11-19-20:45 (RUFU-518):
+  A remote login URL is a credential PLUS AN ADDRESS. `buildRemoteLoginUrlForTokenType` mints the token out
+  of the request's correctly-scoped store, while the host it is addressed to came from
+  `getCurrentTunnelUrl(engine ?? options?.engine)` - and `options.engine` is the LAUNCH project's engine. So
+  a request naming a foreign project whose engine was cold produced a working-looking link that carried the
+  foreign project's token to ANOTHER project's public tunnel, with nothing in the response saying so.
+
+  Both halves close here: the host is read only from the context's own engine, and a request naming a
+  FOREIGN project whose engine is cold refuses with the shared retryable `engine-starting` 503 BEFORE any
+  token is minted. The refusal rather than a silent null is deliberate - an operator's steer after Code
+  Review named the two acceptable answers as "wait for the requested project's engine" or "refuse with
+  429/503", and a blocking engine start on a read is forbidden by the same card, so only the refusal is
+  left. `Retry-After` rides the header, `details.code = "engine-starting"` the machine-checkable signal.
+
+  Unscoped and launch-id requests are untouched: `getProjectContext` already hands them the launch engine,
+  which IS their own tenancy. Tunnel start/stop/kill in this file keep their existing project-scoped
+  `resolveTunnelService({ store, engine, projectId })` and are not changed here.
+  */
+  function scopedTunnelUrlOrRefuse(context: ProjectContext, res: { setHeader(name: string, value: string): void }): string | null {
+    if (!context.launchScoped && context.projectId) {
+      res.setHeader("Retry-After", "5");
+      throw engineStartingError(context.projectId);
+    }
+    return getCurrentTunnelUrl(context.engine);
   }
 
   async function buildRemoteLoginUrlForTokenType(
@@ -1270,8 +1299,10 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         throw new ApiError(400, "mode must be 'persistent' or 'short-lived'", { code: "INVALID_REMOTE_AUTH_MODE" });
       }
 
-      const { store: scopedStore, engine } = await getProjectContext(req);
-      const payload = await buildRemoteLoginUrlForTokenType(scopedStore, mode, getCurrentTunnelUrl(engine ?? options?.engine));
+      const context = await getProjectContext(req);
+      // Refuses a foreign-and-cold project BEFORE minting a token, and never reads another project's host.
+      const tunnelUrl = scopedTunnelUrlOrRefuse(context, res);
+      const payload = await buildRemoteLoginUrlForTokenType(context.store, mode, tunnelUrl);
       res.json({
         loginUrl: payload.loginUrl,
         tokenType: payload.tokenType,
@@ -1285,9 +1316,9 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
 
   router.get("/remote/url", async (req, res) => {
     try {
-      const { store: scopedStore, engine } = await getProjectContext(req);
+      const context = await getProjectContext(req);
       const tokenType = req.query.tokenType === "short-lived" ? "short-lived" : "persistent";
-      const payload = await buildRemoteLoginUrlForTokenType(scopedStore, tokenType, getCurrentTunnelUrl(engine ?? options?.engine));
+      const payload = await buildRemoteLoginUrlForTokenType(context.store, tokenType, scopedTunnelUrlOrRefuse(context, res));
       res.json({ url: payload.loginUrl, tokenType: payload.tokenType, expiresAt: payload.expiresAt });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
@@ -1297,11 +1328,11 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
 
   router.get("/remote/qr", async (req, res) => {
     try {
-      const { store: scopedStore, engine } = await getProjectContext(req);
+      const context = await getProjectContext(req);
       const tokenType = req.query.tokenType === "short-lived" ? "short-lived" : "persistent";
       const formatQuery = req.query.format;
       const format = formatQuery === "image/svg" ? "image/svg" : formatQuery === "terminal" ? "terminal" : "text";
-      const payload = await buildRemoteLoginUrlForTokenType(scopedStore, tokenType, getCurrentTunnelUrl(engine ?? options?.engine));
+      const payload = await buildRemoteLoginUrlForTokenType(context.store, tokenType, scopedTunnelUrlOrRefuse(context, res));
       if (format === "image/svg") {
         const svg = await QRCode.toString(payload.loginUrl, {
           type: "svg",

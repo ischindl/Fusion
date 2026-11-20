@@ -3270,5 +3270,192 @@ describe("Routine routes", () => {
 });
 
 
+/*
+FNXC:ProjectTenancy 2026-11-19-20:45 (RUFU-518):
+Contract under test: a request that NAMES a project may only read or run inside THAT project.
+
+`options.automationStore`, `options.routineStore` and `options.routineRunner` are LAUNCH-tenancy objects -
+server.ts derives all three from the launch engine - so before this fix a request naming a FOREIGN project
+whose engine had not started yet listed the LAUNCH project's schedules and routines, and
+`POST /routines/:id/run` EXECUTED a routine in the wrong project. Every cold case below asserts both
+halves: the retryable refusal shape (`details.code = "engine-starting"`) and the negative proof that no
+launch default was touched. The companion cases are the reason the shared predicate carries a launch-id
+carve-out: naming the launch project's own id is ALREADY correct tenancy, so a refusal keyed on "project id
+present + engine cold" would have broken the launch project's own Automations and Routines pages.
+*/
+describe("RUFU-518: a scoped automation/routine request never borrows the launch project", () => {
+  const LAUNCH_ID = "proj-launch";
+  const FOREIGN_ID = "proj-b";
+
+  const PROJECT_SCHEDULE = { id: "sched-1", name: "s", scope: "project" as const, enabled: true };
+  const PROJECT_ROUTINE = {
+    id: "routine-001",
+    name: "r",
+    scope: "project" as const,
+    enabled: true,
+    trigger: { type: "manual" },
+  };
+
+  function mockAutomationStore() {
+    return { listSchedules: vi.fn().mockResolvedValue([PROJECT_SCHEDULE]) };
+  }
+
+  function mockRoutineStore() {
+    return {
+      listRoutines: vi.fn().mockResolvedValue([PROJECT_ROUTINE]),
+      getRoutine: vi.fn().mockResolvedValue(PROJECT_ROUTINE),
+    };
+  }
+
+  function mockRoutineRunner() {
+    return {
+      triggerManual: vi.fn().mockResolvedValue({
+        routineId: "routine-001",
+        success: true,
+        output: "",
+        triggerType: "manual" as const,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      }),
+      triggerWebhook: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  /**
+   * `coldProjectId` is the project the manager has NO engine for - the restart-window state. The launch
+   * store answers `getProjectId()` so the predicate resolves the launch id exactly as production does.
+   */
+  function buildScopedApp(input: {
+    coldProjectId: string | null;
+    defaultAutomationStore?: ReturnType<typeof mockAutomationStore>;
+    defaultRoutineStore?: ReturnType<typeof mockRoutineStore>;
+    defaultRoutineRunner?: ReturnType<typeof mockRoutineRunner>;
+    foreignEngine?: Record<string, unknown>;
+  }) {
+    const app = express();
+    app.use(express.json());
+    const automationStore = input.defaultAutomationStore ?? mockAutomationStore();
+    const routineStore = input.defaultRoutineStore ?? mockRoutineStore();
+    const routineRunner = input.defaultRoutineRunner ?? mockRoutineRunner();
+    const engineManager = {
+      getEngine: vi.fn((projectId: string) => (projectId === input.coldProjectId ? undefined : input.foreignEngine)),
+      onProjectAccessed: vi.fn(),
+    };
+    app.use("/api", createApiRoutes(
+      createMockStore({ getProjectId: vi.fn(() => LAUNCH_ID) }),
+      {
+        engineManager,
+        automationStore,
+        routineStore,
+        routineRunner,
+      } as never,
+    ));
+    return { app, automationStore, routineStore, routineRunner, engineManager };
+  }
+
+  function expectEngineStartingRefusal(
+    res: { status: number; body: any },
+    sentence: string,
+    projectId: string,
+  ) {
+    expect(res.status).toBe(503);
+    expect(res.body.error).toContain(sentence);
+    expect(res.body.details).toMatchObject({ code: "engine-starting", retryable: true, projectId });
+  }
+
+  describe("foreign project whose engine is cold", () => {
+    it("GET /automations refuses instead of listing the launch project's schedules", async () => {
+      const { app, automationStore } = buildScopedApp({ coldProjectId: FOREIGN_ID });
+
+      const res = await GET(app, `/api/automations?scope=project&projectId=${FOREIGN_ID}`);
+
+      expectEngineStartingRefusal(res, "Automation store not available", FOREIGN_ID);
+      // The refusal is a wait, never a deletion or a miss - that phrasing is what invites cleanup.
+      expect(String(res.body.error)).not.toMatch(/not found/i);
+      // Negative proof: the launch-tenancy default was never read.
+      expect(automationStore.listSchedules).not.toHaveBeenCalled();
+    });
+
+    it("GET /routines refuses instead of listing the launch project's routines", async () => {
+      const { app, routineStore } = buildScopedApp({ coldProjectId: FOREIGN_ID });
+
+      const res = await GET(app, `/api/routines?scope=project&projectId=${FOREIGN_ID}`);
+
+      expectEngineStartingRefusal(res, "Routine store not available", FOREIGN_ID);
+      expect(routineStore.listRoutines).not.toHaveBeenCalled();
+    });
+
+    it("POST /routines/:id/run refuses instead of EXECUTING in the launch project", async () => {
+      // The runner leg was the worst of the three: the fallthrough did not merely read another
+      // project's rows, it RAN a routine there against the wrong schedule.
+      const { app, routineStore, routineRunner } = buildScopedApp({ coldProjectId: FOREIGN_ID });
+
+      const res = await REQUEST(app, "POST", `/api/routines/routine-001/run?scope=project&projectId=${FOREIGN_ID}`);
+
+      expect(res.status).toBe(503);
+      expect(res.body.details).toMatchObject({ code: "engine-starting", retryable: true, projectId: FOREIGN_ID });
+      expect(routineRunner.triggerManual).not.toHaveBeenCalled();
+      expect(routineStore.getRoutine).not.toHaveBeenCalled();
+    });
+
+    it("keeps the legitimate global leg: scope=global is process-default by contract, not a leak", async () => {
+      // Global reads are NOT request-tenancy reads; refusing them would be a new bug.
+      const { app, automationStore } = buildScopedApp({ coldProjectId: FOREIGN_ID });
+
+      const res = await GET(app, `/api/automations?scope=global&projectId=${FOREIGN_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(automationStore.listSchedules).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("the launch project's own id, with no manager engine for it", () => {
+    it("GET /automations still answers 200 from the default store", async () => {
+      // options.automationStore IS launch-tenancy, so this request is already correctly served.
+      const { app, automationStore } = buildScopedApp({ coldProjectId: LAUNCH_ID });
+
+      const res = await GET(app, `/api/automations?scope=project&projectId=${LAUNCH_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.details?.code).not.toBe("engine-starting");
+      expect(automationStore.listSchedules).toHaveBeenCalledTimes(1);
+    });
+
+    it("GET /routines still answers 200 from the default store", async () => {
+      const { app, routineStore } = buildScopedApp({ coldProjectId: LAUNCH_ID });
+
+      const res = await GET(app, `/api/routines?scope=project&projectId=${LAUNCH_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.details?.code).not.toBe("engine-starting");
+      expect(routineStore.listRoutines).toHaveBeenCalledTimes(1);
+    });
+
+    it("POST /routines/:id/run still executes on the default runner", async () => {
+      const { app, routineRunner } = buildScopedApp({ coldProjectId: LAUNCH_ID });
+
+      const res = await REQUEST(app, "POST", `/api/routines/routine-001/run?scope=project&projectId=${LAUNCH_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(routineRunner.triggerManual).toHaveBeenCalledWith("routine-001", expect.anything());
+    });
+  });
+
+  it("a WARM foreign engine keeps reading its own store, never the launch default", async () => {
+    const foreignAutomationStore = mockAutomationStore();
+    foreignAutomationStore.listSchedules.mockResolvedValue([{ ...PROJECT_SCHEDULE, id: "sched-foreign" }]);
+    const { app, automationStore } = buildScopedApp({
+      coldProjectId: null,
+      foreignEngine: { getAutomationStore: () => foreignAutomationStore },
+    });
+
+    const res = await GET(app, `/api/automations?scope=project&projectId=${FOREIGN_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(foreignAutomationStore.listSchedules).toHaveBeenCalledTimes(1);
+    expect(automationStore.listSchedules).not.toHaveBeenCalled();
+  });
+});
+
 // --- Settings API Tests ---
 

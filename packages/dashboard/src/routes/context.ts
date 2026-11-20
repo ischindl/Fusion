@@ -199,6 +199,72 @@ export async function getScopedStore(
   return resolveStoreForProjectId(projectId, store, options);
 }
 
+/*
+FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+ONE answer to "this request named a project that neither a warm engine serves nor is the launch
+project", shared by `getProjectContext` (which publishes it as `ProjectContext.launchScoped`), the
+`POST /tasks/:id/merge` refusal, and the automation/routine resolvers. Two definitions of "foreign
+and cold" would let the merge route and the Automations page disagree about the same request.
+
+The measured defect this closes: `getProjectContext` returns `engine: undefined` for a cold project on
+purpose (it only kicks `engineManager.onProjectAccessed` fire-and-forget so a read is not blocked), so
+`engine: undefined` meant TWO different things — "unscoped request" and "foreign project still
+starting". `POST /tasks/:id/merge` papered over the ambiguity with `options?.onMerge`, a callback
+permanently bound to the launch engine's own TaskStore, so a real card in project B was looked up in
+the launch project and answered `500 Task <id> not found` in ~0.05 s while scoped GETs on the same
+card returned 200. Measured in production at a restart window: a warm-up GET does NOT wire the target
+engine into the route context, so the first engine-backed mutation after a new listener is the one that
+misroutes, while `POST /retry` — which mutates through the correctly-scoped store and only
+optional-chains the engine — kept returning 200 on the same cold project.
+
+Falsy arms, each a distinct reason the launch-tenancy objects are the CORRECT ones to use:
+1. no `projectId` — unscoped/legacy single-project request, nothing was named;
+2. no `engineManager` — the `--no-engine` UI-only host passes none deliberately (see
+   `FNXC:EngineAvailability` in `packages/cli/src/commands/dashboard.ts`), and its `uiOnlyOnMerge` is
+   the only merge path it owns. Do NOT "close" this arm: it is the contract, not a hole;
+3. `engineManager.getEngine(projectId)` resolves — a warm engine serves the request itself;
+4. the id IS the launch project's own id. Decisive: `options.onMerge`, `automationStore`,
+   `routineStore` and `routineRunner` are themselves LAUNCH-tenancy, derived from the launch engine at
+   `packages/dashboard/src/server.ts:1326-1395`, so a request naming the launch id already has the right
+   tenancy and must not gain a new 503. A predicate keyed only on "id present + engine cold" would
+   regress the launch project's own Automations and Routines.
+
+The launch id resolves as `options?.engine?.getProjectId?.() ?? store.getProjectId?.()`, mirroring
+`getProjectContext`'s own launch branch, because a mock or partially-built engine may not answer
+`getProjectId`. `store` is the INJECTED (launch) store, never the request-scoped one.
+*/
+export function namesForeignColdProject(
+  projectId: string | undefined,
+  options: ServerOptions | undefined,
+  store: TaskStore,
+): boolean {
+  if (!projectId) return false;
+
+  const engineManager = options?.engineManager;
+  if (!engineManager) return false;
+  if (engineManager.getEngine(projectId)) return false;
+
+  const launchProjectId = options?.engine?.getProjectId?.() ?? store.getProjectId?.() ?? null;
+  return launchProjectId !== projectId;
+}
+
+/** The refusal shared by every route that would otherwise mutate through a launch-tenancy callback. */
+export function engineStartingError(projectId: string): ApiError {
+  /*
+  FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+  The sentence must never contain "not found" phrasing: a sub-second `Task <id> not found` on a card
+  that a scoped GET resolves is what tempts an operator, or a scripted drain, into destructive cleanup
+  against a project that was merely still starting. `retryable: true` plus `Retry-After` (set by the
+  route) is the machine-checkable "wait a few seconds" signal, and no `messageKey` is added on purpose —
+  that would require a `Column.tsx` case plus 7-locale parity for a merge-button toast.
+  */
+  return new ApiError(503, "The project's engine is not running yet. Retry in a few seconds.", {
+    code: "engine-starting",
+    retryable: true,
+    projectId,
+  });
+}
+
 export async function getProjectContext(
   req: Request,
   store: TaskStore,
@@ -206,6 +272,13 @@ export async function getProjectContext(
 ): Promise<ProjectContext> {
   const projectId = resolveRequestProjectId(req, options);
   const engineManager = options?.engineManager;
+  /*
+  FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+  Computed ONCE here from the shared predicate and carried to every return site below, so no route can
+  receive a context that disagrees with `namesForeignColdProject`. Each of the five sites is a different
+  tenancy situation, which is exactly why a per-site ad-hoc expression is forbidden.
+  */
+  const launchScoped = !namesForeignColdProject(projectId, options, store);
 
   if (!projectId) {
     /*
@@ -214,7 +287,7 @@ export async function getProjectContext(
     */
     if (options?.engine) {
       try {
-        return { store: options.engine.getTaskStore?.() ?? store, engine: options.engine, projectId: undefined };
+        return { store: options.engine.getTaskStore?.() ?? store, engine: options.engine, projectId: undefined, launchScoped };
       } catch {
         // Fall through to raw-store last resort.
       }
@@ -222,7 +295,7 @@ export async function getProjectContext(
     // No request id and no registered launch engine: unregistered/legacy launch
     // directory. Preserve the raw-store last resort with a one-time warn.
     warnLaunchDirFallbackOnce(options);
-    return { store, engine: undefined, projectId: undefined };
+    return { store, engine: undefined, projectId: undefined, launchScoped };
   }
 
   if (engineManager) {
@@ -235,7 +308,7 @@ export async function getProjectContext(
       engineManager.onProjectAccessed(projectId);
     }
     if (engine) {
-      return { store: engine.getTaskStore(), engine, projectId };
+      return { store: engine.getTaskStore(), engine, projectId, launchScoped };
     }
   }
 
@@ -245,14 +318,21 @@ export async function getProjectContext(
   // central-registry id.
   if (options?.engine && options.engine.getProjectId?.() === projectId) {
     try {
-      return { store: options.engine.getTaskStore(), engine: options.engine, projectId };
+      return { store: options.engine.getTaskStore(), engine: options.engine, projectId, launchScoped };
     } catch {
       // Fall back to scoped store resolution.
     }
   }
 
   const scopedStore = await getScopedStore(req, store, options);
-  return { store: scopedStore, engine: undefined, projectId };
+  /*
+  FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+  The one ambiguous site: reached both by an unscoped request and by a FOREIGN project whose engine is
+  cold. Its STORE is correct either way (getScopedStore resolved it), so reads stay non-blocking and
+  unchanged; only `launchScoped` distinguishes the two, and it is what stops an engine-backed MUTATION
+  from falling through to the launch project's `options.on*` callback.
+  */
+  return { store: scopedStore, engine: undefined, projectId, launchScoped };
 }
 
 export function emitRemoteRouteDiagnostic(
@@ -482,6 +562,29 @@ export function createApiRoutesContext(store: TaskStore, options?: ServerOptions
     return rawScope;
   }
 
+  /*
+  FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+  The gate every project-scoped resolver in this file passes through before it may touch a
+  process-default (launch-tenancy) object. `options.automationStore`, `options.routineStore` and
+  `options.routineRunner` are all derived from the LAUNCH engine at `server.ts:1326-1395`, so for a
+  request naming a FOREIGN project whose engine is still starting they are the wrong project's rows
+  and the wrong project's scheduler.
+
+  This calls `namesForeignColdProject` rather than re-deriving "project id present + engine cold", for
+  two reasons: the launch-id carve-out must stay identical to the merge route's (a request naming the
+  LAUNCH project's own id is already correctly served by these defaults and must keep answering 200),
+  and two definitions of "foreign and cold" would let the Automations page and the merge button
+  disagree about the same request. The refusal sentence is the function's own pre-existing 503 copy so
+  no existing assertion moves; only `details` is added, which is what a drain keys on.
+  */
+  function refuseForeignColdProject(projectId: string | undefined, sentence: string): never {
+    throw new ApiError(503, sentence, {
+      code: "engine-starting",
+      retryable: true,
+      projectId,
+    });
+  }
+
   function resolveAutomationStore(req: Request, scope: ScopeValue | undefined): import("@fusion/core").AutomationStore {
     const projectId = getProjectIdFromRequest(req);
     const engineManager = options?.engineManager;
@@ -502,6 +605,12 @@ export function createApiRoutesContext(store: TaskStore, options?: ServerOptions
           return engineStore;
         }
       }
+    }
+    // Reached instead of the launch default whenever the named project is foreign and its engine is
+    // cold. A warm engine that simply exposes no store keeps today's fallthrough: the predicate is
+    // false there, so this cannot change what a started project sees.
+    if (namesForeignColdProject(projectId, options, store)) {
+      refuseForeignColdProject(projectId, "Automation store not available");
     }
 
     const defaultStore = options?.automationStore;
@@ -532,6 +641,10 @@ export function createApiRoutesContext(store: TaskStore, options?: ServerOptions
         }
       }
     }
+    // Same gate as the automation resolver: see `refuseForeignColdProject`.
+    if (namesForeignColdProject(projectId, options, store)) {
+      refuseForeignColdProject(projectId, "Routine store not available");
+    }
 
     const defaultStore = options?.routineStore;
     if (!defaultStore) {
@@ -555,6 +668,16 @@ export function createApiRoutesContext(store: TaskStore, options?: ServerOptions
           };
         }
       }
+    }
+    /*
+    FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+    The runner leg was the worst of the three resolvers: falling through to `options.routineRunner`
+    EXECUTES a routine in the launch project while the request named another one, so the card, the
+    schedule and the workspace the routine acts on all belong to the wrong project. Refusing here is
+    therefore not a UX nicety - executing in the wrong project is the defect.
+    */
+    if (scope === "project" && namesForeignColdProject(projectId, options, store)) {
+      refuseForeignColdProject(projectId, "Routine execution not available");
     }
 
     const runner = options?.routineRunner;

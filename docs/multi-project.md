@@ -276,6 +276,61 @@ Nothing asks for confirmation. An explicit `--project` is the operator's own ins
 - **Boot-time host runtime directory** (`resolveHostRuntimeProjectPath()`): the dashboard/daemon/engine resolve their runtime dir from the default project once, at startup. That binding is unchanged.
 - **`--project @default`**: the token dereferences the stored name in `resolveProject()` and nowhere else, so the default is reachable but never implicit. `@default` with no default set is an actionable error, and a default naming an unregistered project is reported as stale. See [CLI reference — Project routing visibility](./cli-reference.md#project-routing-visibility).
 
+## Request tenancy: a request that names a project mutates only that project
+
+<!--
+FNXC:ProjectTenancy 2026-11-19-22:38 (RUFU-518):
+Measured in production, then reproduced at the route layer: `POST /api/tasks/SANE-463/merge?projectId=<B>`
+answered `500 {"error":"Task SANE-463 not found"}` in ~0.05 s for a card that
+`GET /api/tasks/SANE-463?projectId=<B>` returned 200 for in the same window, while the identical call
+seconds later did 10.7 s (once 59 s) of real merge work. The fast call never touched project B: the route
+kept the correctly-scoped STORE but fell back to `options.onMerge`, a callback permanently bound to the
+project the SERVER was launched in. Reads were scoped correctly the whole time, so the message read as a
+deleted card and invited destructive cleanup against the wrong project. The invariant below is what stops
+the two halves of one request (store and engine) from having different owners.
+-->
+
+A dashboard HTTP request may name a project with `?projectId=` (or the equivalent header). The invariant:
+
+> **A request that names a project may only mutate inside that project.** If that project's engine has not started yet, the request is refused with a retryable status — it is never served by the project the server was launched in.
+
+The subtlety that makes this a real rule rather than a tautology is that `getProjectContext` resolves **two** things, and only one of them is always right:
+
+- The **store** is correctly scoped even for a cold project, because `getScopedStore` resolves it directly. This is why scoped reads and `POST /tasks/:id/retry` answer correctly while the project is still starting.
+- The **engine**, and every process-level `options.on*` callback (`onMerge`) plus the process-default `automationStore` / `routineStore` / `routineRunner` / `engine`, belong to the **launch** project. A cold project has no engine for the request to use, and the lazy start is deliberately fire-and-forget so a read is never blocked by it.
+
+So `engine: undefined` used to mean two different things — "unscoped request" and "foreign project still starting" — and any route with a launch-callback fallback silently resolved that ambiguity into the wrong project. `ProjectContext.launchScoped` now carries the distinction, and it is derived in exactly one place (`namesForeignColdProject()` in `packages/dashboard/src/routes/context.ts`) so no route can disagree with any other. Reads stay non-blocking and unchanged; only a mutation that would otherwise borrow a launch-tenancy object refuses.
+
+The four states the predicate answers, and what each gets:
+
+| Request | Outcome |
+|---|---|
+| No `projectId` (unscoped / legacy launch dir) | Today's behaviour — launch-owned objects are correct |
+| `projectId` **is** the launch project's own id | Today's behaviour — those objects already name the right project |
+| Foreign `projectId`, engine **warm** | That engine serves the request; unchanged |
+| Foreign `projectId`, engine **cold** | `503`, nothing mutated, `Retry-After: 5`, `details.code = "engine-starting"` |
+| Host started with `--no-engine` (no `engineManager`) | Today's behaviour — that host has no other merge path |
+
+The refusal body is:
+
+```json
+{
+  "error": "The project's engine is not running yet. Retry in a few seconds.",
+  "details": { "code": "engine-starting", "retryable": true, "projectId": "proj_…" }
+}
+```
+
+with a `Retry-After` header. The sentence never contains "not found", and that wording is part of the contract, not a style choice — see the rule below. The same `details.code` covers the surfaces that had the same leak: the automation/routine stores and the routine **runner** (which previously executed a routine in the launch project while the request named another), and the three remote login-URL / QR sites, which minted a token from the named project's store and addressed it at **another** project's tunnel host.
+
+A warm-up read does **not** wire the target engine into the route context, so this is not a race you can lose only on the first request: every request re-derives its context, and the lazy start stays pending for the whole starting window. The first engine-backed **mutation** after a restart is the one that used to misroute, which is why the refusal is asserted *after* preceding scoped reads in the tests, not on a virgin mount.
+
+### Rule for automated drains and scripts
+
+When you script a board drain (merge everything in review, sweep a lane, reconcile a board), distinguish *gone* from *still starting*:
+
+- **On a build with this fix:** key on the status, not the message. A retryable `503` with `details.code = "engine-starting"` (and a `Retry-After` header) means wait that many seconds and retry the same call. It is never a deletion.
+- **On a build without this fix:** a `Task <id> not found` that arrives in **well under a second** is cold-engine noise, not a deletion — because no real merge in that project finishes that fast. Confirm with `GET /api/tasks/<id>?projectId=<same id>`: if the card reads back, retry the merge. Only treat the card as deleted when a read that you have confirmed answers 404. Never act on the fast `not found` by cleaning up, deleting, or re-creating work — that message was produced by a request that looked the card up in a *different project*.
+
 ## Project Health Tracking
 
 Central health tracking keeps mutable project metrics, including:

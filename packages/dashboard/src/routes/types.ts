@@ -7,6 +7,22 @@ export interface ProjectContext {
   store: TaskStore;
   engine: import("@fusion/engine").ProjectEngine | undefined;
   projectId: string | undefined;
+  /*
+  FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+  Whether this request may be served by the process-default (launch-tenancy) objects —
+  `options.onMerge`, `options.automationStore`, `options.routineStore`, `options.routineRunner`,
+  `options.engine` — which are all derived from the project the SERVER was launched in, never from
+  the project named on the request.
+
+  true: sanctioned. Either no project id was named (unscoped/legacy launch dir, `--no-engine`), the id
+  named IS the launch project's own id, a warm engine resolved, or no engineManager exists at all.
+  false: the request named a FOREIGN project whose engine has not started yet (`getEngine(id)` cold).
+  Its store is already correctly scoped — only the engine and the `options.on*` callbacks are the wrong
+  tenancy — so a mutation with a launch-project fallback must refuse with a retryable 503 instead of
+  running in the launch project. Decided ONLY by `namesForeignColdProject()` in context.ts; a caller
+  that re-derives it can disagree with the merge route.
+  */
+  launchScoped: boolean;
 }
 
 export interface RemoteRouteDiagnosticInput {

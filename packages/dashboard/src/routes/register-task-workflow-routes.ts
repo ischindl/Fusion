@@ -205,7 +205,8 @@ import { registerTaskPlanningLockRoutes, mapPlanningLifecycleLockError } from ".
 import { isGhAuthenticated } from "@fusion/core";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { isTaskLookupMiss, probeSoftDeletedTask, rethrowTaskApiError, softDeletedNotFound } from "./task-lookup-error.js";
-import { resolveStoreForProjectId } from "./context.js";
+// FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518): the shared "foreign project, cold engine" refusal.
+import { engineStartingError, resolveStoreForProjectId } from "./context.js";
 import {
   CROSS_NODE_REFUSAL,
   emitHandoffFailureAudit,
@@ -3269,12 +3270,33 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // Uses AI merge handler if provided, falls back to store.mergeTask
   router.post("/tasks/:id/merge", async (req, res) => {
     try {
-      const { store: scopedStore, engine } = await getProjectContext(req);
+      const { store: scopedStore, engine, projectId, launchScoped } = await getProjectContext(req);
+      /*
+      FNXC:ProjectTenancy 2026-11-18-01:31 (RUFU-518):
+      A request that NAMES a project may only MERGE inside that project. Both remaining legs below are
+      launch-tenancy or engine-less, so for a foreign project whose engine is cold this route must refuse
+      BEFORE choosing a merge implementation. Dropping only the `options?.onMerge` leg would be worse than
+      the defect: the fallthrough `scopedStore.mergeTask` bypasses the merge queue, the AI merge, the
+      post-merge-verification gate and finalisation, and returns HTTP 200 with `mergeConfirmed: false`
+      when the branch is missing - it lands the card as Done without merging it.
+
+      Measured, same request twice on one card: `500 Task SANE-463 not found` in ~0.05 s, then the
+      identical call seconds later doing 10.7 s (and once 59 s) of real merge work. The fast one never
+      touched the target project; it asked the LAUNCH engine, whose store has no such card. Reads were
+      correctly scoped the whole time, so the message read as a deleted card. A refusal may never be
+      phrased as "not found" for that reason - see engineStartingError.
+      */
+      if (!launchScoped && projectId) {
+        res.setHeader("Retry-After", "5");
+        throw engineStartingError(projectId);
+      }
       const merge = engine
         ? (id: string) => {
           // Manual merge: bypasses scheduler-transient status blockers (FN-5438). Hard guards still apply.
           return engine.onMerge(id);
         }
+        // Reachable only when launchScoped is true: unscoped, the launch project's own id, or the
+        // `--no-engine` host, whose uiOnlyOnMerge is the correct and only merge path it owns.
         : options?.onMerge ?? ((id: string) => scopedStore.mergeTask(id));
       const result = await merge(req.params.id);
       res.json(result);
