@@ -99,16 +99,33 @@ export type RunAuditMutationType =
   gateApproved, salvageTarget } — ids, a fixed reason enum, counts and one derived ref; never mirror
   content, prompt text, log prose or error text.
 
+  FNXC:VanishedWorkAuditDedupe 2026-11-20-11:37 (RUFU-523) is what makes "once per finding" above true.
+  The claim shipped in RUFU-283 while the finding loop had no bound and wrote a row on EVERY maintenance
+  pass: measured 2026-10-03 against production, 939 rows over 125 distinct tasks in 7.5 h, 64 rows in one
+  15-minute window, so a count of rows was a count of sweeps — and counting rows is the first query every
+  operator and agent reaches for. The row is now bounded by `notification/vanished-work-audit-notice.ts`:
+  signature `reason|branchRef|unmergedCommitCount|gateApproved` — only fields stable while the finding
+  stands, which is RUFU-442's lesson after its first cut put a churning field in its signature — and a
+  `WEDGE_RENOTIFY_COOLDOWN_MS` window, the same 6 h the mailbox key buckets by, so the durable row and the
+  operator notice re-announce a standing finding on one clock. First report is unconditional; a changed
+  signature or an expired window reports again; state is per store and never a lifecycle dependency; the
+  per-pass summary is untouched. The sibling refusal family
+  (`task:auto-merge-finalize-column-mismatch-no-action`) was already bounded at its own funnel
+  (`merge/finalization-refusal-notice.ts`, RUFU-431/RUFU-386) on a key DERIVED FROM THIS ROW's
+  discriminating metadata — `previousColumn, targetColumn, commitSha, status, blockedBy,
+  overlapBlockedBy, reason` — deliberately FINER than a (task, reason, phase, column) tuple, because a
+  coarser key merges genuinely different refusals of one card and masks the lane/status/blocker transition.
+
   The literal names the class the operator must never lose silently (approved work with an unmerged
   branch), which is why it stays even though the sweep also reports the neighbouring classes: `reason`
   carries the taxonomy (`row-missing|row-tombstoned` × `branch-unmerged|branch-missing`, plus
   `row-tombstoned-branch-unprobed` and `state-unresolved` when the branch could not be probed, the
   former when a soft-delete tombstone already accounts for the row) and `gateApproved` says whether a
   gate actually approved the card. Do not read a row with `gateApproved: false` as a false positive — it
-  is the same disappearance, just not yet an approved one. One row is written per finding and the row is
-  unconditional, but only the alarming reasons also raise a mailbox notice: the two tombstone classes
-  with no proven unmerged commit stay audit-only, so "nobody was paged" and "nothing was recorded" remain
-  distinguishable from this table alone.
+  is the same disappearance, just not yet an approved one. One row is written per (finding signature,
+  cooldown window) — RUFU-523 — and only the alarming reasons also raise a mailbox notice: the two
+  tombstone classes with no proven unmerged commit stay audit-only, so "nobody was paged" and "nothing was
+  recorded" remain distinguishable from this table alone.
 
   `task:row-purged-for-resurrection` is the mandatory pre-write for a tombstone hard-delete on the
   resurrection path, so a purged id is always attributable. Metadata: { taskId, operation,

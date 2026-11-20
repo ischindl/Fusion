@@ -177,3 +177,28 @@ git branch --contains 15d85e19e2987816051fb8dd698a5a8a57d7c4a1
 
 Do not resurrect the id (`deleteTask(id, { allowResurrection: true })`) before salvaging — that path
 hard-deletes the tombstone *and* the branch.
+
+## How often a standing finding is recorded (RUFU-523, 2026-11-20)
+
+This document's evidence table shows one row and one notice, and for a time that was only true of the
+notice. RUFU-283 made the mailbox message idempotent and left the run-audit row in the sweep's finding
+loop, which has no memory between passes: measured against production 2026-10-03, 939 rows over 125
+distinct tasks in 7.5 hours, 64 rows inside one 15-minute window. The class is still right and the
+sweep is still report-only — what was wrong is that a query counting rows was counting sweeps, which is
+the first thing an operator or agent does with this table (the same failure mode that made the fleet
+monitor report `capacity_suspends` 40 → 105 for one idle card).
+
+The row now follows the notice's clock: `notification/vanished-work-audit-notice.ts` writes once per
+`(reason, branchRef, unmergedCommitCount, gateApproved)` signature per `WEDGE_RENOTIFY_COOLDOWN_MS`
+window — the constant the notice key already buckets by, so the two re-announce a standing finding on one
+clock and the row's cadence stays reconcilable with the notice's. The first report of a finding is
+unconditional; a late branch push (which moves `unmergedCommitCount`), a disappearing branch ref, an
+appearing gate verdict, or a reclassification of the row evidence all record immediately; a finding that
+has simply aged out re-reports itself when the window expires. Bounding the row by signature does not
+hide the finding's age: a re-report carries the *same* signature, so the age is read from the first row's
+timestamp.
+
+Two things are deliberately unchanged. `detectVanishedTaskDirs`'s per-pass summary
+(`scanned`/`candidates`/`probed`/`findings`/`alerted`/`suppressed`) is disk truth for the pass that ran
+and is never deduped — only the audit row is. And the sweep still repairs nothing: the guard makes the
+absence legible per finding rather than per sweep, which is exactly what RUFU-225 needed from it.

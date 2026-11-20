@@ -13,6 +13,7 @@ import {
   isBoundedFinalizationRefusal,
   noteFinalizationPass,
   resetFinalizationNoticeState,
+  shouldRecordFinalizationRefusal,
 } from "../merge/finalization-refusal-notice.js";
 import { finalizeProvenAutoMergeTask } from "../merge/auto-merge-finalization.js";
 import type { MergeResult } from "@fusion/core";
@@ -38,6 +39,9 @@ Surfaces enumerated and covered here:
      lane. Its own behavior is pinned by `self-healing-merged-review-refusal-bounded.test.ts`; what
      belongs HERE is the property that only the shared instance can break: two lanes reporting the same
      card must not read as a transition against each other.
+  6. RUFU-523's census found the one remaining gap in this list: the audit keyspace is per TYPE, so a
+     card refused under two different bounded types must get one first row for each. The case is named
+     where it sits, below.
 */
 
 function fakeLogger(): Logger & { lines: Array<{ level: string; message: string }> } {
@@ -267,6 +271,30 @@ describe("RUFU-431 finalization refusal notice", () => {
     expect(isBoundedFinalizationRefusal("task:auto-merge-finalize-column-mismatch-no-action")).toBe(true);
     expect(isBoundedFinalizationRefusal("task:auto-merge-finalize-column-mismatch-reconciled")).toBe(false);
     expect(isBoundedFinalizationRefusal("task:auto-merge-skipped-already-done")).toBe(false);
+  });
+
+  /*
+  FNXC:FinalizationRefusalBounded 2026-11-20-11:52 (RUFU-523, Step 3):
+  The one shape the RUFU-431 suite left uncovered when RUFU-523 censused it: a card can be refused under
+  TWO bounded types (the column-mismatch no-action and the unreachable post-merge gate), and both share
+  one `finalizationNotice` instance. The audit keyspace is `audit|<taskId>|<type>` with the refusal's
+  metadata as the signature, so interleaving the two types must not let one swallow the other's first
+  row — and the `|` separator is what makes that key unforgeable. Surfaces 1-5 above pinned the per-lane
+  slots; this pins the per-type audit keyspace.
+  */
+  it("keeps two bounded refusal types for one card independent in the audit keyspace", () => {
+    const mismatch = "task:auto-merge-finalize-column-mismatch-no-action";
+    const unreachable = "task:auto-merge-finalize-post-merge-gate-unreachable";
+
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", mismatch, "reason-a")).toBe(true);
+    // Different type, same card, same reason text: still a first row for that type.
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", unreachable, "reason-a")).toBe(true);
+    // Each type now restates its own known refusal.
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", mismatch, "reason-a")).toBe(false);
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", unreachable, "reason-a")).toBe(false);
+    // And a change inside one type is still news for that type alone.
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", unreachable, "reason-b")).toBe(true);
+    expect(shouldRecordFinalizationRefusal("FN-REFUSE", mismatch, "reason-a")).toBe(false);
   });
 
   it("keeps the fast path's two durable-log slots independent and writes the log entry on the transition only", () => {

@@ -38,6 +38,7 @@ import {
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { generateSyntheticRunId, type DatabaseMutationType } from "../util/run-audit.js";
 import { schedulerLog } from "../logger.js";
+import { shouldRecordVanishedWorkAudit, vanishedWorkAuditSignature } from "./vanished-work-audit-notice.js";
 
 const execAsync = promisify(execCallback);
 
@@ -165,7 +166,9 @@ export function vanishedAlertKey(taskId: string, reason: string, now: number): s
 
 /**
  * Scan the task-directory inventory for work that is off every board read, emit one bounded
- * run-audit row per finding, and upsert one operator notice per (task, reason, cooldown bucket).
+ * run-audit row per DISTINCT finding signature per cooldown window, and upsert one operator notice per
+ * (task, reason, cooldown bucket). The per-pass summary is disk truth; the durable row and the notice
+ * are both bounded so a finding that cannot change stops multiplying with uptime (RUFU-523).
  */
 export async function detectVanishedTaskDirs(
   options: VanishedTaskDetectionOptions,
@@ -227,6 +230,20 @@ export async function detectVanishedTaskDirs(
   }
   summary.candidates = candidates.length;
 
+  /*
+  FNXC:VanishedWorkAuditDedupe 2026-11-20-11:40 (RUFU-523):
+  The candidate list arrives in `readdir` order, which the filesystem does not promise to keep stable.
+  `unmergedCommitCount` — a field of the audit dedupe signature — is `null` for every candidate past
+  `VANISHED_WORK_MAX_BRANCH_PROBES`, and production measured 125 findings against a budget of 50, so a
+  shifting inventory could move the boundary and make the SAME card alternate between `null` and a real
+  count between passes. RUFU-442's first cut failed on exactly this class of bug (a signature field that
+  churns by construction). Sorting by task id makes the budget assignment a function of the inventory
+  rather than of directory order, so a stable inventory produces a stable signature. Crossing the budget
+  is still a legitimate signature change: `null` and a count are different observations about the branch
+  and the row must be written again when the observation changes.
+  */
+  candidates.sort((a, b) => a.taskId.localeCompare(b.taskId));
+
   for (const candidate of candidates) {
     // Past the probe budget the id is still reported with an un-probeable branch (`state-unresolved`,
     // or `row-tombstoned-branch-unprobed` when a tombstone explains the row): an unmeasured branch must
@@ -246,30 +263,53 @@ export async function detectVanishedTaskDirs(
     if (!finding) continue;
     summary.findings.push(finding);
 
-    await emitBoundedRunAudit(store, {
-      taskId: candidate.taskId,
-      agentId: "self-healing",
-      runId: generateSyntheticRunId(VANISHED_WORK_SWEEP_NAME, candidate.taskId),
-      domain: "database",
-      mutationType: "task:vanished-approved-work" as DatabaseMutationType,
-      target: `task:${candidate.taskId}`,
-      metadata: {
+    /*
+    FNXC:VanishedWorkAuditDedupe 2026-11-20-11:40 (RUFU-523):
+    The finding loop runs on every maintenance pass, and a vanished finding's subject cannot change — the
+    row is a report about a card this sweep will never repair. Before this guard the sweep re-emitted one
+    full row per finding per pass: measured 2026-10-03, 939 rows over 125 distinct tasks in 7.5 h, 64 rows
+    in one 15-minute window, so `count(*)` over the mutation type reported sweep cadence instead of
+    findings (RUFU-283 had already bounded the MAILBOX notice the same way and left the row unconditional).
+
+    Only the audit call is gated. The summary stays per-pass disk truth (`findings` was appended above,
+    before this decision), and the operator notice below keeps its own bucket-keyed idempotency, its
+    RUFU-690 class gating, and its log lines byte-identical: a bound on the durable row may never change
+    what the operator is told. The first report of any finding is unconditional — fresh state answers
+    `true` — and a changed signature (new reason, different commit count, a gate verdict that appeared)
+    or an expired window reports again immediately.
+    */
+    if (shouldRecordVanishedWorkAudit(store, candidate.taskId, vanishedWorkAuditSignature(finding), now)) {
+      await emitBoundedRunAudit(store, {
         taskId: candidate.taskId,
-        reason: finding.reason,
-        branchRef: finding.branchRef,
-        unmergedCommitCount: finding.unmergedCommitCount,
-        gateApproved: finding.gateApproved,
-        salvageTarget: finding.salvage.salvageTarget,
-      },
-    });
+        agentId: "self-healing",
+        runId: generateSyntheticRunId(VANISHED_WORK_SWEEP_NAME, candidate.taskId),
+        domain: "database",
+        mutationType: "task:vanished-approved-work" as DatabaseMutationType,
+        target: `task:${candidate.taskId}`,
+        metadata: {
+          taskId: candidate.taskId,
+          reason: finding.reason,
+          branchRef: finding.branchRef,
+          unmergedCommitCount: finding.unmergedCommitCount,
+          gateApproved: finding.gateApproved,
+          salvageTarget: finding.salvage.salvageTarget,
+        },
+      });
+    }
 
     /*
     FNXC:VanishedWorkNoticeGating 2026-10-15-21:50 (RUFU-690):
-    The run-audit row above is unconditional; only the mailbox write is gated. A soft-delete tombstone
-    whose branch is gone or unresolvable is a card a recorded delete already accounts for, so it stays
-    countable in the audit store without paging anyone — measured at ~700 notices a day (15,101 system
-    messages since 2026-09-24) against 11 cards that genuinely held unmerged commits and 18 that have no
-    row anywhere. See vanishedFindingRequiresOperatorNotice for the rule and what stays alarming.
+    Only the mailbox write is gated by the class rule below. A soft-delete tombstone whose branch is gone
+    or unresolvable is a card a recorded delete already accounts for, so it stays countable in the audit
+    store without paging anyone — measured at ~700 notices a day (15,101 system messages since 2026-09-24)
+    against 11 cards that genuinely held unmerged commits and 18 that have no row anywhere. See
+    vanishedFindingRequiresOperatorNotice for the rule and what stays alarming.
+
+    FNXC:VanishedWorkAuditDedupe 2026-11-20-11:40 (RUFU-523) corrects one sentence of the note above: the
+    run-audit row is no longer unconditional — it is bounded by signature + the same 6 h window this
+    notice key carries — while the class rule below, the key shape, and every log line stay exactly as
+    RUFU-690 shipped them. "Nobody was paged" and "nothing was recorded" remain distinguishable: the
+    first report of a class-gated finding still writes its row.
     */
     if (!vanishedFindingRequiresOperatorNotice(finding.reason)) {
       summary.suppressed += 1;

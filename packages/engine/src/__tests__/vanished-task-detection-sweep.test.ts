@@ -23,6 +23,7 @@ import {
   detectVanishedTaskDirs,
   vanishedAlertKey,
 } from "../notification/vanished-task-detection.js";
+import { resetVanishedWorkAuditNoticeState } from "../notification/vanished-work-audit-notice.js";
 import type { RunAuditEventInput, TaskIdPresence, TaskStore } from "@fusion/core";
 
 const NOW = Date.parse("2026-09-23T23:49:00.000Z");
@@ -92,6 +93,9 @@ beforeEach(() => {
   auditRows.length = 0;
   sendMessageOnce.mockReset();
   sendMessageOnce.mockResolvedValue({ inserted: true, id: "msg-1" });
+  // The audit-row guard is keyed per store; a fresh store per case is the real isolation, and this
+  // clears the module-level registry so a case that reuses one store always starts from first report.
+  resetVanishedWorkAuditNoticeState();
 });
 
 afterEach(() => {
@@ -325,5 +329,166 @@ describe("vanished-work notice gating", () => {
     expect(auditRows).toHaveLength(1);
     expect(sendMessageOnce).toHaveBeenCalledTimes(1);
     expect(summary.alerted).toBe(1);
+  });
+});
+
+/*
+FNXC:VanishedWorkAuditDedupe 2026-11-20-11:40 (RUFU-523):
+The symptom this file exists to keep gone: the sweep re-emitted one `task:vanished-approved-work` row per
+finding PER PASS, so a count of rows was a count of sweeps. Measured against production 2026-10-03 01:30:
+939 rows over 125 distinct tasks in 7.5 h (about one re-report of every finding per pass), 64 rows in one
+15-minute window. The mailbox notice was already idempotent (RUFU-283); the durable row was not.
+
+These cases are the exact reproduction the report asked for: run the sweep twice over an UNCHANGED set of
+findings against one store and assert the second pass writes nothing new — plus the two ways a finding
+legitimately re-enters the store (its signature changed, or the window re-armed it), and proof that the
+row bound did not reach into the notice path it must not touch.
+*/
+describe("vanished-work audit row bound (RUFU-523)", () => {
+  it("writes one row per finding across two passes, while the pass still reports the finding", async () => {
+    writeTaskDir("RUFU-523", { id: "RUFU-523", column: "in-review" });
+    const store = storeWith({});
+    const args = {
+      store,
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => 3,
+      now: NOW,
+    };
+
+    const first = await detectVanishedTaskDirs(args);
+    expect(first.findings).toHaveLength(1);
+    expect(auditRows).toHaveLength(1);
+
+    // Model the mailbox's own dedupe (same bucket key -> no insert) so the summary accounting read here
+    // is the accounting this card must leave untouched.
+    sendMessageOnce.mockResolvedValueOnce({ inserted: false, id: "msg-1" });
+    const second = await detectVanishedTaskDirs(args);
+
+    // The row count equals the finding count, which is the whole point: count(*) means findings again.
+    expect(auditRows).toHaveLength(1);
+    // The sweep itself stays disk truth: the finding is still reported every pass.
+    expect(second.findings).toHaveLength(1);
+    expect(second.findings[0].reason).toBe(first.findings[0].reason);
+    expect(second.scanned).toBe(1);
+    expect(second.candidates).toBe(1);
+    expect(second.probed).toBe(1);
+    expect(second.alerted).toBe(0);
+    expect(second.suppressed).toBe(1);
+  });
+
+  it("reports again when the probe result changes, carrying the new count", async () => {
+    writeTaskDir("RUFU-524", { id: "RUFU-524", column: "in-review" });
+    let commits = 3;
+    const args = {
+      store: storeWith({}),
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => commits,
+      now: NOW,
+    };
+
+    await detectVanishedTaskDirs(args);
+    expect(auditRows).toHaveLength(1);
+
+    commits = 4;
+    await detectVanishedTaskDirs(args);
+
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows[0].metadata).toMatchObject({ unmergedCommitCount: 3 });
+    expect(auditRows[1].metadata).toMatchObject({ unmergedCommitCount: 4 });
+  });
+
+  it("re-asserts an unresolved finding once the cooldown window re-arms it", async () => {
+    writeTaskDir("RUFU-525", { id: "RUFU-525", column: "in-review" });
+    const store = storeWith({});
+    const args = {
+      store,
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => 2,
+      now: NOW,
+    };
+
+    await detectVanishedTaskDirs(args);
+    expect(auditRows).toHaveLength(1);
+    const firstRow = { ...auditRows[0] };
+
+    await detectVanishedTaskDirs({ ...args, now: NOW + VANISHED_WORK_ALERT_COOLDOWN_MS });
+
+    // Same signature, one window later: the standing finding announces again rather than going silent.
+    expect(auditRows).toHaveLength(2);
+    // The re-report carries the same observation, so the FIRST row keeps the finding's original age.
+    expect(auditRows[0]).toEqual(firstRow);
+    expect(auditRows[1].metadata).toEqual(firstRow.metadata);
+  });
+
+  it("reports again when the finding changes class, even inside the window", async () => {
+    writeTaskDir("RUFU-526", { id: "RUFU-526", column: "in-review" });
+    const presence: Record<string, TaskIdPresence> = {};
+    const args = {
+      store: storeWith(presence),
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => 2,
+      now: NOW,
+    };
+
+    await detectVanishedTaskDirs(args);
+    expect(auditRows[0].metadata).toMatchObject({ reason: "row-missing-branch-unmerged" });
+
+    // Nothing about the branch changed; the ROW evidence did, and that is a different finding.
+    presence["RUFU-526"] = TOMBSTONE;
+    await detectVanishedTaskDirs(args);
+
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows[1].metadata).toMatchObject({ reason: "row-tombstoned-branch-unmerged" });
+  });
+
+  it("bounds the durable row without touching the operator notice path", async () => {
+    writeTaskDir("RUFU-527", { id: "RUFU-527", column: "in-review" });
+    const args = {
+      store: storeWith({}),
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => 4,
+      now: NOW,
+    };
+
+    await detectVanishedTaskDirs(args);
+    sendMessageOnce.mockResolvedValueOnce({ inserted: false, id: "msg-1" });
+    await detectVanishedTaskDirs(args);
+
+    // One durable row…
+    expect(auditRows).toHaveLength(1);
+    // …but the mailbox still saw both passes, with the same bucket key it had before this card.
+    expect(sendMessageOnce).toHaveBeenCalledTimes(2);
+    expect(sendMessageOnce.mock.calls[0][1]).toBe(sendMessageOnce.mock.calls[1][1]);
+    expect(sendMessageOnce.mock.calls[1][1]).toBe(
+      `system:vanished-work:RUFU-527:row-missing-branch-unmerged:${Math.floor(NOW / VANISHED_WORK_ALERT_COOLDOWN_MS)}`,
+    );
+  });
+
+  it("reports each of several findings once, not once per pass", async () => {
+    writeTaskDir("RUFU-528", { id: "RUFU-528", column: "in-review" });
+    writeTaskDir("RUFU-529", { id: "RUFU-529", column: "done" });
+    const store = storeWith({});
+    const args = {
+      store,
+      messageStore: { sendMessageOnce } as never,
+      rootDir: tasksDir,
+      probe: async () => 1,
+      now: NOW,
+    };
+
+    const first = await detectVanishedTaskDirs(args);
+    expect(first.findings).toHaveLength(2);
+    expect(auditRows).toHaveLength(2);
+
+    await detectVanishedTaskDirs(args);
+    await detectVanishedTaskDirs(args);
+
+    // Three passes, two findings, two rows: the 7x amplification the report measured is gone.
+    expect(auditRows).toHaveLength(2);
   });
 });
