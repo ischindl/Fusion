@@ -202,3 +202,70 @@ Two things are deliberately unchanged. `detectVanishedTaskDirs`'s per-pass summa
 (`scanned`/`candidates`/`probed`/`findings`/`alerted`/`suppressed`) is disk truth for the pass that ran
 and is never deduped — only the audit row is. And the sweep still repairs nothing: the guard makes the
 absence legible per finding rather than per sweep, which is exactly what RUFU-225 needed from it.
+
+<!--
+FNXC:ReviewAdvanceOwnership 2026-11-20-22:12 (RUFU-739):
+This section is RUFU-294's salvage disposition, recovered from the git object 62804b4340 by RUFU-739 and
+first actually landed by it. The recovered text was corrected rather than copied, because three of its
+claims had become false: it named a branch `fusion/rufu-294` that has never existed in this repository, it
+asserted a `TaskDetailModal.tsx` hunk targeted an `api` import (the hunk kept `api` and removed two other
+symbols), and it counted three finalization passes where `docs/task-management.md` now lists four. Every
+number below was re-measured on the tree this section was written into, which is the whole point of the
+section: a claim about delivery is worth only what a command says about it.
+-->
+
+## Delivered: what RUFU-294 did with those commits, and why this finding is still firing
+
+Provenance first, corrected. An earlier draft of this section opened `RUFU-294 (fusion/rufu-294, branched
+off main at 2d5c80681e)`. The branch half was never true here: `fusion/rufu-294` does not exist in loose
+refs, in `packed-refs`, or as a remote ref. What exists is the git OBJECT
+`62804b4340a3ac40e7d1e94216782e1d75b168d3` ("RUFU-294: add tests pinning review-verdict advance and done
+refusal"), reachable through the remote-tracking ref `lan/fusion/rufu-293` and three safety refs —
+`refs/backup/rufu-293-pre-integration-20261023`, `refs/backup/rufu-294-mega-20261023`,
+`refs/backup/rufu-294-unlanded-20261105`, all at that same sha — while `refs/heads/fusion/rufu-293` is
+itself gone, so no local branch of either card carries the work. The base half was honest: `2d5c80681e` is a
+real commit and an ancestor of `main`. What was not honest was the word *delivered*: the object's four paths
+stayed absent from `main` for five more weeks while three cards reported them shipped, and they arrive only
+through **RUFU-739**, under `Fusion-Task-Id: RUFU-739`. The board id `RUFU-225` was not recreated,
+`.fusion/tasks/RUFU-225/task.json` was never opened for write, and `fusion/rufu-225` was not merged,
+rewritten, or pushed — it stays the forensic artifact this document cites.
+
+Per-commit disposition, graded by behavior plus the named symptom rather than by patch identity
+(`git cherry` and `merge-base --is-ancestor` were used as diagnostics only). Re-measured 2026-11-20:
+`fb6cffe876`, `caad5783bb`, `15d85e19e2` and `62804b4340` are all still non-ancestors of `main`, and they
+stay that way by design — the content lands as RUFU-739's commit, not as any of these four.
+
+| Upstream commit | Disposition | Where the behavior landed |
+| --- | --- | --- |
+| `fb6cffe876` | **ADAPTED** | `packages/engine/src/__tests__/review-verdict-durable-advance.test.ts` (8 cases: the advance, each deferral class, the IN-side authority boundary, each non-vacuity) and `packages/core/src/__tests__/move-done-failed-premerge-refusal.test.ts` (2 cases: the forward `in-review → done` move carries the blocker authority's own reason, and the same move completes once the failed row is gone). Both case counts were re-measured against the delivered files, not copied from this table. Rewritten to current seams: the sweep now resolves each card's own required gates through `resolvePreMergeGateForTask` (core, `merge/required-pre-merge-steps.ts`) and classifies the park through `classifyUnrunGatePark`, and its per-pass caches read `workflowDefinitionEpoch()` **and** `workflowSelectionEpoch()` unguarded (RUFU-584) — a store fake missing the second reduces the whole sweep to a caught `log.warn`, which is how a sibling suite once greened cases against a sweep that never ran. An earlier draft of this row named `resolveProjectWorkflow`; no such symbol exists in the repository. |
+| `caad5783bb` | **ADAPTED (docs)** | The review-advance ownership bullet in `docs/architecture.md`, anchored on the `recoverMergeableReviewTasks()` bullet (measured at `:1210` on 2026-11-20; the draft's `:821` → `:931` pair was stale twice over, which is why the anchor is now the symbol and the number is dated). Two stale claims were corrected instead of copied: refusals are pointed at the exported family predicate `isPreMergeGateFailedBlocker` and at both move-refusal containers rather than at one byte-exact sentence, and the ownership claim was scoped to verdict-carried advances because `docs/task-management.md` now lists **four** auto-completion/finalization passes, not the three this text originally counted. |
+| `15d85e19e2` | **NO-LONGER-APPLICABLE** | Dropped, not lost, and the draft's reason for dropping it was wrong. What the commit actually does is remove `refineTask` and `summarizeTitle` from the api-barrel import in `TaskDetailModal.tsx` while keeping `api`. Current `main` imports neither symbol in that file (zero occurrences of either in the file), so the removal is already `main`'s state and the hunk has no target. The draft described it as a hunk against `api` usage and claimed `main` had no `api` import there; both halves are false — the hunk retained `api`, and `main` still imports it and uses the name sixteen times past its import line. Nothing in the two pins depends on this commit, and the UI file is outside this card's scope. |
+
+**The detector still reports RUFU-225, and that is the correct output.**
+`reconcile-vanished-task-dirs` is report-only by design: its three inputs are the disk mirror, the
+absence of a board row, and the branch's unmerged commit count. A salvage card changes none of them — the
+mirror still reads `column: in-review` with its approved `code-review` row, the row is still absent, and
+`git rev-list --count main..fusion/rufu-225` is still `3` (re-measured 2026-11-20) because no card is
+authorized to merge or push that branch. So the classification stays `row-missing-branch-unmerged` on its
+own cadence, and delivering the *work* provably cannot clear the *finding*. That is the intended asymmetry:
+the sweep's job is to say "approved work exists outside the board", not to keep score of which cards have
+been re-homed. Delivering under a new identity — which is what RUFU-739 had to do, because RUFU-294's row is
+already closed and RUFU-293's `done` row must not absorb foreign content — changes the content's location and
+nobody's branch topology, so the finding is expected to outlive this delivery.
+
+What is bounded is the *recording*, not the finding: per the section above, RUFU-523 gave the run-audit row
+the notice's clock, so a standing `row-missing-branch-unmerged` for this card is one row per
+`WEDGE_RENOTIFY_COOLDOWN_MS` window rather than one per sweep pass, while the per-pass summary keeps
+reporting it every time it is found. A reader counting rows counts windows, not findings — that is now true
+of this table by construction.
+
+What would actually discharge it — every one of them an operator-only mutation this task was not
+authorized to perform, and deliberately did not:
+
+- merge or push `fusion/rufu-225` so its commits stop being unique to it (or delete the branch after
+  salvage is confirmed),
+- resolve or purge the row/mirror (`deleteTask(id, { allowResurrection: true })` after the salvage is
+  verified, per the warning above),
+- or accept the finding as historical and let the notice's 6-hour cooldown age out.
+
+No task, document, or setting was created here to silence it.
