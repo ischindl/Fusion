@@ -63,6 +63,23 @@ describe("parseExplicitDuplicateMarker", () => {
     expect(parseExplicitDuplicateMarker("DUPLICATE: FN-5211\n\nSee also FN-5212")).toBeNull();
   });
 
+  /*
+  FNXC:OriginalDescriptionInPrompt 2026-11-20-23:55 (RUFU-775):
+  The one corrupted shape this card exists to prevent has specific bytes, not just "extra prose":
+  the Original Description hygiene block that a description write used to splice onto a 20 B verdict.
+  Pinning it here, at the parser that owns the contract, records why the one-non-blank-line rule may not
+  be relaxed even though the smeared document still begins with the verdict line.
+  */
+  it("rejects the marker once an Original Description block has been smeared onto it", () => {
+    const smeared =
+      "DUPLICATE: FN-5211\n\n" +
+      "## Original Description\n\n" +
+      "<!-- fusion-original-description:start -->\n" +
+      "Rephrased intake text.\n" +
+      "<!-- fusion-original-description:end -->\n";
+    expect(parseExplicitDuplicateMarker(smeared)).toBeNull();
+  });
+
   it("rejects multiple markers", () => {
     expect(parseExplicitDuplicateMarker("DUPLICATE: FN-5211\nDUPLICATE: FN-5212")).toBeNull();
   });

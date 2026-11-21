@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Agent, TaskStore, Task, TaskDetail, Settings } from "@fusion/core";
-import { applyOriginalDescription, builtinSeamPrompt, buildBootstrapPrompt, buildRefinementSeedPrompt, computePlanApprovalFingerprint, createCurrentPlanEvidence, deriveFallbackTaskTitle, MAX_TASK_LIST_TEXT_CHARS, renderTriagePolicyPlaceholders, resolveAgentPrompt, UnavailablePlanLockError } from "@fusion/core";
+import { applyOriginalDescription, builtinSeamPrompt, buildBootstrapPrompt, buildRefinementSeedPrompt, computePlanApprovalFingerprint, createCurrentPlanEvidence, deriveFallbackTaskTitle, MAX_TASK_LIST_TEXT_CHARS, parseExplicitDuplicateMarker, renderTriagePolicyPlaceholders, resolveAgentPrompt, UnavailablePlanLockError } from "@fusion/core";
 import {
   TriageProcessor,
   buildSpecificationPrompt,
@@ -1763,6 +1763,47 @@ Planner rewrote mission without the raw request.
       const missionIdx = onDisk.indexOf("## Mission");
       expect(originalIdx).toBeGreaterThan(-1);
       expect(missionIdx).toBeGreaterThan(originalIdx);
+    } finally {
+      await cleanupTriageFixtureRoot(tempRoot);
+    }
+  });
+
+  /*
+  FNXC:OriginalDescriptionInPrompt 2026-11-20-23:55 (RUFU-775):
+  The counterpart to the test above, from the other authority direction. Finalisation is an
+  `authoritative` hygiene caller, so the duplicate-marker guard is the ONLY thing standing between a
+  planner's one-line verdict and a spliced section - which is exactly what RUFU-774 produced: the
+  planner wrote `DUPLICATE: <id>` as its whole artifact and the hygiene pass turned it into a document
+  the parser refuses, so the engine saw "a planner that produced no plan". Asserted through the parser
+  on the on-disk bytes, because that is the only surface the engine reads.
+  */
+  it("leaves a planner's duplicate redirect artifact intact on finalize", async () => {
+    const task = createTriageTask({
+      id: "FN-MARKER-ONLY-FINALIZE",
+      title: "Duplicates an existing card",
+      description: "Operator raw request that the planner judged a duplicate.",
+      status: "planning",
+    });
+    const tempRoot = await mkdtemp(join(tmpdir(), "fusion-marker-finalize-"));
+    try {
+      const taskDir = join(tempRoot, ".fusion", "tasks", task.id);
+      await mkdir(taskDir, { recursive: true });
+      const marker = "DUPLICATE: FN-9001\n";
+      await writeFile(join(taskDir, "PROMPT.md"), marker, "utf-8");
+
+      const localStore = createMockStore({
+        getTask: vi.fn().mockResolvedValue(task),
+      });
+      const localProcessor = new TriageProcessor(localStore, tempRoot);
+
+      await (localProcessor as unknown as {
+        finalizeApprovedTask(task: Task, writtenInput: string, settings: Settings): Promise<void>;
+      }).finalizeApprovedTask(task, marker, { requirePlanApproval: false } as Settings);
+
+      const onDisk = readFileSync(join(taskDir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toBe(marker);
+      expect(onDisk).not.toContain("## Original Description");
+      expect(parseExplicitDuplicateMarker(onDisk)).toEqual({ canonicalId: "FN-9001" });
     } finally {
       await cleanupTriageFixtureRoot(tempRoot);
     }

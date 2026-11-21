@@ -1666,10 +1666,28 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
                 `## Mission` is locked structural evidence, not a task-description mirror. A
                 description-only edit is deliberately cosmetic; rewriting Mission here would mutate
                 an active accepted plan outside the authoritative prompt-write transaction and leave
-                approval briefly claiming a plan that no longer exists. Original Description remains
-                non-contract context and can still mirror the task description.
+                approval briefly claiming a plan that no longer exists.
+
+                FNXC:OriginalDescriptionInPrompt 2026-11-20-23:55 (RUFU-775) supersedes the closing
+                sentence of the note above ("Original Description remains non-contract context and can
+                still mirror the task description") for THIS path only. This sync is a non-authoritative
+                writer: it holds a newer `task.description` but never the operator's intent, so it runs in
+                `preserve-recorded` mode and leaves an already-recorded Original Description untouched,
+                inserting the section only when the spec has none. `authoritative` republishing of the
+                verbatim operator text stays reserved for the creation-time template
+                (project-store-ops.ts) and plan finalisation (engine/triage.ts). The operator Reset
+                correction path is a third authoritative writer but does NOT pass through this sync at
+                all: `resetTask` deletes PROMPT.md and writes a bootstrap seed built by
+                `buildBootstrapPrompt` from the corrected description directly
+                (register-task-workflow-routes.ts), and that corrected text reaches the
+                `## Original Description` section later, when triage finalises the regenerated plan and
+                re-derives `storedOriginalDescription || parsedDescriptionPlan?.description ||
+                task.description` in `authoritative` mode. Mirroring here destroyed the record twice
+                over: it re-derived the operator's intake text from whoever last edited the row, and on a
+                marker-only PROMPT.md it appended a section that un-parsed the duplicate verdict. The
+                Mission lock above is unchanged.
                 */
-                next = applyOriginalDescription(next, task.description ?? "");
+                next = applyOriginalDescription(next, task.description ?? "", "preserve-recorded");
               }
               if (next !== existingPrompt) {
                 await writePromptFileAtomic(promptPath, next);

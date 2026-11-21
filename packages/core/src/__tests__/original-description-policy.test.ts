@@ -10,6 +10,8 @@ corrupt PROMPT.md when the raw request contains lines like `## Required behavior
 import { describe, expect, it } from "vitest";
 import { computePlanApprovalFingerprint } from "../planner/plan-approval.js";
 import { canonicalizePlan } from "../planner/spec-lock.js";
+import { isDuplicateRedirectOnlyPrompt, parseExplicitDuplicateMarker } from "../duplicates/explicit-duplicate-marker.js";
+import { applyFrontendUxCriteria } from "../tasks/frontend-ux-policy.js";
 import {
   ORIGINAL_DESCRIPTION_ENCODING_MARKER,
   ORIGINAL_DESCRIPTION_END_MARKER,
@@ -426,5 +428,117 @@ describe("original description policy", () => {
 
     expect(computePlanApprovalFingerprint(twice)).toBe(computePlanApprovalFingerprint(once));
     expect(twice).toBe(once);
+  });
+});
+
+/*
+FNXC:OriginalDescriptionInPrompt 2026-11-20-23:55 (RUFU-775):
+Two invariants that a single description edit used to destroy, asserted at the policy seam.
+
+1. A duplicate-redirect-only PROMPT.md is the verdict itself. `parseExplicitDuplicateMarker` recognizes
+   it only when the whole document is one non-blank line, so any spliced section un-parks the card and
+   the engine reads a parked duplicate as a plan (the FN-8600 re-plan loop that module documents).
+   Observed on RUFU-774: a 20 B marker survived the prompt write and was re-injected by the next
+   description write. The guard is asserted for BOTH write modes because it is unconditional by design.
+
+2. A recorded Original Description is a record, and only `authoritative` may republish it.
+   `preserve-recorded` is the mode for cosmetic sync paths that hold a newer row value but not the
+   operator's intent.
+
+Assertions go through the parser and the returned bytes, never through source comments.
+*/
+describe("original description policy: duplicate-marker and write-mode authority (RUFU-775)", () => {
+  const MARKER_ID = "FN-5211";
+  const OPERATOR_TEXT = "Operator's verbatim intake request.";
+  const PLANNER_TEXT = "Planner's later summary of the same card.";
+
+  /** Every shape the parser accepts as a redirect-only document, including its whitespace wrappers. */
+  const markerOnlyDocuments: Array<[label: string, content: string]> = [
+    ["canonical with trailing newline", `DUPLICATE: ${MARKER_ID}\n`],
+    ["no trailing newline", `DUPLICATE: ${MARKER_ID}`],
+    ["lowercase id", "duplicate: fn-5211"],
+    ["surrounding spaces and blank lines", `   DUPLICATE: ${MARKER_ID}  \n\n  `],
+    ["backtick-wrapped", "`DUPLICATE: FN-5211`\n"],
+    ["bold-wrapped", "**DUPLICATE: FN-5211**\n"],
+    ["fenced plain", "```\nDUPLICATE: FN-5211\n```\n"],
+    ["fenced with language", "```text\nDUPLICATE: FN-5211\n```"],
+  ];
+
+  it.each(markerOnlyDocuments)(
+    "returns the marker-only document byte-for-byte: %s",
+    (_label, content) => {
+      expect(parseExplicitDuplicateMarker(content)?.canonicalId).toBe(MARKER_ID);
+
+      for (const result of [
+        applyOriginalDescription(content, PLANNER_TEXT),
+        applyOriginalDescription(content, PLANNER_TEXT, "authoritative"),
+        applyOriginalDescription(content, PLANNER_TEXT, "preserve-recorded"),
+        applyOriginalDescription(content, ""),
+      ]) {
+        expect(result).toBe(content);
+        expect(parseExplicitDuplicateMarker(result)?.canonicalId).toBe(MARKER_ID);
+        expect(isDuplicateRedirectOnlyPrompt(result)).toBe(true);
+      }
+    },
+  );
+
+  it("still runs hygiene when the marker line shares the document with real headings", () => {
+    // The guard is about document SHAPE, not the word: two non-blank lines is no longer a verdict.
+    const mixed = `DUPLICATE: ${MARKER_ID}\n\n# Task: FN-1001 - Real spec\n\n## Mission\n\nWork.\n`;
+    expect(parseExplicitDuplicateMarker(mixed)).toBeNull();
+
+    const injected = applyOriginalDescription(mixed, OPERATOR_TEXT);
+    expect(injected).not.toBe(mixed);
+    expect(extractOriginalDescriptionBody(injected)).toBe(OPERATOR_TEXT);
+  });
+
+  it("preserve-recorded leaves an already-recorded body untouched under a different description", () => {
+    const recorded = sampleSpec({ withOriginal: true, marked: true, originalBody: OPERATOR_TEXT });
+
+    const preserved = applyOriginalDescription(recorded, PLANNER_TEXT, "preserve-recorded");
+
+    expect(preserved).toBe(recorded);
+    expect(extractOriginalDescriptionBody(preserved)).toBe(OPERATOR_TEXT);
+    expect(preserved).not.toContain(PLANNER_TEXT);
+    expect(preserved.match(/## Original Description/g)).toHaveLength(1);
+  });
+
+  it("preserve-recorded preserves an unmarked planner-written body too", () => {
+    const recorded = sampleSpec({ withOriginal: true, originalBody: OPERATOR_TEXT });
+
+    expect(applyOriginalDescription(recorded, PLANNER_TEXT, "preserve-recorded")).toBe(recorded);
+  });
+
+  it("preserve-recorded still inserts the section when the spec has none", () => {
+    const bare = sampleSpec();
+    expect(extractOriginalDescriptionBody(bare)).toBeNull();
+
+    const injected = applyOriginalDescription(bare, OPERATOR_TEXT, "preserve-recorded");
+
+    expect(extractOriginalDescriptionBody(injected)).toBe(OPERATOR_TEXT);
+    expect(injected.match(/## Original Description/g)).toHaveLength(1);
+    // A second preserve-recorded pass now sees a recorded region and refuses its own work.
+    expect(applyOriginalDescription(injected, PLANNER_TEXT, "preserve-recorded")).toBe(injected);
+  });
+
+  it("authoritative still republishes the verbatim operator text over a paraphrase", () => {
+    const recorded = sampleSpec({ withOriginal: true, marked: true, originalBody: OPERATOR_TEXT });
+
+    // Same input, opposite authority: this contrast is the mode split, pinned from both directions.
+    expect(applyOriginalDescription(recorded, PLANNER_TEXT, "preserve-recorded")).toBe(recorded);
+
+    const republished = applyOriginalDescription(recorded, PLANNER_TEXT, "authoritative");
+    expect(republished).not.toBe(recorded);
+    expect(extractOriginalDescriptionBody(republished)).toBe(PLANNER_TEXT);
+    // The pre-existing 2-argument call shape defaults to authoritative.
+    expect(applyOriginalDescription(recorded, PLANNER_TEXT)).toBe(republished);
+  });
+
+  it("leaves a marker-only document unchanged through the Frontend UX hygiene tail", () => {
+    const marker = `DUPLICATE: ${MARKER_ID}\n`;
+    // By construction: a marker-only file has no `## File Scope`, so the same finalisation tail that
+    // runs applyFrontendUxCriteria after the Original Description injection parses an empty scope and
+    // returns its input untouched. Asserted rather than assumed (RUFU-775 Step 3).
+    expect(applyFrontendUxCriteria(marker)).toBe(marker);
   });
 });

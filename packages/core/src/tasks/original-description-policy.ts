@@ -39,6 +39,8 @@ operator text has no embedded-H2 risk, so it bypasses the allowlist. INSERT has 
 therefore changed from allowlist-preferred placement to anchoring before the first document H2.
 */
 
+import { parseExplicitDuplicateMarker } from "../duplicates/explicit-duplicate-marker.js";
+
 export const ORIGINAL_DESCRIPTION_HEADING = "## Original Description";
 
 /** Markers delimit the verbatim body so embedded `##` lines cannot end the section. */
@@ -206,21 +208,67 @@ export function buildOriginalDescriptionSection(originalDescription: string): st
   );
 }
 
+/*
+FNXC:OriginalDescriptionInPrompt 2026-11-20-23:55 (RUFU-775):
+Two invariants now bound this function, and both had been violated by one call site.
+
+1. A duplicate-redirect-only document is NEVER rewritten. `parseExplicitDuplicateMarker`
+   (`../duplicates/explicit-duplicate-marker.ts`) recognizes the parked-duplicate verdict only when the
+   whole document has exactly one non-blank line, so appending any section silently un-parks the card:
+   the engine reads the verdict from PROMPT.md's contents alone, and the FN-8600 note in that module
+   records the exact consequence (a planner that produced no plan, re-planned in a loop). Observed twice
+   on RUFU-774: a 20 B `DUPLICATE: RUFU-665` file survived `fn_task_prompt_write` and was then re-injected
+   into marker + multi-line block by the next description edit. The guard is therefore unconditional -
+   both write modes, every caller - and it deliberately does NOT widen the parser: the one-non-blank-line
+   contract stays, because "the word anywhere" scanning is unsafe (see that module's FNXC note).
+
+2. A recorded Original Description is a RECORD, not a mirror, and only an authoritative writer may
+   republish it. `OriginalDescriptionWriteMode` states the caller's authority. `authoritative` (the
+   default, so every pre-existing 2-argument call keeps its behaviour) republishes the operator text over
+   a paraphrased body - the RUFU-762 decision, unchanged. `preserve-recorded` is for cosmetic sync paths
+   that hold a newer `task.description` but not the operator's intent: it inserts the section when the
+   document has none and refuses to touch one that already carries it. Without the split, a planner
+   editing a card's description overwrote the operator's verbatim intake text with its own prose, with no
+   worktree-side copy to recover from (recorded independently on RUFU-762).
+*/
+
+/** Caller authority for `applyOriginalDescription`. See the RUFU-775 invariant block above. */
+export type OriginalDescriptionWriteMode = "authoritative" | "preserve-recorded";
+
 /**
  * Ensure `promptMarkdown` includes a top-of-spec `## Original Description` section with the
- * operator text verbatim. Safe to call repeatedly; never inspects bootstrap-stub equality
- * (callers only apply this to planned/specified prompts).
+ * operator text verbatim. Safe to call repeatedly; never inspects bootstrap-stub equality.
+ *
+ * Load-bearing precondition, restated for RUFU-775: callers only apply this to planned/specified
+ * prompts, and the duplicate-marker guard below is what makes that safe when a card is a parked
+ * redirect rather than a spec. A document that parses as a duplicate redirect is returned byte-for-byte
+ * regardless of `mode`; a document carrying a recorded region is rewritten only in `authoritative` mode.
  */
 export function applyOriginalDescription(
   promptMarkdown: string,
   originalDescription: string,
+  mode: OriginalDescriptionWriteMode = "authoritative",
 ): string {
   if (!promptMarkdown) {
     return promptMarkdown;
   }
 
+  // Invariant 1: a duplicate redirect is the whole document, so any splice destroys the verdict.
+  if (parseExplicitDuplicateMarker(promptMarkdown) !== null) {
+    return promptMarkdown;
+  }
+
   const wantedBody = normalizeOriginalDescriptionBody(originalDescription);
   const existingBody = extractOriginalDescriptionBody(promptMarkdown, originalDescription);
+
+  // Invariant 2, read-side: a recorded region is refused to a non-authoritative writer. This is the
+  // same `existingBody !== null || hasOriginalDescriptionHeading(...)` disjunction the replace/insert
+  // branch below uses, so `preserve-recorded` acts on exactly the documents that would INSERT and
+  // never on one that would REPLACE - which is also why it cannot emit a second heading.
+  if (mode === "preserve-recorded" && (existingBody !== null || hasOriginalDescriptionHeading(promptMarkdown))) {
+    return promptMarkdown;
+  }
+
   const needsEncoding = shouldEncodeOriginalDescriptionBody(wantedBody);
   // Idempotent only when the stored form also satisfies the declared encoding protocol.
   if (existingBody !== null && existingBody.trimEnd() === wantedBody) {
