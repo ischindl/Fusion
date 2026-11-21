@@ -150,15 +150,23 @@ describe("holdsRepairFileScopeLease resolves the candidate's own lanes", () => {
     expect(holdsRepairFileScopeLease(card("FN-1", "building"), { wip: "building", review: "signoff" })).toBe(true);
   });
 
-  it("requires a worktree in the review lane, as the scheduler's copy does", () => {
-    // The two copies of this predicate must keep agreeing; this pins the review half's extra clause.
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The two copies of this predicate must keep agreeing, and on the review lane they now agree by holding
+  NOTHING: a review-trait card writes nothing, so it claims nothing whether or not its checkout is
+  retained. The WIP line below is the parity case that still asserts a claim.
+  */
+  it("releases the review lane entirely while the WIP lane keeps its claim, as the scheduler's copy does", () => {
     expect(holdsRepairFileScopeLease(card("FN-1", "signoff"), { wip: "building", review: "signoff" })).toBe(false);
-    expect(holdsRepairFileScopeLease(card("FN-1", "signoff", { worktree: "/wt" }), { wip: "building", review: "signoff" })).toBe(true);
+    expect(holdsRepairFileScopeLease(card("FN-1", "signoff", { worktree: "/wt" }), { wip: "building", review: "signoff" })).toBe(false);
+    expect(holdsRepairFileScopeLease(card("FN-1", "building", { worktree: "/wt" }), { wip: "building", review: "signoff" })).toBe(true);
   });
 
   it("keeps the legacy literals when the workflow cannot be resolved", () => {
     expect(holdsRepairFileScopeLease(card("FN-1", "in-progress"), undefined)).toBe(true);
     expect(holdsRepairFileScopeLease(card("FN-1", "building"), undefined)).toBe(false);
+    // RUFU-832: the unresolvable-workflow literal fallback answers the review lane the same way.
+    expect(holdsRepairFileScopeLease(card("FN-1", "in-review", { worktree: "/wt" }), undefined)).toBe(false);
   });
 
   it("answers false for a half a resolved board does not declare, rather than substituting one", () => {
@@ -173,12 +181,36 @@ describe("classifyRepairFileScopeLease", () => {
     terminal: new Set(["shipped", "vault"]),
   };
 
-  it("keeps failed review and worktree-less WIP work leased while releasing terminal and cleaned review cards", () => {
-    expect(classifyRepairFileScopeLease(card("FN-1", "signoff", { status: "failed", worktree: "/wt" }), lanes)).toBe("active");
+  it("releases a review card of any status while WIP, dormant, and terminal answers stand", () => {
+    // RUFU-832: the review line dropped its checkout clause entirely - a review lane holds no lease.
+    expect(classifyRepairFileScopeLease(card("FN-1", "signoff", { status: "failed", worktree: "/wt" }), lanes)).toBe("none");
     expect(classifyRepairFileScopeLease(card("FN-1", "building"), lanes)).toBe("active");
     expect(classifyRepairFileScopeLease(card("FN-1", "signoff"), lanes)).toBe("none");
     expect(classifyRepairFileScopeLease(card("FN-1", "backlog", { worktree: "/wt" }), lanes)).toBe("dormant");
     expect(classifyRepairFileScopeLease(card("FN-1", "shipped", { worktree: "/wt" }), lanes)).toBe("none");
+  });
+
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  Every way a review-lane card can look "still busy" or "still holding something", answered the same
+  way. The retained checkout is the merge's source, not a claim on another card's files, so none of
+  these forms may keep a planning-lane card parked. The scheduler's twin of this matrix is pinned in
+  `packages/engine/src/__tests__/review-lane-file-scope-lease-release.test.ts`; the two files together
+  are what make "one answer, two classifiers" checkable instead of merely asserted, because the drift
+  between those two answers is the incident this card removed.
+  */
+  it.each([
+    ["no status", {}],
+    ["a failed review remediation", { status: "failed" }],
+    ["a queued merge wait", { status: "queued" }],
+    ["an engine pause", { paused: true }],
+    ["an operator hold with auto-merge off", { userPaused: true, autoMerge: false }],
+    ["a retained singular checkout", { worktree: "/wt/keep" }],
+    ["retained workspace checkouts", { workspaceWorktrees: { "repo-a": { worktreePath: "/wt/keep/repo-a" } } }],
+  ])("a review card retaining %s still owns no lease", (_label, extra) => {
+    expect(classifyRepairFileScopeLease(card("FN-1", "signoff", extra), lanes)).toBe("none");
+    // And the same shape on a board whose workflow cannot be resolved at all.
+    expect(classifyRepairFileScopeLease(card("FN-1", "in-review", extra), undefined)).toBe("none");
   });
 });
 
@@ -222,7 +254,13 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     await expect(run()).resolves.toMatchObject({ reason: "repaired", repaired: true });
   });
 
-  it.each(["building", "signoff"])("preserves an active %s holder even with unmet prerequisites", async (column) => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): the `building` arm is the one that still proves a
+  holder survives unmet prerequisites; a review-lane holder no longer holds a lease at all, so the
+  former `signoff` arm of this pair is covered as a release by the repair case below and by
+  review-lane-file-scope-lease-release.test.ts.
+  */
+  it.each(["building"])("preserves an active %s holder even with unmet prerequisites", async (column) => {
     const subject = card("FN-9", "backlog", { overlapBlockedBy: "FN-1" });
     const holder = card("FN-1", column, { worktree: "/wt/preserved", dependencies: ["FN-3"] });
     const { run } = harness([subject, holder, card("FN-3", "backlog")], RENAMED_IR, subject);
@@ -357,10 +395,18 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     expect(result.message).not.toContain("not a repairable todo");
   });
 
-  it("refuses repair while a failed review blocker still owns a worktree", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  All three cases below named a `signoff` (review-role) blocker. A review-trait lane answers `none` at
+  this seam now, so a review blocker would make each of them pass with neither the checkout question nor
+  the scope normalizer ever reached. Each case names a lane that still claims, so its real subject - the
+  refusal, the retained checkout, the unprefixed-path match - keeps discriminating. The review-lane
+  release for the same shapes is pinned in `review-lane-file-scope-lease-release.test.ts`.
+  */
+  it("refuses repair while a failed WIP blocker still owns a worktree", async () => {
     const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2" });
     const { run } = harness(
-      [subject, card("FN-2", "signoff", { status: "failed", worktree: "/wt/fn-2" })],
+      [subject, card("FN-2", "building", { status: "failed", worktree: "/wt/fn-2" })],
       RENAMED_IR,
       subject,
     );
@@ -370,13 +416,21 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     expect(result.reason).toBe("scopes-still-overlap");
   });
 
-  it("retains a workspace review blocker while any repository checkout exists", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The checkout-retention question now lives only in the hold lane. A card parked in `backlog` that still
+  owns a workspace checkout is a dormant holder, which is the one branch that asks `taskHoldsUnmergedCheckout`
+  - so this case states the question where it is actually asked instead of at a lane that releases.
+  */
+  it("retains a workspace dormant blocker while any repository checkout exists", async () => {
     const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2" });
     const { run } = harness(
       [
         subject,
-        card("FN-2", "signoff", {
+        card("FN-2", "backlog", {
           status: "failed",
+          // The harness cards default to the epoch, so a senior dormant holder must predate it.
+          createdAt: "1969-07-20T20:17:00.000Z",
           workspaceWorktrees: { "repo-a": { worktreePath: "/wt/fn-2/repo-a" } },
         }),
       ],
@@ -392,7 +446,7 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     const { run } = harness(
       [
         subject,
-        card("FN-2", "signoff", {
+        card("FN-2", "building", {
           status: "failed",
           workspaceWorktrees: { "repo-a": { worktreePath: "/wt/fn-2/repo-a" } },
         }),
@@ -405,10 +459,16 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     await expect(run()).resolves.toMatchObject({ reason: "scopes-still-overlap" });
   });
 
-  it("clears a workspace review blocker after its repository checkouts are removed", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  Both release cases below previously proved "the checkout is gone, therefore the lease is gone" from a
+  review lane. RUFU-832 releases that lane before the checkout question, so each case now states its
+  release at the lane that still asks it: a hold-lane card whose checkouts were removed.
+  */
+  it("clears a workspace dormant blocker after its repository checkouts are removed", async () => {
     const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2" });
     const { run } = harness(
-      [subject, card("FN-2", "signoff", { status: "failed", workspaceWorktrees: {} })],
+      [subject, card("FN-2", "backlog", { status: "failed", workspaceWorktrees: {} })],
       RENAMED_IR,
       subject,
     );
@@ -416,10 +476,11 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     await expect(run()).resolves.toMatchObject({ repaired: true, reason: "repaired" });
   });
 
-  it("repairs a terminal blocker and a review blocker whose worktree is gone", async () => {
+  it("repairs a terminal blocker and a hold blocker whose worktree is gone", async () => {
     for (const blocker of [
       card("FN-2", "shipped", { worktree: "/wt/fn-2" }),
-      card("FN-2", "signoff", { status: "failed" }),
+      // RUFU-832: a hold-lane card with no checkout is the branch that answers the checkout question.
+      card("FN-2", "backlog", { status: "failed" }),
     ]) {
       const subject = card("FN-1", "backlog", { overlapBlockedBy: blocker.id });
       const { run } = harness([subject, blocker], RENAMED_IR, subject);
@@ -431,9 +492,45 @@ describe("repairOverlapBlocker resolves the board's own lanes", () => {
     }
   });
 
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The repair boundary's own half of the release. A card that finished its work and sits in the board's
+  review lane used to be an un-releasable blocker for every queued card naming it: the repair refused
+  with `scopes-still-overlap`, the scheduler suspended its run, and the gridlock detector found no
+  edge, so three owners each waited on the other. The repair now releases the follower in the same pass,
+  writes no lease-release metadata for the blocker, and moves no card - the review-lane checkout is the
+  merge's source and stays exactly where it is.
+  */
+  it("releases a follower whose review blocker keeps its checkout and branch (RUFU-832)", async () => {
+    const subject = card("FN-1", "backlog", { overlapBlockedBy: "FN-2" });
+    const blocker = card("FN-2", "signoff", {
+      status: "failed",
+      worktree: "/wt/fn-2",
+      branch: "fusion/fn-2",
+      autoMerge: false,
+      userPaused: true,
+    });
+    const cards = [subject, blocker];
+    const { run } = harness(cards, RENAMED_IR, subject);
+
+    const result = await run();
+
+    expect(result).toMatchObject({ repaired: true, reason: "repaired" });
+    expect(subject.overlapBlockedBy).toBeNull();
+    expect(blocker.fileScopeLeaseRelease).toBeUndefined();
+    // Scheduling decision only: the delivery source is untouched.
+    expect(blocker).toMatchObject({ column: "signoff", worktree: "/wt/fn-2", branch: "fusion/fn-2" });
+  });
+
   it.each([
     ["a secondary WIP lane without a worktree", card("FN-2", "building-secondary"), "scopes-still-overlap"],
-    ["a secondary review lane with a worktree", card("FN-2", "signoff-secondary", { worktree: "/wt/fn-2", priority: "low" }), "scopes-still-overlap"],
+    /*
+    RUFU-832: this pair states what the board's SECONDARY lanes answer. The secondary WIP lane claims
+    (its arm needs no checkout because WIP never asks), and the secondary review lane releases because
+    the lane vocabulary resolved it as review-role. Both answers come from the selected workflow's own
+    columns, which is what `lanes` is for.
+    */
+    ["a secondary review lane with a worktree", card("FN-2", "signoff-secondary", { worktree: "/wt/fn-2", priority: "low" }), "repaired"],
     ["a secondary terminal lane", card("FN-2", "shipped-secondary", { worktree: "/wt/fn-2", priority: "urgent" }), "repaired"],
   ])("uses every selected-workflow role lane for overlap repair: %s", async (_description, blocker, expectedReason) => {
     const subject = card("FN-1", "backlog", { overlapBlockedBy: blocker.id });

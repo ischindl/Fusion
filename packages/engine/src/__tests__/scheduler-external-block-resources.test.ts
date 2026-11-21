@@ -43,10 +43,17 @@ describe("external-block resource ownership", () => {
     expect(shouldHoldActiveFileScopeLease({ ...blocked, status: null, externalBlock: undefined }, [blocked], { isWipColumn: true })).toBe(true);
   });
 
-  it("retains the review-lane lease only while its worktree remains present", () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): the review lane releases its claim whatever it
+  retains, so an externally-blocked card parked in review no longer blocks overlapping work; the
+  resource-ownership assertions around this one (agent slots, worktree capacity) are unaffected because
+  those count the physical checkout, not the scheduling claim.
+  */
+  it("releases the review-lane lease even while its worktree remains present", () => {
     const blockedReview = blockedTask({ column: "in-review" });
-    expect(shouldHoldActiveFileScopeLease(blockedReview, [blockedReview], { isReviewColumn: true })).toBe(true);
+    expect(shouldHoldActiveFileScopeLease(blockedReview, [blockedReview], { isReviewColumn: true })).toBe(false);
     expect(shouldHoldActiveFileScopeLease({ ...blockedReview, worktree: undefined }, [blockedReview], { isReviewColumn: true })).toBe(false);
+    expect(blockedReview.worktree).toBe("/worktrees/fn-209");
   });
 
   it("keeps the blocked card in maxConcurrent and maxWorktrees holder arithmetic", () => {

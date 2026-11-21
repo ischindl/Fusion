@@ -278,9 +278,44 @@ describe("SelfHealingManager FN-5488 fast-path regressions", () => {
     );
   });
 
-  it("preserves overlapBlockedBy when a failed review holder still owns a worktree", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-12:07 (RUFU-832):
+  This case used to be the sweep's headline preservation: a FAILED review holder keeping a worktree held its
+  lease, so the dependent stayed `queued` behind it and got exactly one re-announced episode. RUFU-832 removed
+  that lease — a card parked in a review-trait column writes nothing, remediation runs in the WIP lane, and the
+  merge door re-proves the declared scope at squash time — and `in-review` is terminal-until-merged, which is
+  what made the old preservation a permanent board-wide park (measured: 140 of 173 waiting rows named three
+  review-lane holders, two of them operator-paused). The sweep now clears the marker instead of re-asserting it.
+  The preservation this case existed to protect is still tested, on the lane that keeps claiming.
+  */
+  it("clears overlapBlockedBy whose failed holder sits in the review lane with a retained worktree", async () => {
     const holder = createTask("FN-254-HOLDER", {
       column: "in-review",
+      status: "failed",
+      worktree: "/wt/fn-254-holder",
+    });
+    const dependent = createTask("FN-254-DEPENDENT", {
+      column: "todo",
+      status: "queued",
+      overlapBlockedBy: holder.id,
+    });
+    const { tasks, store } = makeStore([holder, dependent]);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+
+    await manager.clearStaleBlockedBy();
+
+    expect(tasks.get(dependent.id)).toMatchObject({
+      overlapBlockedBy: null,
+      status: null,
+    });
+    expect(store.transitionQueuedEpisode).not.toHaveBeenCalled();
+    // Releasing the scheduling claim releases nothing else: the holder's checkout is the merge's source.
+    expect(tasks.get(holder.id)).toMatchObject({ column: "in-review", worktree: "/wt/fn-254-holder" });
+  });
+
+  it("preserves overlapBlockedBy when a failed WIP holder still owns a worktree", async () => {
+    const holder = createTask("FN-254-HOLDER", {
+      column: "in-progress",
       status: "failed",
       worktree: "/wt/fn-254-holder",
     });
@@ -360,7 +395,7 @@ describe("SelfHealingManager FN-5488 fast-path regressions", () => {
     expect(store.transitionQueuedEpisode).not.toHaveBeenCalled();
   });
 
-  it("clears overlapBlockedBy after a holder is terminal or a review worktree is gone", async () => {
+  it("clears overlapBlockedBy after a holder is terminal or its review lane releases", async () => {
     for (const holder of [
       createTask("FN-254-DONE", { column: "done", worktree: "/wt/fn-254-done" }),
       createTask("FN-254-CLEAN", { column: "in-review", status: "failed" }),

@@ -377,10 +377,58 @@ describe("self-healing completion fan-out", () => {
     expect((store as any).transitionQueuedEpisode).not.toHaveBeenCalled();
   });
 
-  it("preserves an overlap block held by a failed review task with a worktree", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-11:36 (RUFU-832):
+  This case was "preserves an overlap block held by a failed review task with a worktree", and completion
+  fan-out decides it through the same classifier the scheduler does (`hasActiveFileScopeOverlapBlocker`
+  calls `classifyFileScopeLease` with the holder's resolved roles), so RUFU-832 flipped its verdict: a
+  review-trait holder answers `none`, and a block whose holder answers `none` is exactly what this fan-out
+  exists to clear. It is split into the two lanes so both halves of the new lifetime are pinned — released
+  behind a card that has stopped editing, still preserved behind a card that is writing.
+
+  NOTE for whoever picks this file up: as of this commit the whole file is red on `main` for a reason
+  unrelated to either case — `reconcileCompletedTask` leaves the dependent's `blockedBy` at the completed
+  id where these fixtures expect `null` (15 failures, byte-identical with `main`'s `scheduler.ts` /
+  `store.ts` / `file-scope-lease.ts` restored). Both cases below therefore fail on that assertion until the
+  dependency-clearance drift behind it is repaired.
+  */
+  it("releases an overlap block whose holder sits in the review lane", async () => {
     const completed = makeTask("FN-COMPLETED", { column: "done" });
     const overlapHolder = makeTask("FN-OVERLAP", {
       column: "in-review",
+      status: "failed",
+      worktree: "/wt/fn-overlap",
+    });
+    const dependent = makeTask("FN-DEPENDENT", {
+      column: "todo",
+      status: "queued",
+      blockedBy: completed.id,
+      overlapBlockedBy: overlapHolder.id,
+    });
+    const store = createStore([completed, overlapHolder, dependent], { groupOverlappingFiles: true });
+    (store as any).parseFileScopeFromPrompt = vi.fn(async () => ["packages/core/src/store.ts"]);
+    const onOverlapBlockersReleased = vi.fn();
+    const mgr = new SelfHealingManager(store, { rootDir: "/repo", onOverlapBlockersReleased });
+
+    await mgr.reconcileCompletedTask(completed.id);
+
+    expect(await store.getTask(dependent.id)).toMatchObject({
+      status: null,
+      blockedBy: null,
+      overlapBlockedBy: null,
+    });
+    // The holder keeps its lane, checkout and branch: the release is a scheduling answer, nothing more.
+    expect(await store.getTask(overlapHolder.id)).toMatchObject({
+      column: "in-review",
+      worktree: "/wt/fn-overlap",
+    });
+    expect(onOverlapBlockersReleased).toHaveBeenCalled();
+  });
+
+  it("preserves an overlap block held by a failed WIP task with a worktree", async () => {
+    const completed = makeTask("FN-COMPLETED", { column: "done" });
+    const overlapHolder = makeTask("FN-OVERLAP", {
+      column: "in-progress",
       status: "failed",
       worktree: "/wt/fn-overlap",
     });

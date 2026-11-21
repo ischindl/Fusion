@@ -144,6 +144,15 @@ export function overlapPredecessorRelease(
        (`taskHoldsUnmergedCheckout`). The lane test alone was insufficient — RUFU-330 deliberately lets a
        review holder retain its checkout and keep its claim — so dropping the lane gate without this
        conjunct would have released a stronger live claim over a weaker historical one.
+
+  FNXC:OverlapScheduling 2026-11-21-11:44 (RUFU-832):
+  The RUFU-330 premise above is half-superseded: a review-trait column now answers `none` at BOTH file-scope
+  lease classifiers, so a review holder no longer holds a queue claim at all and an overlapping card is never
+  refused admission behind it. This predicate is a different question — whether a RECORDED wait episode is
+  still owed — and it stays deliberately lane-blind about review: the conjunct above still does real work for
+  the lanes that DO claim (WIP mid-acquisition, hold/dormant with a retained checkout), so it is not relaxed.
+  Consequence a reader must not misread: review-lane waits are released by the classifier-driven repairs
+  (`freshOverlapBlockerStillBlocks`, `clearStaleBlockedBy`), which now see `none`, and never by this face.
     3. A concrete delivery exists, reusing the existing snapshot authority rather than a second landedness
        reading. `mergeConfirmed` is NOT required as a conjunct: it is a convenience flag (`mergedAt ||
        commitSha`), while the snapshot (a landed sha, landed paths, or a verified no-op) is the same proof

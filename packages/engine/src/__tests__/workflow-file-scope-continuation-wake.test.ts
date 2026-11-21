@@ -73,7 +73,14 @@ function continuation(taskId: string): WorkflowWorkItem {
 
 function createHarness() {
   const blocked = makeTask("FN-326");
-  const holder = makeTask("FN-327", { column: "in-review", worktree: "/wt/fn-327" });
+  /*
+  FNXC:WorkflowContinuationWake 2026-11-21-10:26 (RUFU-832):
+  The holder used to sit `in-review` with its checkout retained, which is precisely the claim this card
+  removed — a review-lane holder would let this case reach its terminal event without ever having gated.
+  The holder now works in the WIP lane, so the gate is real and the release still comes from the same
+  move into the terminal lane.
+  */
+  const holder = makeTask("FN-327", { column: "in-progress", worktree: "/wt/fn-327" });
   const tasks = new Map([[blocked.id, blocked], [holder.id, holder]]);
   let item = continuation(blocked.id);
   const emitter = new EventEmitter();
@@ -248,6 +255,15 @@ describe("workflow continuation file-scope completion wake", () => {
     expect(graphEntries).toBe(0);
     expect(h.blocked.column).toBe("todo");
 
+    /*
+    FNXC:WorkflowContinuationWake 2026-11-21-10:26 (RUFU-832):
+    The release now arrives in two moves because the lanes got their honest roles. Entering review is
+    what drops the file-scope claim (the scheduling decision this card adds) and must NOT wake the
+    waiter — no wake authority is attached to that crossing. The wake stays owned by the terminal
+    review → complete fan-out, which is the transition this case exists to prove.
+    */
+    await h.store.moveTask(h.holder.id, "in-review");
+    expect(graphEntries).toBe(0);
     await h.store.moveTask(h.holder.id, "done");
 
     await vi.waitFor(() => expect(graphEntries).toBe(1));
@@ -259,7 +275,7 @@ describe("workflow continuation file-scope completion wake", () => {
 
     h.store.emit("task:moved", {
       task: await h.store.getTask(h.holder.id),
-      from: "in-review",
+      from: "in-progress",
       to: "done",
       source: "replication",
       lanes: { review: new Set(["in-review"]), complete: new Set(["done"]) },

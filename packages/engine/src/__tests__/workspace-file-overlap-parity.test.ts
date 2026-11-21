@@ -352,9 +352,17 @@ describe("workspace overlap consumer parity", () => {
     await expect(repairWorkspaceOverlap([candidate, holder], scopes, candidate)).resolves.toMatchObject({ repaired: true });
   });
 
-  it("adds a workspace review holder to the scheduler's active registry and queues its qualified overlap", async () => {
+  /*
+  FNXC:WorkspaceFileOverlap 2026-11-21-10:26 (RUFU-832):
+  Every holder in this parity group sat in the review lane, and the review lane releases its
+  file-scope claim now — a review holder would make each of these cases pass with the normalizer never
+  consulted. The holders moved to a lane that still claims so the parity claim (all six consumers
+  normalize `repo-a/...` and bare workspace-relative paths the same way) stays real. The review-lane
+  release for a workspace card is pinned in `review-lane-file-scope-lease-release.test.ts`.
+  */
+  it("adds a workspace WIP holder to the scheduler's active registry and queues its qualified overlap", async () => {
     const holder = overlapTask("FN-WORKSPACE-HOLDER", {
-      column: "in-review",
+      column: "in-progress",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });
     const candidate = overlapTask("FN-WORKSPACE-CANDIDATE", {
@@ -382,7 +390,7 @@ describe("workspace overlap consumer parity", () => {
 
   it("normalizes both outer-dispatch scopes before a workspace holder queues a fresh candidate", async () => {
     const holder = overlapTask("FN-DISPATCH-HOLDER", {
-      column: "in-review",
+      column: "in-progress",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });
     const candidate = overlapTask("FN-DISPATCH-CANDIDATE");
@@ -397,7 +405,7 @@ describe("workspace overlap consumer parity", () => {
 
   it("makes core overlap repair retain the same normalized workspace pair", async () => {
     const holder = overlapTask("FN-REPAIR-HOLDER", {
-      column: "in-review",
+      column: "in-progress",
       status: "failed",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });
@@ -415,7 +423,7 @@ describe("workspace overlap consumer parity", () => {
 
   it("normalizes the gridlock holder and candidate scopes for the same workspace pair", async () => {
     const holder = overlapTask("FN-GRIDLOCK-HOLDER", {
-      column: "in-review",
+      column: "in-progress",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });
     const candidate = overlapTask("FN-GRIDLOCK-CANDIDATE");
@@ -437,8 +445,16 @@ describe("workspace overlap consumer parity", () => {
 
   it("preserves then releases a queued overlap through the completion fan-out as workspace checkouts remain or disappear", async () => {
     const completed = overlapTask("FN-COMPLETED", { column: "done" });
+    /*
+    FNXC:WorkspaceFileOverlap 2026-11-21-10:26 (RUFU-832):
+    This holder is a retained checkout in a hold lane rather than a review-lane card, because the review
+    lane releases its claim outright now and this case exists to watch the CHECKOUT question decide the
+    lease. A dormant holder is the one branch that asks it, so the pair still proves: checkout present =
+    held, checkout cleared = released. The senior `createdAt` is what makes queue order arbitrate for it.
+    */
     const holder = overlapTask("FN-WORKSPACE-HOLDER", {
-      column: "in-review",
+      column: "todo",
+      createdAt: "2025-12-31T00:00:00.000Z",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });
     const dependent = overlapTask("FN-DEPENDENT", {
@@ -487,7 +503,7 @@ describe("workspace overlap consumer parity", () => {
 
   it("uses the normalized workspace scope in stale-block cleanup", async () => {
     const holder = overlapTask("FN-WORKSPACE-HOLDER", {
-      column: "in-review",
+      column: "in-progress",
       status: "failed",
       workspaceWorktrees: { "repo-a": { worktreePath: "/worktrees/holder/repo-a" } } as Task["workspaceWorktrees"],
     });

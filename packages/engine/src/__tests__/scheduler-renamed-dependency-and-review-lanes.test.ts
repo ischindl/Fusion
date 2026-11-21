@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Scheduler } from "../scheduler.js";
 import type { Settings, Task, TaskStore, WorkflowIr } from "@fusion/core";
 
@@ -28,6 +31,12 @@ half converted to traits (2026-07-30-16:30, scheduler-renamed-wip-file-scope-lea
 review half still read `column === "in-review"`. On a renamed board no review card entered the
 registry, so a merging card's worktree files read as FREE and an overlapping candidate dispatched on
 top of them. Half a fix leaves one registry with two disagreeing halves.
+
+FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+DEFECT 2's DIRECTION IS SUPERSEDED, its DIFFERENTIAL IS NOT. The review half no longer takes the lease
+at all — a review-trait occupant releases it — so what this file proves about that path is that the
+release is lane-resolved rather than literal-keyed: a renamed board must release exactly when the
+default board does, and must still refuse when the occupant sits in a WIP lane.
 
 WHY THESE ARE DIFFERENTIAL. Each scenario runs twice against the same workflow SHAPE under two
 vocabularies with identical traits; only the ids differ. Any behavioural difference between the runs
@@ -89,6 +98,31 @@ function ir(names: Names): WorkflowIr {
   } as unknown as WorkflowIr;
 }
 
+/*
+FNXC:PlanPremises 2026-11-21-11:05 (RUFU-832):
+THE FIXTURE'S `getTasksDir` POINTED AT A DIRECTORY THAT NEVER EXISTED. The hold→WIP release door
+re-checks each card's plan premises against its authoritative plan (`checkPlanPremises` reads
+`<tasksDir>/<id>/PROMPT.md`) BEFORE it moves anything, and an unreadable plan is
+`plan-premise-unavailable` → a withheld release. Every sweep in this file was therefore refused before
+it reached the lane decision it exists to test, which is why its `dispatched` witnesses read false for
+reasons that have nothing to do with column vocabulary. Each card now gets a real PROMPT.md with no
+`## Plan Premises` section, which the checker passes vacuously (RUFU-246): these scenarios ask about
+lanes and leases, and the premise gate itself is owned by `hold-release-plan-premises.test.ts`.
+*/
+const promptRoot = mkdtempSync(join(tmpdir(), "fusion-renamed-lanes-"));
+const promptTasksDir = join(promptRoot, ".fusion", "tasks");
+const promptsWritten = new Set<string>();
+
+function writePromptOnce(taskId: string): void {
+  if (promptsWritten.has(taskId)) return;
+  const dir = join(promptTasksDir, taskId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "PROMPT.md"), `# ${taskId}\n\n## Steps\n\n1. do the thing\n`, "utf8");
+  promptsWritten.add(taskId);
+}
+
+afterAll(() => rmSync(promptRoot, { recursive: true, force: true }));
+
 function createStore(
   tasks: Task[],
   scopes: Record<string, string[]>,
@@ -131,10 +165,19 @@ function createStore(
     getTask: vi.fn(async (id: string) => tasks.find((task) => task.id === id) ?? null),
     logEntry: vi.fn(async () => undefined),
     getRootDir: vi.fn(() => "/tmp/project"),
-    getTasksDir: vi.fn(() => "/tmp/project/.fusion/tasks"),
+    getTasksDir: vi.fn(() => {
+      for (const task of tasks) writePromptOnce(task.id);
+      return promptTasksDir;
+    }),
     on: vi.fn(),
     off: vi.fn(),
     recordRunAuditEvent: vi.fn(async () => undefined),
+    /*
+    The queue episode is how a lease refusal is recorded now (2026-11-21, RUFU-832). A fake without this
+    seam makes every `queuedOnLease` witness below read false no matter what the scheduler decided, which
+    is exactly how these cases went red while the code under them was still behaving.
+    */
+    transitionQueuedEpisode: vi.fn(async () => undefined),
     getCompletionHandoffAcceptedMarker: vi.fn(async () => null),
     getTaskWorkflowSelection: vi.fn(() => selection),
     getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
@@ -192,12 +235,13 @@ async function unfinishedDependencyScenario(names: Names) {
 }
 
 /**
- * An occupant in the REVIEW column holding a worktree and a file scope, and an overlapping candidate
- * in the hold column. The review occupant must hold its file-scope lease.
+ * An occupant holding a worktree and a file scope, plus an overlapping candidate in the hold column.
+ * `column` is the only thing the two callers change, so the pair of answers is the whole assertion:
+ * a review occupant releases its claim (RUFU-832) and a WIP occupant keeps it.
  */
-async function reviewLeaseScenario(names: Names) {
+async function leaseScenario(names: Names, occupantColumn: string) {
   const tasks = [
-    makeTask({ id: "FN-OCC", column: names.review, worktree: "/tmp/project/.worktrees/FN-OCC" }),
+    makeTask({ id: "FN-OCC", column: occupantColumn, worktree: "/tmp/project/.worktrees/FN-OCC" }),
     makeTask({ id: "FN-CAND", column: names.hold, priority: "urgent" }),
   ];
   const store = createStore(
@@ -214,6 +258,10 @@ async function reviewLeaseScenario(names: Names) {
     (call: unknown[]) =>
       call[0] === "FN-CAND"
       && (call[1] as Partial<Task> | undefined)?.overlapBlockedBy === "FN-OCC",
+  ) || (store.transitionQueuedEpisode as ReturnType<typeof vi.fn>).mock.calls.some(
+    (call: unknown[]) =>
+      call[0] === "FN-CAND"
+      && (call[1] as Record<string, unknown> | undefined)?.overlapBlockedBy === "FN-OCC",
   );
   const dispatched = (store.moveTask as ReturnType<typeof vi.fn>).mock.calls.some(
     (call: unknown[]) => call[0] === "FN-CAND" && call[1] === names.wip,
@@ -271,39 +319,58 @@ describe("scheduler dependency satisfaction on a RENAMED board", () => {
   });
 });
 
-describe("scheduler file-scope lease is held for a RENAMED review column", () => {
+describe("scheduler file-scope lease is released for a review column and held for a WIP column", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(Scheduler.prototype as never as { validateTaskFilesystem: () => unknown }, "validateTaskFilesystem")
       .mockResolvedValue({ valid: true } as never);
   });
 
-  /* Control. */
-  it("default vocabulary: the candidate overlapping a review card is queued, not dispatched", async () => {
-    const outcome = await reviewLeaseScenario(DEFAULT_NAMES);
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  This pair used to assert the opposite — that a review occupant queues the overlapping candidate. The
+  lifetime changed: a card parked in review writes nothing (implementation and remediation both run in
+  the WIP lane) and the merge door re-proves its declared scope at squash, so the queue stamp was
+  costing board throughput to protect nothing. The renamed-lane question this file exists to ask is
+  UNCHANGED and still has teeth, because the identical scenario on a WIP occupant must still stamp under
+  both vocabularies — a candidate that now runs free behind review proves the lane is resolved, and a
+  candidate still queued behind WIP proves the mechanism is intact.
+  */
+  it.each([DEFAULT_NAMES, RENAMED_NAMES])(
+    "$review: a candidate overlapping a review occupant is no longer queued on its lease",
+    async (names) => {
+      const outcome = await leaseScenario(names, names.review);
 
-    expect(outcome.queuedOnLease).toBe(true);
-    expect(outcome.dispatched).toBe(false);
-  });
+      expect(outcome.queuedOnLease).toBe(false);
+    },
+  );
+
+  it.each([DEFAULT_NAMES, RENAMED_NAMES])(
+    "$wip: the same candidate overlapping a WIP occupant is still queued on its lease",
+    async (names) => {
+      const outcome = await leaseScenario(names, names.wip);
+
+      expect(outcome.queuedOnLease).toBe(true);
+      expect(outcome.dispatched).toBe(false);
+    },
+  );
 
   /*
-  The defect. Before the fix the review pass skipped the occupant (its column is not literally
-  `in-review`), so its merging worktree's files read as free and the candidate dispatched on top.
+  The parity claim now covers BOTH lanes: whatever the answer is, a renamed board must reach it the same
+  way the default board does. Comparing the pair is what keeps a future lane-vocabulary edit from
+  reintroducing a literal on one side.
   */
-  it("renamed vocabulary: the candidate overlapping a review card is queued, not dispatched", async () => {
-    const outcome = await reviewLeaseScenario(RENAMED_NAMES);
-
-    expect(outcome.queuedOnLease).toBe(true);
-    expect(outcome.dispatched).toBe(false);
-  });
-
   it("both vocabularies reach the SAME outcome — no column-id literal survives on this path", async () => {
-    const [byDefault, renamed] = await Promise.all([
-      reviewLeaseScenario(DEFAULT_NAMES),
-      reviewLeaseScenario(RENAMED_NAMES),
+    const [reviewDefault, reviewRenamed, wipDefault, wipRenamed] = await Promise.all([
+      leaseScenario(DEFAULT_NAMES, DEFAULT_NAMES.review),
+      leaseScenario(RENAMED_NAMES, RENAMED_NAMES.review),
+      leaseScenario(DEFAULT_NAMES, DEFAULT_NAMES.wip),
+      leaseScenario(RENAMED_NAMES, RENAMED_NAMES.wip),
     ]);
 
-    expect(renamed).toEqual(byDefault);
+    expect(reviewRenamed).toEqual(reviewDefault);
+    expect(wipRenamed).toEqual(wipDefault);
+    expect(reviewDefault.queuedOnLease).not.toBe(wipDefault.queuedOnLease);
   });
 });
 
@@ -380,9 +447,32 @@ describe("scheduler base-branch stacking on a RENAMED board", () => {
     expect(resolved.resolveBaseBranch(tasks[1], tasks, () => false)).toBeNull();
   });
 
-  it.each([DEFAULT_NAMES, RENAMED_NAMES])("uses the default base after a predecessor lands on $review", async (names) => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-11:05 (RUFU-832):
+  THIS CASE ASSERTED A CONTRACT THIS FORK DECLINED. It asked that a predecessor whose landing is
+  confirmed stop supplying its base branch, which only held while `taskHoldsUnmergedCheckout` honoured
+  `task.mergeDetails.mergeConfirmed`. RUFU-330 re-recorded that predicate's decision — confirmation
+  releases nothing on its own, because it drops a claim while the checkout is still retained, and
+  checkout clearing (or a proven `empty` verdict) is this fork's release event — and this scheduler-side
+  assertion was never updated with it, so it has been red on `main` ever since, guarding nothing.
+  Stated as what the code actually decides: the flag is not the question, the retained checkout is.
+  */
+  it.each([DEFAULT_NAMES, RENAMED_NAMES])("keeps stacking on a $review predecessor whose landing is confirmed while its checkout is retained", async (names) => {
     const { resolved, tasks } = await baseBranchScenario(names);
     const predecessor = { ...tasks[0], mergeDetails: { mergeConfirmed: true } };
+    for (const link of [
+      { dependencies: [predecessor.id], blockedBy: null },
+      { dependencies: [], blockedBy: predecessor.id },
+    ]) {
+      const candidate = { ...tasks[1], ...link };
+      expect(resolved.resolveBaseBranch(candidate, [predecessor, candidate], (task) => task.column === names.review)).not.toBeNull();
+    }
+  });
+
+  /* The release event the declined flag was standing in for: the checkout itself is gone. */
+  it.each([DEFAULT_NAMES, RENAMED_NAMES])("drops the base once the $review predecessor's checkout is cleared", async (names) => {
+    const { resolved, tasks } = await baseBranchScenario(names);
+    const predecessor = { ...tasks[0], worktree: undefined, mergeDetails: { mergeConfirmed: true } };
     for (const link of [
       { dependencies: [predecessor.id], blockedBy: null },
       { dependencies: [], blockedBy: predecessor.id },

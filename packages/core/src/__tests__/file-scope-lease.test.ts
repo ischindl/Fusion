@@ -251,6 +251,12 @@ describe("checkout-emptiness proof input (RUFU-200)", () => {
   path-based, fail-closed answer: it can retain a lease on a checkout that admission would release,
   which costs one extra scheduling pass, never anybody's work. This assertion pins that asymmetry so
   it is not later "harmonized" by moving git I/O into the store.
+
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The path-based half of this contract is carried by the `drafting` assertions below: a retained
+  checkout in a hold lane is `dormant` here with no proof consulted at all. The review-lane line used to
+  be the demonstration; since RUFU-832 a review-trait column holds no lease in EITHER copy, so it now
+  answers `none` and the two classifiers agree on that lane instead of diverging on it.
   */
   it("keeps the store repair classifier path-based so no git runs inside a repair transaction", () => {
     const lanes = {
@@ -260,7 +266,8 @@ describe("checkout-emptiness proof input (RUFU-200)", () => {
     };
 
     expect(classifyRepairFileScopeLease({ column: "drafting", worktree: "/wt/RUFU-198" }, lanes)).toBe("dormant");
-    expect(classifyRepairFileScopeLease({ column: "reviewing", worktree: "/wt/RUFU-198" }, lanes)).toBe("active");
+    // RUFU-832: a review-trait lane holds no lease in either copy, retained checkout or not.
+    expect(classifyRepairFileScopeLease({ column: "reviewing", worktree: "/wt/RUFU-198" }, lanes)).toBe("none");
     expect(classifyRepairFileScopeLease({ column: "drafting" }, lanes)).toBe("none");
   });
 });

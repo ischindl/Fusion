@@ -77,7 +77,14 @@ built-in default and dying on a refusal the chain has nothing to do with.
 */
 function holderTask(repo: ReturnType<typeof createRepository>, id = "FN-A"): Task {
   return task(id, {
-    column: "in-review",
+    /*
+    FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+    This holder sat `in-review`, which is the exact claim this card removed: a review-trait lane no
+    longer holds a file-scope lease, so a review holder lets the first dispatch through un-gated and the
+    chain below never reaches the release it exists to prove. The holder works in the WIP lane now and
+    still lands through the same terminal finalizer, so the wake the chain measures is unchanged.
+    */
+    column: "in-progress",
     autoMerge: true,
     enabledWorkflowSteps: [],
     worktree: repo.holderWorktree,

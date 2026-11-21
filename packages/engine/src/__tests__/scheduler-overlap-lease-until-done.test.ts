@@ -33,17 +33,33 @@ describe("classifyFileScopeLease", () => {
     }
   });
 
-  it("keeps failed, paused, and user-paused review cards active while they own a worktree", () => {
-    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", status: "failed" }), [])).toMatchObject({ kind: "active" });
-    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", paused: true }), [])).toMatchObject({ kind: "active" });
-    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", userPaused: true }), [])).toMatchObject({ kind: "active" });
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): this case used to pin the OPPOSITE answer — that a
+  review card keeps its lease while it owns a worktree, failed or paused. A review-trait lane now holds
+  no lease at all: it writes nothing, remediation runs in the WIP lane, and the merge door re-proves
+  declared scope at squash time. Paused and user-paused are asserted here because pausing one review
+  card must not be what freezes every overlapping card (the measured RUFU-281/RUFU-369 shape).
+  */
+  it("releases failed, paused, and user-paused review cards whatever checkout they retain", () => {
+    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", status: "failed" }), [])).toMatchObject({ kind: "none" });
+    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", paused: true }), [])).toMatchObject({ kind: "none" });
+    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", userPaused: true }), [])).toMatchObject({ kind: "none" });
+    expect(classifyFileScopeLease(makeTask({ column: "in-review", worktree: "/wt/a", status: "merging" }), [])).toMatchObject({ kind: "none" });
   });
 
   it("releases a review lease after its worktree is gone", () => {
     expect(classifyFileScopeLease(makeTask({ column: "in-review" }), [])).toMatchObject({ kind: "none" });
   });
 
-  it("keeps workspace review and dormant leases until every repository checkout is removed", () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The review half of this pair used to be the workspace-checkout proof (a workspace card has no singular
+  `task.worktree`, so the review branch had to recognize `workspaceWorktrees`). The review lane releases
+  now, so the checkout-form proof lives on the dormant arm, which still has to recognize BOTH forms
+  before it may release. The terminal, soft-deleted, and emptied-workspace guards stay pinned here
+  because they answer before the lane question is ever asked.
+  */
+  it("keeps a workspace dormant lease until every repository checkout is gone while review releases", () => {
     const workspaceWorktrees = { "repo-a": { worktreePath: "/wt/fn-1/repo-a" } } as Task["workspaceWorktrees"];
     const review = makeTask({ column: "signoff", workspaceWorktrees });
     const hold = makeTask({ column: "backlog", workspaceWorktrees });
@@ -52,7 +68,7 @@ describe("classifyFileScopeLease", () => {
       isWipColumn: false,
       isReviewColumn: true,
       isTerminalColumn: false,
-    })).toMatchObject({ kind: "active" });
+    })).toMatchObject({ kind: "none" });
     expect(classifyFileScopeLease(hold, [], {
       isWipColumn: false,
       isReviewColumn: false,
@@ -213,7 +229,14 @@ describe("classifyFileScopeLease", () => {
     expect(classifyFileScopeLease(custom, [], { isWipColumn: false, isReviewColumn: false, isTerminalColumn: false })).toMatchObject({ kind: "dormant" });
   });
 
-  it("keeps the accepted-handoff exception limited to review cards", () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The accepted-handoff exception existed to release a review card whose completion handoff had been
+  accepted. RUFU-832 releases the whole review lane, so the exception is subsumed: the review answer is
+  `none` for BOTH shadow-flag values, and the shadow can no longer change any lease answer. The option
+  plumbing is kept (see the classifier's FNXC) so a later task can retire the marker reads themselves.
+  */
+  it("releases review for either shadow-flag value while WIP keeps its claim", () => {
     const review = makeTask({ column: "in-review", worktree: "/wt/a" });
     const wip = makeTask({ column: "in-progress", worktree: "/wt/a" });
 
@@ -224,7 +247,11 @@ describe("classifyFileScopeLease", () => {
     expect(classifyFileScopeLease(review, [], {
       mergeRequestContractShadowEnabled: false,
       handoffAccepted: true,
-    })).toMatchObject({ kind: "active" });
+    })).toMatchObject({ kind: "none" });
+    expect(classifyFileScopeLease(review, [], {
+      mergeRequestContractShadowEnabled: true,
+      handoffAccepted: false,
+    })).toMatchObject({ kind: "none" });
     expect(classifyFileScopeLease(wip, [], {
       mergeRequestContractShadowEnabled: true,
       handoffAccepted: true,
@@ -286,7 +313,16 @@ describe("classifyFileScopeLease with a checkout-emptiness proof (RUFU-200)", ()
     })).toMatchObject({ kind: "dormant" });
   });
 
-  it("confines the downgrade to the dormant branch: a proven-empty review checkout stays an active holder", () => {
+  it("confines the downgrade to the dormant branch: review releases on its lane alone", () => {
+    /*
+    FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+    This case used to prove that a proven-empty review checkout stayed an ACTIVE holder, i.e. that the
+    emptiness downgrade must not leak into the review branch. The downgrade is still confined to the
+    dormant branch — what changed is that the review branch no longer reaches the checkout question at
+    all, so it answers `none` from its lane alone, with or without a proof. The preserved half is that
+    a PROVEN-EMPTY hold checkout releases while an UNPROVEN one does not (the cases above), and that a
+    WIP holder is never asked about its checkout at all.
+    */
     const review = makeTask({ id: "FN-REVIEW", column: "in-review", worktree: "/wt/review" });
 
     expect(classifyFileScopeLease(review, [review, peer], {
@@ -294,7 +330,14 @@ describe("classifyFileScopeLease with a checkout-emptiness proof (RUFU-200)", ()
       isReviewColumn: true,
       isTerminalColumn: false,
       checkoutEmptiness: singularProof("empty"),
-    })).toMatchObject({ kind: "active" });
+    })).toMatchObject({ kind: "none" });
+
+    expect(classifyFileScopeLease(review, [review, peer], {
+      isWipColumn: false,
+      isReviewColumn: true,
+      isTerminalColumn: false,
+      checkoutEmptiness: singularProof("occupied"),
+    })).toMatchObject({ kind: "none" });
   });
 
   it("requires EVERY workspace repository to be empty before releasing", () => {

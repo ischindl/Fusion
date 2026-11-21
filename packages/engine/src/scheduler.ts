@@ -114,8 +114,15 @@ file still produce a match there, and a directory/glob entry covering a barrel (
 pattern) still matches through the prefix arms below. One rule here covers every consumer
 (admission, dispatch gate, gridlock detector, self-healing reconciliation, overlap report) because
 all of them route through this function; core's repair matcher mirrors it via the same shared
-predicate since `@fusion/core` cannot import `@fusion/engine`. The review-lane lease lifetime that
-feeds these decisions is intentionally unchanged — pausing a review card does not release its lease.
+predicate since `@fusion/core` cannot import `@fusion/engine`.
+
+FNXC:OverlapScheduling 2026-11-21-11:46 (RUFU-832):
+The closing sentence of the note above — "the review-lane lease lifetime ... is intentionally unchanged; pausing
+a review card does not release its lease" — is SUPERSEDED. A review-trait column now answers `none` at both
+lease classifiers (`classifyFileScopeLease` here, `classifyRepairFileScopeLease` in the store), so the matcher
+above can still report a real file match against a review-lane peer while the lease decision declines to
+serialize on it. Matching and claiming stay separate questions: this function answers "do these scopes share a
+file", the classifier answers "may this holder make someone wait", and only the second one changed.
 */
 export function findFileScopeOverlaps(a: string[], b: string[]): FileScopeOverlapMatch[] {
   const matches = new Map<string, FileScopeOverlapMatch>();
@@ -759,11 +766,37 @@ export function classifyFileScopeLease(
     };
   }
 
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): SUPERSEDES the review-lane lease lifetime.
+  A review-trait column holds NO file-scope lease. A file-scope lease is a claim on files a card is
+  about to WRITE, and a card parked in review writes nothing: implementation and pre-merge remediation
+  both run in a WIP-trait column (the built-in coding IR keeps its review/merge nodes in `in-review`
+  and `codeReviewRemediationNode` in `in-progress`), and the merge door re-proves the declared scope at
+  squash time (`FileScopeViolationError`), so the claim was never the thing protecting the work.
+  Keeping it made the review lane the only lane that granted the strongest lease with no release owner
+  at all — `in-review` is terminal-until-merged, and FN-6292's `reconcileDependencyBlockingLeases`
+  rebounds WIP holders only (it calls this classifier with a hard-coded `isWipColumn: true`), so a
+  finished card froze every overlapping card forever. Measured on the live board: 140 of 173 waiting
+  rows named three holders (`file-scope:RUFU-293` = 104, `file-scope:RUFU-281` = 36,
+  `file-scope:RUFU-369` = 4), all three `column=in-review`, two of them operator-paused, none executing.
+  That is also why a pause may not be what releases the claim: pausing one review card must be a
+  decision about that card, not an accident that halts everything overlapping it, so this branch answers
+  `none` before the pause, `status`, `failed`, `merging`, or `checkoutEmptiness` questions are asked.
+
+  What is deliberately UNCHANGED: the checkout and branch stay retained because they are the merge's
+  source (the merger reads them, and `autoMerge:false` leaves `in-review` terminal until a human merges)
+  — this releases only the scheduling claim, never the work. `taskHoldsUnmergedCheckout` keeps its
+  meaning for the WIP and dormant branches; RUFU-200's downgrade-only emptiness proof stays confined to
+  the dormant branch; and `resolveBaseBranch`'s stacking guard on a review-lane predecessor is a
+  base-branch decision, not a lease, so a dependent still rebuilds on its predecessor's branch.
+
+  Consequence for the option plumbing: the completion-handoff shadow (`mergeRequestContractShadowEnabled`
+  + `handoffAccepted`) no longer changes the lease answer — `none` subsumes the exception it used to
+  carve out — so a later task can retire those per-pass `getCompletionHandoffAcceptedMarker` reads. The
+  reads and the fields stay here untouched so this card changes one decision, not its callers.
+  */
   if (isReviewColumn) {
-    if (options?.mergeRequestContractShadowEnabled === true && options.handoffAccepted === true) {
-      return { kind: "none", waivedForTaskIds: [] };
-    }
-    return { kind: taskHoldsUnmergedCheckout(task) ? "active" : "none", waivedForTaskIds: releasedFollowerIds };
+    return { kind: "none", waivedForTaskIds: [] };
   }
 
   // A dormant checkout preserves work, but cannot win admission while its owner is
@@ -777,10 +810,10 @@ export function classifyFileScopeLease(
   an `empty` proof releases the dormant lease, while `occupied`, `unknown`, or no proof at all keeps it.
   A retained checkout in a planning/hold lane with zero commits and a clean tree is not work to preserve
   — it is the phantom that deadlocked RUFU-198's peer RUFU-199 forever.
-  The review branch above deliberately does NOT consult it. A review-lane checkout is still the merge's
-  source: the merger reads it, and `autoMerge:false` leaves `in-review` terminal-until-merged by a human,
-  so releasing that lease on an `empty` verdict would free overlapping files while a human still owns
-  the merge. WIP skips the checkout question entirely by design (see the FNXC above).
+  Since RUFU-832 the review branch above never reaches the checkout question at all (it answers `none`
+  for its whole lane), so this downgrade is confined to hold/planning lanes. The downgrade itself is
+  still deliberately NOT applied to a retained checkout in any lane whose card could still be writing,
+  and WIP skips the checkout question entirely by design (see the FNXC above).
   */
   return {
     kind: taskHoldsUnmergedCheckout(task, options?.checkoutEmptiness) ? "dormant" : "none",

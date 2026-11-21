@@ -204,20 +204,34 @@ describe("blockOuterDispatchWhenFileScopeLeaseHeld", () => {
     expect(store.transitionQueuedEpisode).toHaveBeenCalledOnce();
   });
 
-  it("uses a workspace review checkout as an active holder", async () => {
-    const holder = makeTask({
-      id: "FN-HOLDER",
-      column: "in-review",
-      workspaceWorktrees: { "repo-a": { worktreePath: "/wt/fn-holder/repo-a" } } as Task["workspaceWorktrees"],
-    });
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): this case used to prove a workspace REVIEW checkout
+  was an active holder. A review-trait lane releases its claim now, so the pair states both halves of the
+  new truth: a review-lane workspace holder admits the candidate, while a workspace-only holder in the
+  WIP lane - a card with no singular `task.worktree` - is still registered as a claimant. What stays
+  under test is that the gate reads the WORKSPACE checkout form, not just the singular one.
+  */
+  it("releases a candidate behind a workspace review holder while a workspace WIP holder still claims", async () => {
+    const workspaceWorktrees = { "repo-a": { worktreePath: "/wt/fn-holder/repo-a" } } as Task["workspaceWorktrees"];
+    const reviewHolder = makeTask({ id: "FN-HOLDER", column: "in-review", workspaceWorktrees });
     const candidate = makeTask();
-    const store = createStore([holder, candidate], {
-      [holder.id]: ["repo-a/src/shared.ts"],
+    const reviewStore = createStore([reviewHolder, candidate], {
+      [reviewHolder.id]: ["repo-a/src/shared.ts"],
       [candidate.id]: ["repo-a/src/shared.ts"],
     });
 
-    await expect(blockOuterDispatchWhenFileScopeLeaseHeld({ store, getRunContextFor: () => undefined }, candidate)).resolves.toBe(true);
-    expect(store.transitionQueuedEpisode).toHaveBeenCalledWith(candidate.id, expect.objectContaining({ overlapBlockedBy: holder.id }));
+    await expect(blockOuterDispatchWhenFileScopeLeaseHeld({ store: reviewStore, getRunContextFor: () => undefined }, candidate)).resolves.toBe(false);
+    expect(reviewStore.transitionQueuedEpisode).not.toHaveBeenCalled();
+
+    const wipHolder = makeTask({ id: "FN-HOLDER", column: "in-progress", workspaceWorktrees });
+    const wipCandidate = makeTask({ id: "FN-CANDIDATE" });
+    const wipStore = createStore([wipHolder, wipCandidate], {
+      [wipHolder.id]: ["repo-a/src/shared.ts"],
+      [wipCandidate.id]: ["repo-a/src/shared.ts"],
+    });
+
+    await expect(blockOuterDispatchWhenFileScopeLeaseHeld({ store: wipStore, getRunContextFor: () => undefined }, wipCandidate)).resolves.toBe(true);
+    expect(wipStore.transitionQueuedEpisode).toHaveBeenCalledWith(wipCandidate.id, expect.objectContaining({ overlapBlockedBy: wipHolder.id }));
   });
 
   it("does not apply overlap admission when grouping is disabled", async () => {
@@ -232,15 +246,21 @@ describe("blockOuterDispatchWhenFileScopeLeaseHeld", () => {
     expect(store.transitionQueuedEpisode).not.toHaveBeenCalled();
   });
 
-  it("does not hold a candidate whose only shared entry with an in-review holder is the core barrel (RUFU-226)", async () => {
+  it("does not hold a candidate whose only shared entry with a WIP holder is the core barrel (RUFU-226)", async () => {
     /*
     FNXC:OverlapScheduling 2026-09-11-22:56:
     The measured incident at the dispatch door: holder parked in review with its worktree retained
     (`autoMerge:false`) whose scope shares ONLY `packages/core/src/index.ts` with the candidate.
     Barrel lines are append-only shared traffic — dispatch must proceed without a queue stamp or a
     settings change; the paired test below proves a real shared file still holds.
+
+    FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+    The holder here moved from `in-review` to the WIP lane on purpose. RUFU-832 releases the whole
+    review lane, so a review holder would make BOTH arms of this pair pass for the wrong reason (no
+    lease at all, barrel matcher never consulted). A WIP holder still claims the files, so the barrel
+    exemption and its guard keep discriminating exactly as they did.
     */
-    const holder = makeTask({ id: "FN-HOLDER", column: "in-review", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
+    const holder = makeTask({ id: "FN-HOLDER", column: "in-progress", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
     const candidate = makeTask({ id: "FN-CANDIDATE", createdAt: "2026-01-02T00:00:00.000Z" });
     const store = createStore([holder, candidate], {
       [holder.id]: ["packages/core/src/index.ts", "packages/core/src/store.ts"],
@@ -253,7 +273,8 @@ describe("blockOuterDispatchWhenFileScopeLeaseHeld", () => {
   });
 
   it("holds the candidate when the barrel-shared scopes also share a real file (RUFU-226 guard)", async () => {
-    const holder = makeTask({ id: "FN-HOLDER", column: "in-review", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
+    // RUFU-832: WIP holder for the same reason as the paired case above - it is the lane that still claims.
+    const holder = makeTask({ id: "FN-HOLDER", column: "in-progress", worktree: "/wt/fn-holder", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" });
     const candidate = makeTask({ id: "FN-CANDIDATE", createdAt: "2026-01-02T00:00:00.000Z" });
     const store = createStore([holder, candidate], {
       [holder.id]: ["packages/core/src/index.ts", "packages/core/src/store.ts"],

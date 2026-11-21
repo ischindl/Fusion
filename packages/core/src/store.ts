@@ -620,8 +620,21 @@ unclassified lifecycle guard and let this repair path drift from the common role
 FNXC:OverlapScheduling 2026-08-29-07:04:
 `LifecycleColumns` intentionally chooses one destination per role and cannot classify membership.
 Overlap repair therefore receives complete role sets from the blocker's own selected workflow: a
-second WIP or review lane retains unfinished work, while every Complete lane releases it; soft deletion
+second WIP lane retains unfinished work (a second review lane released its claim as of RUFU-832, two
+blocks below), while every Complete lane releases it; soft deletion
 is classified separately by `deletedAt`.
+
+FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+The INTENTIONALLY-UNPROVEN boundary now AGREES with the scheduler on the review lane: a review-trait
+column answers `none` whether or not its checkout is retained. A file-scope lease claims files a card is
+about to write, and a card parked in review writes nothing — remediation runs in the WIP lane and the
+merge door re-proves declared scope at squash time — while the review lane is terminal-until-merged, so
+the old `active` answer had no release owner and froze every overlapping card (measured: 140 of 173
+waiting rows behind three review-lane holders, two of them operator-paused). A repair copy that kept
+answering `active` there would re-assert a blocker the scheduler had just released, which is the exact
+drift the `isSharedBarrelOnlyMatch` note in `tasks/file-scope-lease.ts` warns about, so the two copies
+must keep answering the same way for the same fixture. The unproven asymmetry that REMAINS is the
+checkout-emptiness proof only: it is still confined to the dormant branch and still never runs here.
 
 FNXC:OverlapScheduling 2026-09-08-22:05 (RUFU-200):
 This classifier is an INTENTIONALLY UNPROVEN boundary: it never receives a checkout-emptiness proof and
@@ -637,13 +650,17 @@ export function classifyRepairFileScopeLease(
   if (candidate.deletedAt || candidate.mergeDetails?.mergeConfirmed === true) return "none";
   if (!lanes) {
     if (isWipColumnRole(undefined, candidate.column)) return "active";
-    return isReviewColumnRole(undefined, candidate.column) && taskHoldsUnmergedCheckout(candidate) ? "active" : "none";
+    /*
+    RUFU-832: the review half of the unresolvable-workflow fallback answers `none` like the scheduler's
+    review branch. Every other non-WIP lane keeps its pre-existing `none` (never `dormant`) — the legacy
+    fallback never had a dormant tier, and inventing one here would widen a lane this task does not own.
+    */
+    return "none";
   }
   if (lanes.terminal?.has(candidate.column)) return "none";
   if (repairLeaseLaneIncludes(lanes.wip, candidate.column)) return "active";
-  if (repairLeaseLaneIncludes(lanes.review, candidate.column)) {
-    return taskHoldsUnmergedCheckout(candidate) ? "active" : "none";
-  }
+  // RUFU-832: the resolved-lane answer must match the scheduler's review branch byte-for-byte in effect.
+  if (repairLeaseLaneIncludes(lanes.review, candidate.column)) return "none";
   return taskHoldsUnmergedCheckout(candidate) ? "dormant" : "none";
 }
 

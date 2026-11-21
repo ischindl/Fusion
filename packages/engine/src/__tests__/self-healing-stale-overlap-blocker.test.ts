@@ -167,9 +167,14 @@ describe("SelfHealingManager stale overlap blocker reconciliation", () => {
     expect(tasks.get(dependent.id)?.overlapBlockedBy).toBeNull();
   });
 
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The `FN-ACTIVE-REVIEW` arm of this pair lived in the review lane, which no longer holds a lease; its
+  replacement is the release case immediately below, which is the drain this card exists to deliver.
+  The WIP arm keeps the preserve half pinned.
+  */
   it.each([
     createTask("FN-ACTIVE-WIP", { column: "in-progress" }),
-    createTask("FN-ACTIVE-REVIEW", { column: "in-review", worktree: "/tmp/fn-active-review" }),
   ])("preserves an overlap blocker that still holds a lease ($id)", async (blocker) => {
     const dependent = createTask(`FN-D-${blocker.id}`, {
       status: "queued",
@@ -185,15 +190,53 @@ describe("SelfHealingManager stale overlap blocker reconciliation", () => {
     expect(updateTaskAtomic).not.toHaveBeenCalled();
   });
 
-  it("clears a review-lane blocker whose only shared entry with the dependent is a package barrel (RUFU-226)", async () => {
+  /*
+  FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+  The operator-visible failure this card removes: a card that finished its work sat `in-review` with its
+  checkout retained, and every dependent naming it stayed `queued` forever because the review lane is
+  terminal-until-merged and no release authority existed. The sweep re-runs the shared classifier, so it
+  now sees `none` for that holder and clears the marker in the same pass — no operator clicking Clear,
+  no card moved. The retained checkout and branch are untouched: they are the merge's source.
+  */
+  it("clears a marker whose only holder is a review-lane card that keeps its checkout (RUFU-832)", async () => {
+    const blocker = createTask("RUFU-293", {
+      column: "in-review",
+      worktree: "/wt/rufu-293",
+      branch: "fusion/rufu-293",
+      autoMerge: false,
+      userPaused: true,
+    });
+    const dependent = createTask("RUFU-DR-1", { status: "queued", overlapBlockedBy: blocker.id });
+    const { store, tasks, updateTaskAtomic } = createStore([blocker, dependent]);
+    (store.parseFileScopeFromPrompt as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => (
+      id === dependent.id
+        ? ["packages/core/src/store.ts", "packages/engine/src/scheduler.ts"]
+        : ["packages/core/src/store.ts"]
+    ));
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+
+    await manager.clearStaleBlockedBy();
+
+    expect(tasks.get(dependent.id)?.overlapBlockedBy).toBeNull();
+    expect(updateTaskAtomic).toHaveBeenCalled();
+    // The release is a scheduling decision only - the merge's source must survive it.
+    expect(tasks.get(blocker.id)).toMatchObject({ worktree: "/wt/rufu-293", branch: "fusion/rufu-293" });
+  });
+
+  it("clears a WIP blocker whose only shared entry with the dependent is a package barrel (RUFU-226)", async () => {
     /*
     FNXC:OverlapScheduling 2026-09-11-22:56:
     Recovery half of the incident: the dependent still carries `overlapBlockedBy` for a live
     review-lane holder, but the two scopes now share only the core barrel. The scheduler will not
     re-stamp this pair, so the sweep — which re-runs the shared `pathsOverlap` predicate — must treat
     the marker as stale and clear it.
+
+    FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832):
+    The holder is a WIP card now on purpose: a review-lane holder releases outright, so this pair would
+    pass for the wrong reason there. With a holder that still claims, the barrel exemption is again the
+    only thing that clears the marker, which is what this case pins.
     */
-    const blocker = createTask("RUFU-204", { column: "in-review", worktree: "/wt/rufu-204", autoMerge: false });
+    const blocker = createTask("RUFU-204", { column: "in-progress", worktree: "/wt/rufu-204", autoMerge: false });
     const dependent = createTask("RUFU-217", { status: "queued", overlapBlockedBy: blocker.id });
     const { store, tasks, updateTaskAtomic } = createStore([blocker, dependent]);
     (store.parseFileScopeFromPrompt as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => (
@@ -210,9 +253,10 @@ describe("SelfHealingManager stale overlap blocker reconciliation", () => {
   });
 
   it("preserves the marker when the barrel-shared pair also shares a real file (RUFU-226 guard)", async () => {
-    // Same holder/dependent shapes, but both scopes also name packages/core/src/store.ts — the
-    // exemption is per matched pair, so the live lease keeps the queued hold.
-    const blocker = createTask("RUFU-204", { column: "in-review", worktree: "/wt/rufu-204", autoMerge: false });
+    // Same holder/dependent shapes (a claiming WIP holder, per RUFU-832 above), but both scopes also
+    // name packages/core/src/store.ts — the exemption is per matched pair, so the live lease keeps the
+    // queued hold.
+    const blocker = createTask("RUFU-204", { column: "in-progress", worktree: "/wt/rufu-204", autoMerge: false });
     const dependent = createTask("RUFU-217", { status: "queued", overlapBlockedBy: blocker.id });
     const { store, tasks, updateTask, updateTaskAtomic } = createStore([blocker, dependent]);
     (store.parseFileScopeFromPrompt as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => (

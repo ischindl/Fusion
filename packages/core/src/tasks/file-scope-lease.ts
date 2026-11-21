@@ -114,9 +114,11 @@ Breadth is the risk here: this suppresses a safety mechanism, so a bare `src/ind
 A workspace repo-key prefix (`<repoKey>/packages/<pkg>/src/index.ts`) is recognized because
 `normalizeOverlapScopeForTask` qualifies scope entries before comparison.
 
-The review-lane lease lifetime is intentionally unchanged: a review-lane holder keeps its lease while
-its checkout is unmerged, and pausing must not release it; only the pairwise path comparison waives the
-barrel entry. Both matcher copies (engine `findFileScopeOverlaps` and core `repairScopesOverlap`) call
+The review-lane half of that lifetime statement is superseded by RUFU-832: a review-trait column holds
+no file-scope lease at all, so nothing in that lane needs a waiver, and pausing a review card never
+releases anything because there is nothing held. What this exemption still governs is a lane that DOES
+claim — WIP and hold/dormant — where only the pairwise path comparison waives the barrel entry. Both
+matcher copies (engine `findFileScopeOverlaps` and core `repairScopesOverlap`) call
 `isSharedBarrelOnlyMatch` so scheduler admission, the dispatch gate, gridlock detection, self-healing,
 the overlap report, and store repair cannot drift.
 */

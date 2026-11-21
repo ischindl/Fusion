@@ -3693,6 +3693,7 @@ In the full Chat view on tablet and desktop, use the conversation-list button in
 An externally blocked task uses a Blocked cover on board cards and the same notice in List and Task Detail. The notice shows the durable raw error code and message. Its robot action opens Chat with an explanation prompt, and Retry resumes the interrupted step. Dependency and file-overlap waits continue to use waiting labels rather than the Blocked identity. The cover and actions use the same responsive component contract on desktop and mobile.
 
 - `File scope overlap blocker: <id> (stale)` means the named task no longer owns the overlapping files. Self-healing clears that obsolete wait automatically across planning, work, and review lanes; a blocker that still holds an overlapping file-scope lease is preserved.
+- A blocker that has reached a **review** lane stops owning the overlapping files at all (RUFU-832): its lane releases the file-scope claim the moment the card arrives there, so the waiting label on the cards behind it clears on the next maintenance pass with nothing to click. A review card keeps its branch, its worktree and its place in the merge queue — only the queue claim is released — and pausing a card that sits in review is now a decision about that one card rather than a stop for every card overlapping it.
 
 ### Desktop local-startup diagnostics
 

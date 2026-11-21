@@ -355,13 +355,19 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
   it("dispatches a candidate that shares only a package barrel export with an active lease holder (RUFU-226)", async () => {
     /*
     FNXC:OverlapScheduling 2026-09-11-22:56:
-    The RUFU-204 head-block shape at admission: a parked review-lane holder shares only
-    `packages/core/src/index.ts` with the candidate. A barrel line is append-only shared traffic, so
-    admission must dispatch the candidate instead of stamping `overlapBlockedBy` — no settings change
-    required. The paired test below pins that a genuine shared file still head-blocks.
+    The RUFU-204 head-block shape at admission: a WIP holder shares only `packages/core/src/index.ts`
+    with the candidate. A barrel line is append-only shared traffic, so admission must dispatch the
+    candidate instead of stamping `overlapBlockedBy` — no settings change required. The paired test below
+    pins that a genuine shared file still head-blocks.
+
+    FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+    Both halves of this pair held their holder in the review lane, where a lease no longer exists at all.
+    A differential pair needs exactly one variable, and only a lane that still claims can carry the block
+    half, so both holders now sit in WIP. The pair differs solely in the candidate's second scope entry,
+    which is the variable the RUFU-226 exemption is about.
     */
     const tasks = [
-      makeTask({ id: "FN-204", column: "in-review", worktree: "/wt/fn-204", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" }),
+      makeTask({ id: "FN-204", column: "in-progress", worktree: "/wt/fn-204", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" }),
       makeTask({ id: "FN-217", column: "todo", createdAt: "2026-01-01T00:01:00.000Z" }),
     ];
     const store = createStore(tasks, {
@@ -383,9 +389,10 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
 
   it("head-blocks the candidate when the barrel-shared scopes also share a real file (RUFU-226 guard)", async () => {
     // Same fixture with FN-217's second entry swapped to the holder's real file — the exemption is
-    // per matched pair, so this collision must still serialize the candidate behind FN-204.
+    // per matched pair, so this collision must still serialize the candidate behind FN-204. The holder
+    // shares the paired test's lane (RUFU-832): a review-lane holder would release and prove nothing.
     const tasks = [
-      makeTask({ id: "FN-204", column: "in-review", worktree: "/wt/fn-204", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" }),
+      makeTask({ id: "FN-204", column: "in-progress", worktree: "/wt/fn-204", autoMerge: false, createdAt: "2026-01-01T00:00:00.000Z" }),
       makeTask({ id: "FN-217", column: "todo", createdAt: "2026-01-01T00:01:00.000Z" }),
     ];
     const store = createStore(tasks, {
@@ -967,11 +974,21 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
     expect(store.moveTask).toHaveBeenCalledWith("FN-901", "in-progress", expect.anything());
   });
 
-  it("holds an overlapping candidate behind a failed review task until its work lands", async () => {
+  it("holds an overlapping candidate behind a failed WIP task whose work has not landed", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+    This case read "...behind a failed review task until its work lands", and the review half of that claim
+    is exactly what RUFU-832 removed: a review-lane card answers `none` whatever its status, so this
+    fixture would have dispatched FN-B and proved the opposite of its title. What the case exists for —
+    unmerged work stays serialized while it can still be written, and the landing rather than the lane
+    crossing is what releases it — survives in the lane that writes, so the holder is now a failed WIP card
+    that kept its checkout. The review-lane answer is pinned by the case below and end-to-end by
+    `review-lane-file-scope-lease-release.test.ts`.
+    */
     const tasks = [
       makeTask({
         id: "FN-A",
-        column: "in-review",
+        column: "in-progress",
         status: "failed",
         worktree: "/wt/a",
         priority: "normal",
@@ -992,6 +1009,39 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
       status: "queued",
       overlapBlockedBy: "FN-A",
     });
+  });
+
+  it.each([["a retained checkout", true], ["no checkout at all", false]])("releases an overlapping candidate the moment its holder reaches the review lane, with %s", async (_label: string, ownsCheckout: boolean) => {
+    /*
+    FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+    The other half of the removed claim, stated as the new truth: the holder is still `failed`, its commit
+    is still unmerged — and the candidate dispatches anyway, because a card that has stopped editing holds
+    nothing. Tying the strongest lease to the one lane with no release owner is what left 140 continuations
+    waiting behind three finished cards. The checkout is a parameter because the release is no longer
+    conditioned on it either: this one case absorbs the deleted "a review holder no longer owns a worktree"
+    case below, since no release condition applies to the lane at all.
+    */
+    const tasks = [
+      makeTask({
+        id: "FN-A",
+        column: "in-review",
+        status: "failed",
+        ...(ownsCheckout ? { worktree: "/wt/a" } : {}),
+        priority: "normal",
+      }),
+      makeTask({ id: "FN-B", column: "todo", priority: "normal" }),
+    ];
+    const store = createStore(tasks, {
+      "FN-A": ["packages/core/src/store.ts"],
+      "FN-B": ["packages/core/src/store.ts"],
+    });
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTask).toHaveBeenCalledWith("FN-B", "in-progress", expect.anything());
+    expect(tasks.find((task) => task.id === "FN-B")?.overlapBlockedBy ?? null).toBe(null);
   });
 
   it("holds an overlapping candidate behind a replan-bounced task with a preserved worktree", async () => {
@@ -1026,10 +1076,18 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
     });
   });
 
-  it("releases a queued overlap only after the failed review holder reaches a terminal lane", async () => {
+  it("releases a queued overlap only after the failed WIP holder reaches a terminal lane", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+    The holder sat `in-review`, where the release event is no longer the terminal move — the claim is gone
+    the moment the card lands there, so the first pass would have released and the terminalisation would
+    have proved nothing. The invariant this case guards (serialisation survives to the landing) is still
+    true for a lane that writes, so the holder now starts failed in WIP with its checkout retained: still
+    queued while the unmerged work sits there, released once it reaches a terminal lane.
+    */
     const blocker = makeTask({
       id: "FN-A",
-      column: "in-review",
+      column: "in-progress",
       status: "failed",
       worktree: "/wt/a",
     });
@@ -1052,22 +1110,17 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
     expect(candidate.overlapBlockedBy).toBeNull();
   });
 
-  it("releases a candidate when a review holder no longer owns a worktree", async () => {
-    const tasks = [
-      makeTask({ id: "FN-A", column: "in-review", status: "failed" }),
-      makeTask({ id: "FN-B", column: "todo" }),
-    ];
-    const store = createStore(tasks, {
-      "FN-A": ["packages/core/src/store.ts"],
-      "FN-B": ["packages/core/src/store.ts"],
-    });
-    const scheduler = new Scheduler(store);
-    (scheduler as any).running = true;
-
-    await scheduler.schedule();
-
-    expect(store.moveTask).toHaveBeenCalledWith("FN-B", "in-progress", expect.anything());
-  });
+  /*
+  FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+  Deleted here: "releases a candidate when a review holder no longer owns a worktree". Its subject was the
+  checkout-ownership clause of the review-lane branch, and that whole branch is gone — a review-trait card
+  answers `none` whether or not it owns a checkout, so the case could only pass for a reason it never
+  named. Its surviving content is the checkout parameter of the review-lane release case above. Checkout
+  ownership still decides whether a DORMANT holder holds, and that is proven two-sided by
+  `store.ts::classifyFileScopeLease` (a proven-empty dormant lease vs an unproven holder). For a WIP holder
+  the checkout is deliberately irrelevant: the scheduler moves a card into WIP before implementation
+  persists one, so requiring it there would let a second card start editing the same files mid-interval.
+  */
 
   it.each(["prerequisite", "unrelated"])("schedules a ready %s while a dormant overlap holder waits for dependencies", async (kind) => {
     const candidate = makeTask({ id: "FN-READY", createdAt: "2026-01-02T00:00:00Z" });
@@ -1280,8 +1333,15 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
   });
 
   it("bypasses file-scope leases when grouping is disabled or the holder is coordination-only", async () => {
+    /*
+    FNXC:OverlapScheduling 2026-11-21-11:20 (RUFU-832):
+    Both holders here sat in `in-review`, which now releases on its own. A bypass is only proven when the
+    thing being bypassed would otherwise have blocked, so both holders sit in a lane that claims: the first
+    case is decided by `groupOverlappingFiles: false`, the second by `noCommitsExpected` naming the whole
+    job, and neither answer can be credited to the lane any more.
+    */
     const disabledTasks = [
-      makeTask({ id: "FN-A", column: "in-review", status: "failed", worktree: "/wt/a" }),
+      makeTask({ id: "FN-A", column: "in-progress", status: "failed", worktree: "/wt/a" }),
       makeTask({ id: "FN-B", column: "todo" }),
     ];
     const disabledStore = createStore(disabledTasks, {
@@ -1295,7 +1355,7 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
     expect(disabledStore.moveTask).toHaveBeenCalledWith("FN-B", "in-progress", expect.anything());
 
     const coordinationTasks = [
-      makeTask({ id: "FN-C", column: "in-review", worktree: "/wt/c", noCommitsExpected: true }),
+      makeTask({ id: "FN-C", column: "in-progress", worktree: "/wt/c", noCommitsExpected: true }),
       makeTask({ id: "FN-D", column: "todo" }),
     ];
     const coordinationStore = createStore(coordinationTasks, {

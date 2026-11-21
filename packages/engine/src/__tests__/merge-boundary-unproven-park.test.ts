@@ -31,7 +31,7 @@ describe("merge-boundary proof routing", () => {
     expect(isTerminalMergeGraphFailureValue(MERGE_BOUNDARY_UNPROVEN_VALUE)).toBe(true);
   });
 
-  it("parks an unprovable retry once without requesting merge and keeps its worktree-backed lease", async () => {
+  it("parks an unprovable retry once without requesting merge and keeps its checkout and branch while releasing the lease", async () => {
     const live = { ...task, worktree: "/worktree", status: undefined };
     const updateTask = vi.fn(async (_id, patch) => ({ ...live, ...patch }));
     const updateTaskAtomic = vi.fn(async (id, reducer, context) => {
@@ -51,8 +51,17 @@ describe("merge-boundary proof routing", () => {
     expect(mergeRequester).not.toHaveBeenCalled();
     expect(updateTask).toHaveBeenCalledWith("FN-9157", expect.objectContaining({ status: "failed", error: expect.stringContaining("MERGE_BOUNDARY_UNPROVEN:") }), undefined);
     expect(logEntry).toHaveBeenCalledWith("FN-9157", expect.stringContaining("retry parked task"), undefined, undefined);
-    expect(shouldHoldActiveFileScopeLease({ ...live, status: "failed" }, [])).toBe(true);
+    /*
+    FNXC:OverlapScheduling 2026-11-21-10:26 (RUFU-832): this pair used to pin the review-lane LEASE. What
+    the parked card must keep is its CHECKOUT AND BRANCH - they are the merge's source and this card's
+    refusal is about proving the merge boundary, not about owning files. Since RUFU-832 a review-trait
+    column holds no file-scope lease at all, so both answers are false; the worktree field itself is
+    what a merge retry must not lose, and the assertions above (no merge request, status/error patch)
+    are the ones that protect it.
+    */
+    expect(shouldHoldActiveFileScopeLease({ ...live, status: "failed" }, [])).toBe(false);
     expect(shouldHoldActiveFileScopeLease({ ...live, status: "failed", worktree: undefined }, [])).toBe(false);
+    expect(live.worktree).toBe("/worktree");
   });
 
   it("routes a retry boundary evidence gap through the shared implementation recovery before terminal parking", async () => {
