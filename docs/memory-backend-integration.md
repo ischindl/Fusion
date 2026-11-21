@@ -179,6 +179,27 @@ widened here. In the scoped row, `matchedCount` is now the rows the server answe
 while `limit` stays the page the caller asked for; `stash-read-window.test.ts` pins the arithmetic, the
 single widening, the degrade, and the trim on every read surface.
 
+The page that read returns is then **cleaned before it is sized** (RUFU-1088,
+`packages/core/src/memory/stash-result-hygiene.ts`). The same build that returned a constant score returned
+ten identical `bash` snippets, nine of them from one session: Stash keyword search indexes tool-invocation
+events, so a busy session's tool rows outnumber a real session's prose rows and fill the page with the
+tool's name. The lane therefore drops textless rows, drops single-bare-token rows unless the event type is
+on the prose allowlist (`STASH_PROSE_EVENT_TYPES`), dedups by event id — or by `session_id` plus normalized
+text when the server gave no id — and takes **one row per session** (`STASH_MAX_ROWS_PER_SESSION`): a page
+of hits from one session is one lead to follow, not ten. Hygiene runs after RUFU-1008's project scoping and
+before the final trim, so foreign and unidentified rows consume no slot and `limit` stays a promise about
+the asking project's own rows. This changes only what the SAME answer contains: no second request, and the
+URL stays exactly the contract RUFU-121 froze and RUFU-1146 widened. When hygiene empties a page the outcome
+is `no-match` with a zero delivered count — never a padded page — and `GET /memory`'s `memories recalled`
+header counts delivered rows, so it cannot announce four memories and print three bodies.
+
+A cleaned page also stops lying about relevance. When every row carries the SAME score, each row is labelled
+`rankingSource: "positional"` (the server's returned order, magnitudes untouched) or — when the server sent
+no usable score but distinct `rank` values — `"server-rank-fallback"` (the magnitude becomes the rank tier:
+first of N is N/N, last is 1/N). Every consumer then prints a sentence naming that order instead of
+`(score N)`, and the `fn_memory_search` tool stops re-sorting such a page by path so the order it describes
+is the order it rendered. A page with genuine distinct scores is untouched and unlabelled.
+
 ## 5. Per-conversation memory focus (read-time ranking bias)
 
 Fusion implements **conversation focus** as an opt-in feature. Enable

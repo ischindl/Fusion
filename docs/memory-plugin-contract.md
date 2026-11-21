@@ -152,6 +152,19 @@ Runtime backend resolution uses an internal `MemorySettings` shape with `memoryB
    constant either: 50,000 characters is roughly 14K tokens, which is what a 64K-context chat model can afford inline
    (`FNXC:ChatContextBudget 2026-08-20-11:56`).
 
+**Stash result hygiene and the score's honesty label (RUFU-1088).** A Stash page is cleaned on its way to
+the caller — one event per slot, one row per session (`STASH_MAX_ROWS_PER_SESSION`), and no row whose text
+is empty or a single bare token (a tool name, a mode label) unless its event type is on the prose
+allowlist (`STASH_PROSE_EVENT_TYPES`). The rule that matters for this contract is the second half: a row's
+`score` may not be printed as relevance unless it IS relevance. When a page arrives with one score value
+on every row — the build deployed 2026-11-18 returns a constant `0.18558138608932495` for every keyword
+hit — the row carries `rankingSource: "positional"` (the server's returned order, magnitudes untouched) or
+`"server-rank-fallback"` (the server sent no usable score but distinct `rank` values, so the magnitude
+becomes the rank tier). A consumer that sees `rankingSource` must describe the order or stay silent; it
+must not print the number as a match score. Pages with genuine distinct scores stay exactly as they were —
+unlabelled, original magnitudes, no note. See
+`packages/core/src/memory/stash-result-hygiene.ts`.
+
 ---
 
 ## 2. OpenClaw Research Findings

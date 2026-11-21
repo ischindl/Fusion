@@ -24,7 +24,7 @@ The tool body below owns schema-shaped refusals only; candidacy, content proof, 
 import { HEARTBEAT_REVIEW_VERDICTS, recordHeartbeatReviewVerdict, type HeartbeatReviewVerdict } from "./review/record-review-verdict.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes, MEMORY_SNIPPET_STRIDE_LINES, MEMORY_SNIPPET_WINDOW_LINES, countMemoryTermMatches, deriveMemoryQueryTerms, dropLineOverlappingMemoryHits, hasProjectMemoryContent } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, stashPageOrderNote, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes, MEMORY_SNIPPET_STRIDE_LINES, MEMORY_SNIPPET_WINDOW_LINES, countMemoryTermMatches, deriveMemoryQueryTerms, dropLineOverlappingMemoryHits, hasProjectMemoryContent } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 /*
 FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): this module previously kept its own private
@@ -879,6 +879,14 @@ type MemoryToolOptions = {
   secretsReader?: StashSecretsReader;
 };
 
+/*
+FNXC:StashResultHygiene 2026-11-21-14:40 (RUFU-1088):
+This is a STRUCTURAL clone of core's `MemorySearchResult`, not an import — the file-layer hits this tool
+produces itself (`.fusion/memory/**`, the agent's own `MEMORY.md`) never pass through a remote backend, so
+the tool cannot depend on a backend-owned type. The clone means a field core grows does not arrive here by
+itself: `rankingSource` was added to both halves in the same change, because a renderer that cannot see the
+label prints the number beside it as relevance, which is the lie RUFU-1088 removes.
+*/
 type MemorySearchHit = {
   path: string;
   lineStart: number;
@@ -886,6 +894,11 @@ type MemorySearchHit = {
   snippet: string;
   score: number;
   backend: string;
+  /**
+   * RUFU-1088: set only when the order is not a relevance verdict. The union is spelled out rather than
+   * imported so it stays a clone of core's `MemoryRankingSource` — the two must grow together.
+   */
+  rankingSource?: "positional" | "server-rank-fallback";
 };
 
 /*
@@ -5753,8 +5766,22 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
         limit,
         ...(activeTopic ? { topic: activeTopic } : {}),
       }, settings, undefined, options?.secretsReader);
+      /*
+      FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+      The tie-break, not the sort. A page the lane labelled `positional` has NO relevance ordering, and
+      re-sorting it by score-then-path replaces the only order it does have (the server's response order)
+      with an alphabetical one — at which point the honesty note below would be describing an order this
+      function invented. So when any delivered row carries a `rankingSource`, ties keep their incoming
+      order (`Array#sort` is stable, and the incoming order is the lane's); every other page keeps the
+      existing deterministic path tie-break, which is what makes a file-lane page reproducible.
+      */
+      const pageOrderIsNotRelevance = projectResults.some((r) => r.rankingSource !== undefined);
       const results = [...agentResults, ...projectResults]
-        .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+        .sort(
+          pageOrderIsNotRelevance
+            ? (a, b) => b.score - a.score
+            : (a, b) => b.score - a.score || a.path.localeCompare(b.path),
+        )
         .slice(0, limit);
 
       if (results.length === 0) {
@@ -5777,10 +5804,27 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
         };
       }
 
-      const text = results.map((result, index) => [
-        `${index + 1}. ${result.path}:${result.lineStart}-${result.lineEnd} (score ${result.score}, ${result.backend})`,
-        result.snippet,
-      ].join("\n")).join("\n\n");
+      /*
+      FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+      `(score N)` is printed only where the number IS a relevance claim. On a labelled page the digits are
+      a constant the server sends (measured: 10 rows, `0.18558138608932495`), and handing them to an agent
+      as a ranking is the lie this card removes; the one shared sentence says what the order is instead.
+      The `details.results` array still carries the raw numbers — the label is about presentation, not
+      about hiding measurement.
+      */
+      const orderNote = stashPageOrderNote(results);
+      const text =
+        orderNote +
+        results
+          .map((result, index) => [
+            `${index + 1}. ${result.path}:${result.lineStart}-${result.lineEnd} ${
+              result.rankingSource === undefined
+                ? `(score ${result.score}, ${result.backend})`
+                : `(${result.backend})`
+            }`,
+            result.snippet,
+          ].join("\n"))
+          .join("\n\n");
       return { content: [{ type: "text" as const, text }], details: { results } };
     },
   };

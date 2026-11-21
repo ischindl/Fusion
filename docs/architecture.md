@@ -938,6 +938,18 @@ correct answer; widening the match to keep rows would be cross-project leakage n
 Failing closed on an unreachable backend (FNXC:StashFailClosed) is unchanged — a scope drop never
 blocks a task.
 
+Project scoping decides *whose* lines may be shown; result hygiene decides which *usable* ones are
+(RUFU-1088, `packages/core/src/memory/stash-result-hygiene.ts`). It runs in the same synchronous region —
+after scoping, before the final trim — so foreign rows consume no slot and `limit` stays a promise about the
+asking project's own rows: one event per slot, one row per session (`STASH_MAX_ROWS_PER_SESSION`), and no row
+whose text is empty or a single bare token unless its event type sits on the prose allowlist
+(`STASH_PROSE_EVENT_TYPES`). Its second half is an honesty invariant rather than a cleanup: a `score` may not
+be printed as relevance unless it is relevance. The build deployed 2026-11-18 returns one constant for every
+keyword hit, so a page whose rows all carry the same score carries `rankingSource` — `"positional"`, or
+`"server-rank-fallback"` when the server sent distinct `rank` values and no usable score — and every consumer
+describes that order in a sentence instead of printing `(score N)`. A genuine distinct-score page stays
+byte-identical and unlabelled.
+
 See [Memory Plugin Contract](./memory-plugin-contract.md) for the full plan.
 
 ---

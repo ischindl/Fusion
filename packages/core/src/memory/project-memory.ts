@@ -652,6 +652,30 @@ export async function getProjectMemory(
  * @returns A formatted "## Relevant Prior Context" block, or "" when disabled,
  *          not search-capable, failed, or with nothing to inject.
  */
+/**
+ * FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+ * The ONE wording for "this page's order is not a relevance judgement", shared by every surface that
+ * renders a memory page (the proactive cue here, `fn_memory_search` in the engine). It lives in core
+ * because the producer of the label lives in core: a sentence the renderer invented could disagree with
+ * what the lane actually measured, and disagreeing is the defect this card removes.
+ *
+ * Returns "" when the page's numbers are real relevance values (no row carries `rankingSource`), so a
+ * normal cue stays byte-identical. Mixed pages (a labelled Stash lane merged with file-lane rows) take
+ * the sentence from the labelled rows: the page still contains a lane whose order is not relevance, and
+ * silence would present the whole page as ranked.
+ */
+export function stashPageOrderNote(results: readonly MemorySearchResult[]): string {
+  const source = results.find((r) => r.rankingSource !== undefined)?.rankingSource;
+  if (!source) return "";
+  const sentence =
+    source === "server-rank-fallback"
+      // The server's relevance score was a constant; its rank values were not, so order comes from rank.
+      ? "Order below comes from the memory server's rank values — its score field was identical on every row and is not shown."
+      // No rank either: the only order available is the one the server replied in.
+      : "Order below is the order the memory server returned these rows — no relevance signal was available to rank them.";
+  return `${sentence}\n`;
+}
+
 export async function buildProactiveMemoryCueBlock(
   rootDir: string,
   query: string,
@@ -703,21 +727,39 @@ export async function buildProactiveMemoryCueBlock(
       results = await backend.search(rootDir, searchOptions);
     }
     if (!results || results.length === 0) return "";
+    /*
+    FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+    Two honesty rules at this surface, both from the 2026-11-18 measurement (10 rows, one session, every
+    snippet the literal `bash`, every score identical):
+    (1) A row with no text is DROPPED, never rendered as `- path (score N): (no excerpt)`. A shell line
+        advertises a memory that carries nothing an agent can act on, and 10 of them cost the prompt its
+        whole budget. If nothing survives, the cue is "" — the same answer a miss gives, which is the
+        truth here.
+    (2) `(score N)` is a relevance CLAIM. On a page whose rows carry `rankingSource` the number is either
+        a constant the server sent or a re-derivation of its `rank`, so it is suppressed and ONE plain
+        line says where the order actually came from. One line per page, never a per-row disclaimer:
+        the claim is a property of the page, and six copies of a disclaimer is six times the cost for no
+        extra truth.
+    */
+    const orderNote = stashPageOrderNote(results);
     const items = results
       .slice(0, limit)
       .map((r) => {
         const src = r.path && r.path !== ".memory/recall/" ? r.path : r.backend;
         const score =
-          typeof r.score === "number" && Number.isFinite(r.score) ? ` (score ${r.score.toFixed(2)})` : "";
+          typeof r.score === "number" && Number.isFinite(r.score) && r.rankingSource === undefined
+            ? ` (score ${r.score.toFixed(2)})`
+            : "";
         const snippet = (r.snippet ?? r.path ?? "").replace(/\s+/g, " ").trim().slice(0, 600);
-        return `- ${src}${score}: ${snippet || "(no excerpt)"}`;
+        return snippet === "" ? null : `- ${src}${score}: ${snippet}`;
       })
-      .join("\n");
+      .filter((line): line is string => line !== null);
+    if (items.length === 0) return "";
     return (
       `\n## Relevant Prior Context (auto-recalled)\n\n` +
       `The following memories were recalled for this task before execution. ` +
       `They may contain relevant decisions, constraints, or patterns you should honor. ` +
-      `You may use them without calling fn_memory_search.\n${items}\n`
+      `You may use them without calling fn_memory_search.\n${orderNote}${items.join("\n")}\n`
     );
   } catch {
     // Graceful degradation: never let a recall failure block execution.

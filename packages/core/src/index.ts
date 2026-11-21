@@ -3234,6 +3234,9 @@ export {
   searchProjectMemory,
   getProjectMemory,
   buildProactiveMemoryCueBlock,
+  // FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088): the shared wording for a page whose order is
+  // not a relevance claim, so the engine's tool and this cue cannot describe the same page differently.
+  stashPageOrderNote,
   resolveMemorySearchTopic,
   resolveMemoryInstructionContext,
   type MemoryInstructionContext,
@@ -3415,12 +3418,34 @@ export type {
   MemoryGetResult,
   MemorySearchOptions,
   MemorySearchResult,
+  // FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088): the honesty label rides on the result object,
+  // so every renderer that prints a score (the engine's `fn_memory_search`, the proactive cue) must be
+  // able to name the values without re-declaring them.
+  MemoryRankingSource,
   MemoryCaptureEvent,
   MemoryCaptureResult,
   MemoryCaptureEventType,
   // FNXC:RUFU121CoreExports 2026-08-18-19:53: RUFU-121 write() identity meta.
   MemoryWriteIdentity,
 } from "./memory/memory-backend.js";
+
+/*
+FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+Exported so the engine's renderer and the core producer are tested against ONE definition of a cleaned
+page rather than two opinions of it — the failure this card exists for was the producer's page and the
+caller's reading of it disagreeing with nothing going red.
+*/
+export {
+  STASH_MAX_ROWS_PER_SESSION,
+  STASH_PROSE_EVENT_TYPES,
+  STASH_SINGLE_TOKEN_MAX_CHARS,
+  classifyStashRow,
+  hygieneStashItems,
+  labelStashRanking,
+  type StashHygieneItem,
+  type StashRankedRow,
+  type StashRowClass,
+} from "./memory/stash-result-hygiene.js";
 
 export {
   agentDailyMemoryPath,

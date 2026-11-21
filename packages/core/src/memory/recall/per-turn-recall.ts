@@ -355,6 +355,18 @@ function selectByScore(hits: MemorySearchResult[], topK: number): MemorySearchRe
 }
 
 /**
+ * FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+ * A cue line with no text after the em-dash is a shell: it advertises a memory and delivers nothing,
+ * and it still costs a slot and characters. Measured on the served build, EVERY line of one recall was
+ * such a shell because the underlying events were bare tool names (`bash`). The Stash lane now refuses
+ * those rows at the source (`hygieneStashItems`); this is the render-side guarantee that no surface can
+ * build the shell from any lane, including one that has since grown the same rule.
+ */
+function recallLineHasText(hit: MemorySearchResult): boolean {
+  return (hit.snippet ?? "").trim() !== "";
+}
+
+/**
  * Render one numbered cue entry. Kept byte-identical to RUFU-120's inline formatter so the
  * no-focus cue is unchanged; the 1-based positional index matches how lane T entries (which
  * lead) are numbered in the merged block.
@@ -486,7 +498,10 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
     return "";
   }
   // Client-side score filter (Stash has no server-side score filter).
-  const laneP = selectByScore(projectHits, topK);
+  // FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088): textless rows are dropped HERE, before slot
+  // allocation, so a shell cannot consume a lane P or lane T slot and the empty-cue contract below sees
+  // an empty lane rather than a lane full of lines that say nothing.
+  const laneP = selectByScore(projectHits, topK).filter(recallLineHasText);
 
   // ── Lane T: focus-term search (only when a real focus yields a usable query) ──
   const laneT: MemorySearchResult[] = [];
@@ -498,7 +513,7 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
           ? searchDurableMemoryFileLayer(options.rootDir, { query: laneTQuery, limit }, backend.type)
           : Promise.resolve([] as MemorySearchResult[]),
       ]);
-      laneT.push(...selectByScore([...(topicResults ?? []), ...fileHitsT], topK));
+      laneT.push(...selectByScore([...(topicResults ?? []), ...fileHitsT], topK).filter(recallLineHasText));
     } catch {
       // Lane T failure must never suppress lane P — it simply contributes nothing.
     }

@@ -55,6 +55,7 @@ import {
   type MemoryBackendSettings,
   type StashSecretsReader,
 } from "./stash-settings.js";
+import { hygieneStashItems, labelStashRanking } from "./stash-result-hygiene.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -1409,9 +1410,17 @@ export class StashMemoryBackend implements MemoryBackend {
         }
       }
       // One scoped read, one record: `matchedCount` is the whole window the server answered.
-      const filtered = this
-        .scopeItemsToProject(items, rootDir, limit)
-        .slice(0, limit);
+      const scoped = this.scopeItemsToProject(items, rootDir, limit);
+      /*
+      FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+      Hygiene runs on the FAR side of scoping and BEFORE the slice. Scope first, because a hygiene pass
+      over another project's rows would spend the page on rows we are forbidden to read. Slice last, and
+      inside the pass, because the per-session cap has to choose across sessions: trimming first is what
+      let one session (`fusion-task-SANE-367`) occupy 9 of 10 slots while six other sessions that were in
+      the answer contributed nothing. A page shortened by this is the honest answer, recorded as
+      `no-match` when it empties and never padded back up.
+      */
+      const filtered = hygieneStashItems(scoped, limit);
       // FNXC:RUFU133StashScore 2026-08-25-20:17:
       // RUFU-133: maxRank = the max usable rank across ALL surviving items
       // (0 when none), computed BEFORE the map — ts_rank is only meaningful
@@ -1423,16 +1432,31 @@ export class StashMemoryBackend implements MemoryBackend {
         const r = parseUsableNumber(it.rank);
         return r !== null && r > max ? r : max;
       }, 0);
-      // RUFU-994: `no-match` (an answered query with nothing found) is recorded as its own
-      // outcome; the returned array is unchanged.
+      /*
+      FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+      The number a row carries is checked for honesty before it is delivered. `stashRelevanceScore` runs
+      EXACTLY as RUFU-133 specified — unchanged arithmetic, unchanged magnitudes — and `labelStashRanking`
+      then looks at the finished page: if every row on it carries the same number, that number is the
+      constant our deployed Stash image sends (measured: 10 rows, `0.18558138608932495` identical to the
+      last digit) and it is labelled for what it is rather than presented as relevance. A non-degenerate
+      page gets no field at all, so existing consumers see byte-identical result objects.
+      */
+      const ranked = labelStashRanking(
+        filtered,
+        filtered.map((it, idx) => stashRelevanceScore(it, idx, maxRank)),
+      );
+      // RUFU-994: `no-match` (an answered query with nothing found) is recorded as its own outcome.
+      // RUFU-1088: the count is taken from the FINAL page, so `resultCount` is what a caller received —
+      // a page hygiene emptied records `no-match` rather than the raw hit count.
       this.noteReadOutcome("keyword-search", filtered.length > 0 ? "ok" : "no-match", filtered.length);
       return filtered.map((it, idx) => ({
         path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
         lineStart: 1,
         lineEnd: 1,
         snippet: (it.snippet ?? it.content ?? "").substring(0, 500),
-        score: stashRelevanceScore(it, idx, maxRank),
+        score: ranked[idx]!.score,
         backend: this.type,
+        ...(ranked[idx]!.rankingSource ? { rankingSource: ranked[idx]!.rankingSource } : {}),
       }));
     } catch (err) {
       // FNXC:StashFailClosed 2026-08-05-16:06:
@@ -1501,14 +1525,18 @@ export class StashMemoryBackend implements MemoryBackend {
         this.noteReadOutcome("semantic-search", Array.isArray(items) ? "no-match" : "malformed", 0);
         return null;
       }
-      const own = this
-        .scopeItemsToProject(
-          items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object"),
-          rootDir,
-          limit,
-        )
-        // The caller asked for `limit`; the wider window is the means, not the page.
-        .slice(0, limit);
+      const scoped = this.scopeItemsToProject(
+        items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object"),
+        rootDir,
+        limit,
+      );
+      // FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088): same hygiene pass as the keyword route,
+      // with THIS lane's text order (`content` first) so a row is judged on the text it would deliver.
+      const own = hygieneStashItems(
+        scoped,
+        limit,
+        (it) => (it.content ?? it.snippet ?? "").substring(0, 500),
+      );
       const hits = own
         .map((it, idx) => {
           // D5: vector rank = similarity (0..1); missing/null/non-finite → 1.0.
@@ -1522,18 +1550,31 @@ export class StashMemoryBackend implements MemoryBackend {
               : typeof rawRank === "string" && rawRank.trim() !== ""
                 ? Number(rawRank)
                 : NaN;
-          return {
-            path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
-            lineStart: 1,
-            lineEnd: 1,
-            snippet: (it.content ?? it.snippet ?? "").substring(0, 500),
-            score: Number.isFinite(rank) ? rank : 1.0,
-            backend: this.type,
-          } as MemorySearchResult;
+          return { item: it, idx, rawScore: Number.isFinite(rank) ? rank : 1.0 };
         });
-      // RUFU-994: an answered semantic hit records the semantic endpoint as healthy.
-      this.noteReadOutcome("semantic-search", hits.length > 0 ? "ok" : "no-match", hits.length);
-      return hits.length > 0 ? hits : null;
+      /*
+      FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+      The cosine similarity is a real signal when it VARIES. When every row on the page carries the same
+      number — which is what "missing rank → 1.0" produces for a whole page, and what a server returning
+      a constant similarity produces too — the page has no ordering information in it, and saying so is
+      cheaper than letting a consumer rank on it.
+      */
+      const ranked = labelStashRanking(own, hits.map((h) => h.rawScore));
+      const rows = hits.map((h, i) => ({
+        path: h.item.session_id
+          ? `stash://session/${h.item.session_id}`
+          : `stash://event/${h.item.id ?? h.idx}`,
+        lineStart: 1,
+        lineEnd: 1,
+        snippet: (h.item.content ?? h.item.snippet ?? "").substring(0, 500),
+        score: ranked[i]!.score,
+        backend: this.type,
+        ...(ranked[i]!.rankingSource ? { rankingSource: ranked[i]!.rankingSource } : {}),
+      })) as MemorySearchResult[];
+      // RUFU-994: an answered semantic hit records the semantic endpoint as healthy. RUFU-1088: the
+      // count is the delivered page, after hygiene.
+      this.noteReadOutcome("semantic-search", rows.length > 0 ? "ok" : "no-match", rows.length);
+      return rows.length > 0 ? rows : null;
     } catch (err) {
       this.noteReadOutcome("semantic-search", this.readFailureCode(err), 0);
       const status = this.stashErrorStatus(err);

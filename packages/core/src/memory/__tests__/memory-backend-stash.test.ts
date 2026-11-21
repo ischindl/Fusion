@@ -485,10 +485,14 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
   });
 
   it("2. flag on + multi-word + semantic 200 hits → semantic URL first (raw trimmed q), no keyword URL, D5 scores mapped", async () => {
+    // RUFU-1088: this case used to serve BOTH rows from `ses-9`, and the D5 score mapping was its only
+    // subject — the two-rows-one-session shape it accidentally relied on is the exact page-shape defect
+    // that card removed (one session owning a page). The rows therefore come from two sessions now, so
+    // the score-mapping proof stays alive, and the case immediately below carries the new rule.
     const { fake, semanticCalls, keywordCalls } = makeVectorFake(() => ({
       events: [
         { id: "ev-1", session_id: "ses-9", content: "first hit content is here", rank: 0.91 },
-        { id: "ev-2", session_id: "ses-9", content: "second hit content", rank: 0.42 },
+        { id: "ev-2", session_id: "ses-10", content: "second hit content", rank: 0.42 },
       ],
     }));
     const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client, vectorSearch: true });
@@ -509,7 +513,7 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
         backend: "stash",
       },
       {
-        path: "stash://session/ses-9",
+        path: "stash://session/ses-10",
         lineStart: 1,
         lineEnd: 1,
         snippet: "second hit content",
@@ -517,6 +521,28 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
         backend: "stash",
       },
     ]);
+  });
+
+  /*
+  FNXC:StashResultHygiene 2026-11-21-13:10 (RUFU-1088):
+  The companion to the case above, and the reason it was rewritten rather than deleted: two semantic
+  hits from ONE session now deliver ONE row. The cap keys on `session_id`, so a page of hits from a
+  single busy session cannot occupy more than a slot, which is the measured 9-of-10 defect on the
+  vector branch too.
+  */
+  it("2b. semantic hits from ONE session deliver one row (per-session cap on the vector branch)", async () => {
+    const { fake, semanticCalls, keywordCalls } = makeVectorFake(() => ({
+      events: [
+        { id: "ev-1", session_id: "ses-9", content: "first hit content is here", rank: 0.91 },
+        { id: "ev-2", session_id: "ses-9", content: "second hit content", rank: 0.42 },
+      ],
+    }));
+    const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client, vectorSearch: true });
+    const results = await backend.search("/proj/demo", { query: "LCM B.1 B.2 priorita plan", limit: 5 });
+    expect(semanticCalls()).toHaveLength(1);
+    expect(keywordCalls()).toHaveLength(0);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ path: "stash://session/ses-9", snippet: "first hit content is here", score: 0.91 });
   });
 
   it("3. flag on + multi-word + semantic 404 (unpatched server) → keyword fallback with normalized q; negative-cached within TTL; retried after TTL", async () => {

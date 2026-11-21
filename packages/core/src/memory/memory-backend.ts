@@ -162,7 +162,28 @@ export interface MemorySearchResult {
   snippet: string;
   score: number;
   backend: string;
+  /**
+   * FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088):
+   * Set ONLY when a page's `score` values are not a relevance claim. Measured on the deployed Stash
+   * image: one query returned 10 rows whose score was `0.18558138608932495` identical to the last
+   * digit — a constant the server sends, which tier 1 of the scoring passed through as if it ranked.
+   * `positional` means the page's order is the server's response order; `server-rank-fallback` means
+   * it was recomputed from the `rank` values the server did send. Absent = the score is the lane's
+   * normal relevance number, so every existing consumer sees byte-identical objects on a normal page
+   * and non-Stash backends never see this field at all.
+   *
+   * A renderer that shows the number (the proactive cue, `fn_memory_search`) must suppress it and say
+   * where the order came from instead, when this is present.
+   */
+  rankingSource?: MemoryRankingSource;
 }
+
+/**
+ * FNXC:StashResultHygiene 2026-11-21-12:56 (RUFU-1088): only the values this card actually writes.
+ * A third value (`"relevance"`) was rejected: an absent field already says that, and a label that can
+ * be set on every row would let a producer claim relevance instead of earning it from a real signal.
+ */
+export type MemoryRankingSource = "positional" | "server-rank-fallback";
 
 export interface MemoryFileInfo {
   path: string;
