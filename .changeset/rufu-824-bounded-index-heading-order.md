@@ -1,0 +1,7 @@
+---
+"@runfusion/fusion": patch
+---
+
+summary: Bounded chat memory indexes now list an agent's newest memory sections first.
+category: fix
+dev: The `memoryCapChars` demote branch in `formatMemorySection` builds `buildMemoryHeadingIndex` from the newest-kept window (the same clamp result the full render shows) instead of the oldest 50,000 characters, so a chat agent with a workspace `MEMORY.md` over the inline budget finally sees its recently appended entries listed and can retrieve them. The index helper's own front-side byte clamp is unchanged and still truncates within that window, so a very small cap shows the oldest headings of the newest window; both layers are documented in `docs/memory-plugin-contract.md` invariant 9. Clamp `log.warn` lines now report the retained character count with the budget stated separately, matching the agent-visible notice. `MAX_MEMORY_LENGTH` moved to the new dependency-free leaf `packages/engine/src/agents/memory-limits.ts` and is re-exported from `agents/agent-instructions.ts`, which removes the second private copy in `agent-tools.ts` that the identity-tool refusal kept in parallel; the value is unchanged at 50,000 characters. This supersedes the sentence in `.changeset/rufu-443-inline-memory-clamp.md` promising that the bounded-index branch keeps its existing contract: that branch was the residual RUFU-443 deferred, and this change is its decision. `MAX_MEMORY_LENGTH` and `MEMORY_LONG_TERM_BYTE_BUDGET` are not raised, `fn_memory_append` still never refuses a write, and no on-disk `MEMORY.md` is rewritten.

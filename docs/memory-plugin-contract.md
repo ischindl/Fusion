@@ -44,7 +44,7 @@ Fusion currently has two related but distinct memory systems:
 | `MEMORY_AUDIT_PATH` | `.fusion/memory/memory-audit.md` | `memory-insights.ts` |
 | `MEMORY_LONG_TERM_BYTE_BUDGET` | `32768` (32 KiB) | `packages/engine/src/memory/memory-budget.ts` |
 | `MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES` | `8388608` (8 MiB) | `packages/engine/src/memory/memory-budget.ts` |
-| `MAX_MEMORY_LENGTH` | `50000` characters (UTF-16 code units, not bytes) | `packages/engine/src/agents/agent-instructions.ts` |
+| `MAX_MEMORY_LENGTH` | `50000` characters (UTF-16 code units, not bytes) | `packages/engine/src/agents/memory-limits.ts` (re-exported from `packages/engine/src/agents/agent-instructions.ts`; also imported by `packages/engine/src/agent-tools.ts`) |
 
 ### 1.3 Exported Surface (Post-Migration)
 
@@ -112,10 +112,11 @@ Runtime backend resolution uses an internal `MemorySettings` shape with `memoryB
    unless a memory backup covering that file succeeded in the same pass after the bytes were read.
    Within-budget files are never rewritten. See `docs/run-audit.md` → *Long-term memory budget
    maintenance* for the `memory:long-term-*` rows this emits.
-9. **The budget and the injection clamp are two different numbers governing two different surfaces.**
+9. **The budget, the injection clamp, and the session cap are three different numbers on three different surfaces.**
    `MEMORY_LONG_TERM_BYTE_BUDGET` (32 KiB) is the **write-time** working-set budget: `fn_memory_append`
    reports against it and `reconcile-long-term-memory-budget` consolidates against it. `MAX_MEMORY_LENGTH`
-   (50,000 characters, `packages/engine/src/agents/agent-instructions.ts`) is the **injection-time** clamp
+   (50,000 characters, `packages/engine/src/agents/memory-limits.ts`, re-exported from
+   `agents/agent-instructions.ts` and imported by `agent-tools.ts`) is the **injection-time** clamp
    that decides what actually enters a prompt. Neither implies the other: a file can sit under budget and
    still be clamped, and "over budget" must never be read as "everything is in the prompt". The clamp is
    measured in **characters**, not bytes, so multi-byte memory costs more context than the number suggests.
@@ -124,10 +125,31 @@ Runtime backend resolution uses an internal `MemorySettings` shape with `memoryB
    writes at the end) — and every omission is announced inside the rendered `## Agent Memory` section with
    the omitted section and character counts plus the `fn_memory_search` / `fn_memory_get` retrieval path.
    Loss was previously visible only as a server-side `log.warn`, so an agent could not tell that the
-   lessons it had just written were absent from its own context.
+   lessons it had just written were absent from its own context. Since RUFU-824 that telemetry reports the
+   **retained** character count with the budget stated as its own number, in the same sentence shape as the
+   agent-visible notice, because whole sections are kept and never split and the log used to quote the
+   budget as if it were the answer.
    A **third**, session-level number (`memoryCapChars`, `CHAT_MEMORY_CAP_CHARS` = 8,000 chars on the chat
-   path) keeps its existing self-announcing bounded-index contract. RUFU-443 changed no constant: 50,000
-   characters is roughly 14K tokens, which is what a 64K-context chat model can afford inline
+   path) selects a self-announcing bounded-index branch instead of a full render, and that branch has its
+   own decided heading-order contract since RUFU-824. It builds the index from the **same newest-kept
+   window** the full render shows, not from the head of the file: the index quotes `## ` titles precisely so
+   an agent can decide *what* to retrieve, so an oldest-first enumeration of an appended-to file answers
+   "what did I learn recently?" with a false negative. Two truncation layers exist and only the first is
+   recency-aware, deliberately:
+   - **Layer 1 — which 50,000 characters feed the index.** The newest-kept window. For a source over the
+     clamp this is where recency is honoured; for a source under it the clamp is a pass-through and the
+     index is byte-identical to what it always was.
+   - **Layer 2 — the index's own byte clamp.** `buildMemoryHeadingIndex` emits headings in source order and
+     then front-clamps its own assembly to `maxBytes`, so inside the newest window a small cap shows the
+     **oldest headings of that window** and ends in the `…` marker. This is unchanged on purpose: flipping it
+     would flip the project-memory index and the helper's own unit tests at the same time. "Newest window"
+     therefore does not mean "newest headings always visible".
+   Two consequences of a newest-kept input are contract, not defect: a file whose single newest section is
+   itself over 50,000 characters yields a window with no `## ` line at all, so the index renders its
+   `(no headings; use fn_memory_search / fn_memory_get to read)` pointer and lists no title (no window that
+   honours recency can hold a heading for that shape); and the branch's **inline** slice is still a front-cut
+   while its index is newest-kept, a separate undecided contract with its own follow-up. RUFU-824 changed no
+   constant either: 50,000 characters is roughly 14K tokens, which is what a 64K-context chat model can afford inline
    (`FNXC:ChatContextBudget 2026-08-20-11:56`).
 
 ---

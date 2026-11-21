@@ -26,6 +26,15 @@ import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, dependencyDomainRefusal, dependencyRefusalResult, recordDependencyRefusal, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes, MEMORY_SNIPPET_STRIDE_LINES, MEMORY_SNIPPET_WINDOW_LINES, countMemoryTermMatches, deriveMemoryQueryTerms, dropLineOverlappingMemoryHits, hasProjectMemoryContent } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
+/*
+FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): this module previously kept its own private
+`MAX_MEMORY_LENGTH = 50_000` for the identity-tool refusal, separate from the injection clamp in
+`./agents/agent-instructions.ts`. Both numbers describe the same contract (the largest inline `memory`
+value an agent may hold), so they now share the dependency-free leaf `./agents/memory-limits.ts`.
+Importing the LEAF rather than `agent-instructions.js` is deliberate: that module imports
+`readAgentMemoryWorkspaceLongTerm` from this file, so a direct import back would create a cycle.
+*/
+import { MAX_MEMORY_LENGTH } from "./agents/memory-limits.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research/research-step-runner.js";
@@ -900,7 +909,6 @@ const MEMORY_EMPTY_HINTS: Record<MemorySearchEmptyReason, string> = {
 const log = createLogger("agent-tools");
 
 const MAX_INSTRUCTIONS_TEXT_LENGTH = 50_000;
-const MAX_MEMORY_LENGTH = 50_000;
 const MAX_SOUL_LENGTH = 10_000;
 
 const AGENT_MEMORY_ROOT = ".fusion/agent-memory";

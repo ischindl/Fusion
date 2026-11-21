@@ -19,6 +19,16 @@ import { buildRequestVolatileContext } from "../execution/prompt-layers.js";
 import { createLogger } from "../logger.js";
 import { readAgentMemoryWorkspaceLongTerm } from "../agent-tools.js";
 import { buildMemoryIndex, buildMemoryHeadingIndex, clampUtf8 } from "./agent-memory-index.js";
+/*
+FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): `MAX_MEMORY_LENGTH` moved to the dependency-free leaf
+`./memory-limits.ts` and is re-exported here so the existing `import { MAX_MEMORY_LENGTH } from
+"../agents/agent-instructions.js"` sites in `agent-instructions.test.ts` and `agent-self-improve.test.ts`
+keep resolving. The re-export is also the drift guard: `agent-self-improve.test.ts` builds
+`MAX_MEMORY_LENGTH + 1` from THIS export and expects `createUpdateIdentityTool` to refuse it, which is now
+true by construction rather than because two literals happen to match.
+*/
+import { MAX_MEMORY_LENGTH } from "./memory-limits.js";
+export { MAX_MEMORY_LENGTH };
 import { parseMemoryFile, renderMemoryFile } from "../memory/memory-budget.js";
 
 const log = createLogger("agent-instructions");
@@ -26,7 +36,6 @@ const log = createLogger("agent-instructions");
 const MAX_INSTRUCTIONS_PATH_LENGTH = 500;
 export const MAX_INSTRUCTIONS_TEXT_LENGTH = 50_000;
 export const MAX_SOUL_LENGTH = 10_000;
-export const MAX_MEMORY_LENGTH = 50_000;
 
 function trimAndClamp(value: string, maxLength: number, label: string, agentId: string): string {
   const trimmed = value.trim();
@@ -411,6 +420,48 @@ async function formatMemorySection(
   }
 
   /*
+  FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824):
+  The newest-kept clamp is computed HERE, above branch selection, so every render path reads the same
+  {@link MemoryClampResult} objects: the capped bounded-index branch's heading input, the two `log.warn`
+  telemetry sites, and the full-render body. Each clamp runs at most once per call.
+
+  Which 50,000 characters reach the bounded index is the contract this note owns. `trimAndClamp` above is
+  a HEAD slice, so feeding its output to `buildMemoryHeadingIndex` enumerated only the oldest headings of
+  a file over the inline budget — measured on a 68,905-char / 220-section workspace file at
+  `memoryCapChars: 4_000`: 160 headings "Lesson 001"…"Lesson 160", and `fn_memory_append` (which writes at
+  the END) had never once appeared in the list its own author would read. That is RUFU-443's recency
+  inversion one layer up: the index is a retrieval menu (it quotes `## ` titles so the agent can decide
+  WHAT to search for), so an oldest-first enumeration answers "what did I learn recently?" with a false
+  negative. Feeding `workspaceClamp.text` makes the menu describe the part of the file the agent just wrote.
+
+  Scope of that fix, stated precisely, because two truncation layers exist and only one moved:
+  - Layer 1 (changed here): which 50,000 chars feed the index — now the newest-kept window.
+  - Layer 2 (UNCHANGED by decision): `buildMemoryHeadingIndex` emits headings in source order and then
+    front-clamps its own assembly to `maxBytes`, so inside the newest window a small cap shows the
+    OLDEST headings OF THAT WINDOW. Pinned by the layer-2 case in `agent-instructions.test.ts`; flipping
+    it would flip the project-memory index below and the helper's own unit tests at the same time.
+  Consequence for a pathological source whose single newest section is itself over 50,000 chars: the
+  clamp keeps that section's TAIL, which contains no `## ` line at all, so the index renders the helper's
+  `(no headings; use fn_memory_search / fn_memory_get to read)` line and lists no title. No 50,000-char
+  window that honours recency can hold a heading for that shape, so "no headings, search" is the honest
+  answer rather than a stale title for the oldest section.
+
+  Not changed, and deliberately so: the capped branch's INLINE slice (`clampUtf8(inlineTrimmed, …)`) is
+  still a front-cut while the index is now newest-kept. Making it consistent needs a byte-side
+  newest-keeping primitive plus its own omission notice — filed as separate follow-up work rather than
+  folded into this card.
+
+  Cost: the capped path now pays one `parseMemoryFile` per oversized source (82 ms measured on the
+  largest production file, 6.9 MB / 15,986 sections), and `resolveAgentInstructionPartsWithRatings`
+  builds this section twice per chat turn. Bounded: the same input already pays a whole-file read plus
+  `.trim()`, the within-budget path never parses, and `buildMemoryHeadingIndex` still parses at most
+  MAX_MEMORY_LENGTH chars — the #3620 bound that `workspaceTrimmed` existed to enforce is preserved by
+  construction, since a clamp result is ≤ MAX_MEMORY_LENGTH characters by definition.
+  */
+  const inlineClamp = clampMemoryKeepingNewest(memory.trim(), MAX_MEMORY_LENGTH);
+  const workspaceClamp = clampMemoryKeepingNewest(workspaceMemory.trim(), MAX_MEMORY_LENGTH);
+
+  /*
   FNXC:ChatContextBudget 2026-08-20-11:56:
   User requirement: agent chat must work on models with a 64K context window.
   The per-agent workspace MEMORY.md can grow past 800K chars (the 50K MAX_MEMORY_LENGTH
@@ -438,14 +489,22 @@ async function formatMemorySection(
         FNXC:ChatContextBudget 2026-09-16-15:45 (#3620 review — coderabbit):
         The index parses its input in full before the output byte clamp, so feeding the raw
         workspace file let an 800K-char MEMORY.md grow heading parsing and allocation with the
-        whole file on every bounded-context prompt. `workspaceTrimmed` bounds the parse to the
-        same budget the prompt respects; the full file stays reachable through the memory tools.
+        whole file on every bounded-context prompt. The clamp output bounds the parse to the same
+        budget the prompt respects (≤ MAX_MEMORY_LENGTH chars, exactly as `workspaceTrimmed` did);
+        the full file stays reachable through the memory tools.
+
+        FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): the input is now the NEWEST-kept window
+        rather than the head slice, so the enumerated headings are recent. Which branch renders, the
+        `combinedChars` selection input, the 3:1 maxBytes/inline split and the inline byte slice are
+        all unchanged — see the hoisted-clamp note above for the two-layer contract and its costs.
+        The branch's own "exceeds this session's …-char context budget" sentence stays the only
+        notice here: this branch renders no clamp notice.
         */
         lines.push(
           buildMemoryHeadingIndex({
             sectionHeader: "## Agent Memory Index (use fn_memory_search / fn_memory_get to read)",
             displayPath: memoryWorkspaceDisplayPath(agentId),
-            content: workspaceTrimmed,
+            content: workspaceClamp.text,
             // When inline memory also needs a slice, split the budget 3:1; otherwise
             // the index may take the full budget.
             maxBytes: Math.max(256, Math.floor(memoryCapChars * (inlineTrimmed ? 0.75 : 1))),
@@ -470,27 +529,38 @@ async function formatMemorySection(
 
   /*
   FNXC:MemoryInlineClamp 2026-10-29-12:55 (RUFU-443):
-  The full-render tail is the ONLY place the newest-keeping clamp is applied. The `inlineTrimmed` /
-  `workspaceTrimmed` head-slice pre-clamp above stays exactly as it was: it is the emptiness guard and
-  the `combinedChars` branch-selection input, and it is what feeds the `memoryCapChars` bounded-index
-  branch, so which branch renders and everything that branch emits stay byte-identical to today. That
-  branch is left head-slice-pre-clamped by decision — the operator's AC1 is scoped to full mode, the
-  branch already self-announces through its own "exceeds this session's …-char context budget" notice
-  (so nothing is silently lost there), and re-pointing its input would make `buildMemoryHeadingIndex`
-  lose the headings its pinned test asserts. The residual (an index built from oldest-first headings
-  when the source exceeds the clamp) is deferred to a follow-up card rather than absorbed here.
+  The newest-keeping clamp replaced `trimAndClamp`'s head slice, which had inverted recency: because
+  `fn_memory_append` writes at the END of a long-term memory file, the freshest lesson was the first
+  thing dropped, silently.
+
+  FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824):
+  This is no longer the ONLY place the clamp is consumed — the clamps are hoisted above branch
+  selection (see the note there) so the `memoryCapChars` bounded-index branch enumerates recent
+  headings too. What stays exactly as RUFU-443 left it: the `inlineTrimmed` / `workspaceTrimmed`
+  head-slice pre-clamp remains the emptiness guard and the `combinedChars` branch-selection input, so
+  WHICH branch renders is byte-identical to today, and the capped branch still renders no clamp notice
+  because its own budget sentence already self-announces.
   */
-  const inlineClamp = clampMemoryKeepingNewest(memory.trim(), MAX_MEMORY_LENGTH);
-  const workspaceClamp = clampMemoryKeepingNewest(workspaceMemory.trim(), MAX_MEMORY_LENGTH);
+  /*
+  FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824):
+  Both warn lines used to print `MAX_MEMORY_LENGTH` as the retained figure, but whole `## ` sections are
+  kept and never split, so the render lands short of the budget whenever the next-oldest section does not
+  fit — the log therefore overstated what survived. The leading number is now the RETAINED count and the
+  budget is stated as its own number, mirroring `formatMemoryClampNotice` word for word so the server
+  telemetry and the agent-visible notice can never disagree about the same clamp. `omitted ... sections`
+  keeps its existing shape; `agent-memory-clamp-telemetry.test.ts` pins the parity.
+  */
   if (inlineClamp.omittedChars > 0) {
     log.warn(
-      `memory newest-kept clamp for agent ${agentId}: inline memory kept the newest ${MAX_MEMORY_LENGTH} of ${inlineClamp.totalChars} chars, ` +
+      `memory newest-kept clamp for agent ${agentId}: inline memory kept the newest ${inlineClamp.totalChars - inlineClamp.omittedChars} of ` +
+        `${inlineClamp.totalChars} chars within the ${MAX_MEMORY_LENGTH}-char inline memory budget, ` +
         `omitted ${inlineClamp.omittedSections}/${inlineClamp.totalSections} sections (${inlineClamp.omittedChars} chars)`,
     );
   }
   if (workspaceClamp.omittedChars > 0) {
     log.warn(
-      `memory newest-kept clamp for agent ${agentId}: workspace memory kept the newest ${MAX_MEMORY_LENGTH} of ${workspaceClamp.totalChars} chars, ` +
+      `memory newest-kept clamp for agent ${agentId}: workspace memory kept the newest ${workspaceClamp.totalChars - workspaceClamp.omittedChars} of ` +
+        `${workspaceClamp.totalChars} chars within the ${MAX_MEMORY_LENGTH}-char inline memory budget, ` +
         `omitted ${workspaceClamp.omittedSections}/${workspaceClamp.totalSections} sections (${workspaceClamp.omittedChars} chars)`,
     );
   }

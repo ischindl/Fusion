@@ -775,7 +775,17 @@ describe("buildAgentChatPrompt", () => {
 
     expect(prompt).toContain("exceeds this session's 4000-char context budget");
     expect(prompt).toContain("## Agent Memory Index (use fn_memory_search / fn_memory_get to read)");
-    expect(prompt).toContain('"Habits"');
+    /*
+     * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): this fixture's two `## ` sections are ~78K chars
+     * EACH, so no 50,000-char window that keeps the NEWEST content can contain a heading line — the clamp
+     * falls to its `keptFrom < 0` tail branch and the index input carries no `## ` line. The helper
+     * therefore emits its self-announcing no-headings pointer instead of the oldest-first title it used to
+     * list here (`"Habits"`, 78K older than `Preferences`). Retrieval is still covered: both this sentence
+     * and the pointer name fn_memory_search / fn_memory_get.
+     */
+    expect(prompt).toContain("(no headings; use fn_memory_search / fn_memory_get to read)");
+    expect(prompt).not.toContain('"Habits"');
+    expect(prompt).not.toContain('"Preferences"');
     expect(prompt).not.toContain("SECRET-AGENT-BODY-CONTENT");
   });
 
@@ -947,11 +957,15 @@ describe("diagnostics logging", () => {
   /*
   FNXC:MemoryInlineClamp 2026-10-29-13:05 (RUFU-443):
   Oversized memory now warns twice by design: the pre-clamp truncation warn (which still feeds the
-  emptiness guard, branch selection, and the bounded-index branch) plus the newest-kept clamp warn that
+  emptiness guard and the `combinedChars` branch selection) plus the newest-kept clamp warn that
   names what the agent-visible render actually dropped. This fixture is a uniform "m" blob, so its head
   and tail slices are byte-identical and the retained-content assertion carries the same meaning it
   always did — it is not weakened. The new assertion pins that the loss is now ALSO visible in the
   prompt, which is exactly what was missing before.
+
+  FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): the bounded-index branch no longer reads the
+  pre-clamp head slice — it reads the clamp result — so the pre-clamp's remaining job is the emptiness
+  guard and branch selection only. This case is cap-free, so its two-warn count is unaffected.
   */
   it("logs the truncation warn and the newest-kept clamp warn when oversized memory is clamped", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1404,6 +1418,16 @@ function sectionedMemory(
   return out;
 }
 
+/** Quoted heading titles, in rendered order, from a rendered `## Agent Memory Index` block. */
+function renderedHeadingTitles(rendered: string): string[] {
+  const block = rendered.includes("## Agent Memory Index")
+    ? rendered.slice(rendered.indexOf("## Agent Memory Index"))
+    : rendered;
+  // The truncated final line (`  - "Lesson 072"…`) has no closing quote and is deliberately not matched:
+  // a half-cut title is not an advertised heading.
+  return [...block.matchAll(/^ {2}- "(.+)"$/gm)].map((match) => match[1]!);
+}
+
 const WORKSPACE_CLAMP_NOTICE =
   /_Workspace memory: kept the newest (\d+) of (\d+) chars within the (\d+)-char inline memory budget, so (\d+) of (\d+) older sections \((\d+) chars\) are NOT in this prompt/;
 const INLINE_CLAMP_NOTICE =
@@ -1480,6 +1504,50 @@ describe("inline long-term memory clamp keeps the newest entries (RUFU-443)", ()
     expect(Number(keptChars)).toBeLessThanOrEqual(MAX_MEMORY_LENGTH);
   });
 
+  /*
+   * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): the `keptFrom < 0` branch — a structured file
+   * whose single NEWEST section is itself over the budget — held by hand-check but was never rendered
+   * by any test. Here the retained window is a CUT (not a whole-section suffix), so both the branch's
+   * arithmetic and the "headline number is the real retained figure" invariant are proven on it.
+   */
+  it("keeps the newest section's tail when no section alone fits the budget (keptFrom < 0)", async () => {
+    const body = (marker: string, filler: string) =>
+      `${marker}-HEAD ${filler.repeat(3_000)} ${marker}-TAIL`; // ~27K chars per section body
+    const memory =
+      `# Agent Memory\n\n<!-- durable notes below -->\n\n` +
+      `## Oldest Lesson\n\n${body("OLD", "older lesson notes")}\n\n` +
+      `## Newest Lesson\n\n${body("NEW", "fresher lesson notes")}\n`;
+    expect(memory.length).toBeGreaterThan(MAX_MEMORY_LENGTH); // the clamp must bite
+    expect(memory.length).toBeLessThan(120_000); // two ~54K sections: one file write, no slow fixture
+    await writeWorkspaceMemory(testDir, memory);
+
+    const result = await resolveAgentInstructions(makeAgent({ memory: "" }), testDir);
+    const notice = result.match(WORKSPACE_CLAMP_NOTICE);
+    expect(notice).not.toBeNull();
+    const [, keptChars, totalChars, budget, omittedSections, totalSections, omittedChars] = notice!;
+
+    // Neither section fits alone, so the newest section's TAIL survives and no whole section does:
+    // the cut removes the newest section's own heading and opening line along with the older section.
+    expect(result).toContain("<!-- durable notes below -->"); // the preamble is kept first
+    expect(result).toContain("NEW-TAIL");
+    expect(result.endsWith("NEW-TAIL")).toBe(true);
+    expect(result).not.toContain("OLD-HEAD");
+    expect(result).not.toContain("OLD-TAIL");
+    expect(result).not.toContain("NEW-HEAD");
+    expect(result).not.toContain("## Oldest Lesson");
+    expect(result).not.toContain("## Newest Lesson"); // the heading sits in the part the cut dropped
+
+    expect(Number(budget)).toBe(MAX_MEMORY_LENGTH);
+    expect(Number(totalChars)).toBe(memory.trim().length);
+    expect(Number(totalSections)).toBe(2);
+    expect(Number(omittedSections)).toBe(1); // totalSections - 1: one whole section is gone
+    const noticeLine = result.split("\n").find((line) => line.startsWith("_Workspace memory:")) ?? "";
+    const rendered = result.slice(result.indexOf(noticeLine) + noticeLine.length + 2);
+    expect(rendered.length).toBeLessThanOrEqual(MAX_MEMORY_LENGTH);
+    expect(Number(omittedChars)).toBe(memory.trim().length - rendered.length);
+    expect(Number(keptChars)).toBe(rendered.length); // the real retained figure, on this branch too
+  });
+
   it("keeps the newest entries of an oversized inline agent.memory", async () => {
     const sections = 220;
     const memory = sectionedMemory(sections, { prefix: "OLD-INLINE" });
@@ -1536,13 +1604,14 @@ describe("inline long-term memory clamp keeps the newest entries (RUFU-443)", ()
   });
 
   /*
-   * FNXC:MemoryInlineClamp 2026-10-29-13:15 (RUFU-443) — the PR1 scope decision, pinned:
-   * the `memoryCapChars` bounded-index branch deliberately keeps its head-slice pre-clamp (it already
-   * self-announces through its own budget notice, and re-pointing it would rewrite the heading
-   * contract its own tests assert). This case names the accepted residual — the index enumerates
-   * oldest-first headings only — so the deferred contract is visible rather than implied.
+   * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824) — closes the residual RUFU-443 deferred:
+   * the `memoryCapChars` bounded-index branch now enumerates the NEWEST-kept window, so the heading
+   * list the agent uses to decide what to retrieve describes the part of its own memory file it most
+   * recently wrote. The case below replaces the old pinned residual ("the index enumerates
+   * oldest-first headings only"), which asserted `"Lesson 001"` present and `"Lesson 220"` absent —
+   * i.e. it pinned the inversion this card removes.
    */
-  it("leaves the bounded-index branch's oldest-first heading index unchanged (deferred contract)", async () => {
+  it("builds the bounded index from the newest-kept window on the capped chat path (RUFU-824)", async () => {
     const sections = 220;
     await writeWorkspaceMemory(testDir, sectionedMemory(sections));
 
@@ -1555,10 +1624,120 @@ describe("inline long-term memory clamp keeps the newest entries (RUFU-443)", ()
 
     expect(prompt).toContain("exceeds this session's 4000-char context budget");
     expect(prompt).toContain("## Agent Memory Index (use fn_memory_search / fn_memory_get to read)");
-    expect(prompt).toContain('"Lesson 001"'); // oldest-first, from the head-slice pre-clamp
-    expect(prompt).not.toContain('"Lesson 220"'); // beyond the pre-clamp, as before RUFU-443
-    expect(prompt).not.toContain("NEWEST-SENTINEL");
+
+    // Structural, not a single literal: the rendered list must be a CONTIGUOUS SUFFIX of the fixture's
+    // own section numbering, ending at the newest section, and must not reach back to the first one.
+    const headings = renderedHeadingTitles(prompt);
+    expect(headings.length).toBeGreaterThan(1);
+    expect(headings.at(-1)).toBe(`Lesson ${padEntry(sections)}`);
+    const numbers = headings.map((heading) => Number(heading.replace("Lesson ", "")));
+    for (let i = 1; i < numbers.length; i += 1) {
+      expect(numbers[i]).toBe(numbers[i - 1]! + 1);
+    }
+    expect(numbers[0]!).toBeGreaterThan(1);
+    expect(prompt).not.toContain('"Lesson 001"'); // the oldest section is no longer what is advertised
+
+    expect(prompt).not.toContain("NEWEST-SENTINEL"); // the index lists titles, never bodies
     expect(prompt).not.toContain("inline memory budget"); // the full-render notice is not this branch's
+  });
+
+  /*
+   * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824) — the SECOND truncation layer, pinned.
+   * `buildMemoryHeadingIndex` enumerates headings in source order and then front-clamps its OWN
+   * assembly to `maxBytes`, so a cap small enough to bite shows the oldest headings OF THE NEWEST
+   * WINDOW and truncates with the helper's `…` marker. That is deliberate and unchanged: flipping it
+   * would flip the project-memory index and this helper's own unit tests at the same time. A reader
+   * must not mistake "newest window" for "newest headings always visible".
+   */
+  it("shows the oldest headings of the newest window when the index's own byte clamp bites (layer 2)", async () => {
+    const sections = 220;
+    const cap = 300; // near the branch's `Math.max(256, …)` floor, so maxBytes bites
+    await writeWorkspaceMemory(testDir, sectionedMemory(sections));
+
+    // The same fixture at a cap where layer 2 does NOT bite reveals where the newest window starts, so
+    // "oldest of the newest window" is proven structurally instead of against a hard-coded section number.
+    const wide = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery", memory: "" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 4_000,
+    });
+    const windowFirst = renderedHeadingTitles(wide)[0]!;
+    expect(Number(windowFirst.replace("Lesson ", ""))).toBeGreaterThan(1);
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery", memory: "" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: cap,
+    });
+
+    const block = prompt.slice(prompt.indexOf("## Agent Memory Index"));
+    const headings = renderedHeadingTitles(block);
+    expect(headings.length).toBeGreaterThan(0);
+    expect(headings[0]).toBe(windowFirst); // the clamp keeps the window's OLDEST entries
+    expect(headings.length).toBeLessThan(renderedHeadingTitles(wide).length); // it really did bite
+    expect(block).toContain("…"); // the helper's own byte-clamp ellipsis
+    expect(prompt).not.toContain(`"Lesson ${padEntry(sections)}"`); // layer 2, not a layer-1 regression
+    // The helper clamps to `maxBytes - 1` bytes and then appends its `…` marker plus a newline, so the
+    // block is bounded by the cap plus that marker — never by more.
+    const blockBytes = Buffer.byteLength(block, "utf8");
+    expect(blockBytes).toBeGreaterThan(cap - 60);
+    expect(blockBytes).toBeLessThanOrEqual(cap + 4);
+    expect(prompt).not.toContain("inline memory budget");
+  });
+
+  /*
+   * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): the change must be a NO-OP below the clamp.
+   * A source over the session cap but under `MAX_MEMORY_LENGTH` passes through `clampMemoryKeepingNewest`
+   * unchanged, so the index it renders is byte-identical to what the old head-slice input produced.
+   */
+  it("leaves the bounded index untouched when the source is over the cap but under the clamp", async () => {
+    const sections = 60;
+    const memory = sectionedMemory(sections);
+    expect(memory.length).toBeGreaterThan(4_000); // the cap branch really is selected
+    expect(memory.length).toBeLessThan(MAX_MEMORY_LENGTH); // the clamp is a pass-through
+    await writeWorkspaceMemory(testDir, memory);
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery", memory: "" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 4_000,
+    });
+
+    const expected = Array.from({ length: sections }, (_, i) => `Lesson ${padEntry(i + 1)}`);
+    expect(renderedHeadingTitles(prompt)).toEqual(expected);
+    expect(prompt).not.toContain("…");
+    expect(prompt).not.toContain("NEWEST-SENTINEL");
+  });
+
+  /*
+   * FNXC:MemoryInlineClamp 2026-11-21-06:49 (RUFU-824): both inputs oversized at once, capped. The
+   * index takes the workspace's newest window while the INLINE slice stays a front-cut — that
+   * asymmetry is a separate, still-undecided contract (named in the code note at the changed line);
+   * this case pins today's observable shape rather than silently leaving it uncovered.
+   */
+  it("indexes the newest workspace window while slicing the inline memory when both are oversized", async () => {
+    await writeWorkspaceMemory(testDir, sectionedMemory(220));
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({
+        name: "Avery",
+        memory: sectionedMemory(220, { prefix: "OLD-INLINE", newestSentinel: "NEWEST-INLINE" }),
+      }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 4_000,
+    });
+
+    expect(prompt).toContain("## Agent Memory Index (use fn_memory_search / fn_memory_get to read)");
+    expect(renderedHeadingTitles(prompt).at(-1)).toBe(`Lesson ${padEntry(220)}`);
+    expect(prompt).toContain("OLD-INLINE-"); // the inline slice rendered — and it is front-cut today
+    expect(prompt).toContain("…"); // the inline clamp marker; the 159-heading index fits its 3000-byte share
+    expect(prompt).not.toContain("NEWEST-SENTINEL"); // no workspace body text
+    expect(prompt).not.toContain("NEWEST-INLINE"); // no inline body text from the newest section
+    expect(prompt).not.toContain("inline memory budget");
   });
 
   it("renders under-budget memory verbatim with no notice", async () => {
