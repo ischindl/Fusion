@@ -67,7 +67,7 @@ import { resolveChatHandoffUiSettings } from "../utils/chatHandoff";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { buildChatQuotePrefill } from "../utils/chatQuotePrefill";
 /* FNXC:ChatQuestionLiveness 2026-09-17-19:30: shared liveness predicate + answer-echo lookup for question cards. */
-import { findSubmittedQuestionAnswer, indexDurableQuestionAnswers, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
+import { findSubmittedQuestionAnswer, holdsAwaitingQuestionToolCall, indexDurableQuestionAnswers, isLiveQuestionAwaitingAnswer } from "../utils/parseQuestionToolCall";
 import {
   clearPersistedChatOpenSession,
   getPersistedChatOpenSession,
@@ -3639,11 +3639,15 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                 isTopClipped={topClippedMessageIds.has(message.id)}
                 /*
                 FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
-                RUFU-258 render precedence: durable link first, then the live-turn await, then the legacy
-                positional echo. A linked card is answered with the linked row's content and is not
-                actionable even while the session is generating; an UNLINKED card keeps exactly the old
-                inputs, so pre-feature rows and a send still in flight (whose answer row has not reached
-                this client yet) are unaffected.
+                RUFU-258 render precedence: durable link first, then the transcript-tail await, then the
+                legacy positional echo. A linked card is answered with the linked row's content and is not
+                actionable; an UNLINKED card keeps exactly the same tail proof it would be stamped with.
+
+                FNXC:ChatQuestionLiveness 2026-11-21-12:30:
+                RUFU-1065: the tail proof is the row's own tool calls, not a live generation. Reading
+                `activeSession.isGenerating` here made an unanswered question look answered the moment its
+                turn completed, because nothing holds that generation for a turn that ended by asking, so
+                the card lost its controls and printed the empty-answer fallback.
                 */
                 isAwaitingQuestionAnswer={durableQuestionAnswer
                   ? false
@@ -3651,7 +3655,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
                     role: message.role,
                     isLastMessage: index === messages.length - 1,
                     isStreaming,
-                    isSessionGenerating: activeSession?.isGenerating === true,
+                    holdsAwaitingQuestion: holdsAwaitingQuestionToolCall(message.toolCalls),
                     interrupted: message.metadata?.interrupted === true,
                   })}
                 submittedQuestionAnswer={durableQuestionAnswer?.content ?? findSubmittedQuestionAnswer(messages, index)}

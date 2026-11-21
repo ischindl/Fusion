@@ -14,7 +14,7 @@ import { MicButton } from "./MicButton";
 import type { ChatEnginePhase, ChatMessageInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { isPersistedChatMessageId } from "../hooks/chatTypes";
 import { attachChatStream, cancelChatResponse, ensureTaskPlannerChatSession, fetchChatMessages, fetchChatSession, fetchChatToolCallBody, fetchSettings, fetchTaskDetail, fetchTaskPlannerChatSession, streamChatResponse, updateChatSession, type ChatFailureInfo, type ChatStreamErrorMeta } from "../api";
-import { parseQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, indexDurableQuestionAnswers, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
+import { parseQuestionToolCall, holdsAwaitingQuestionToolCall, isPlannerQuestionAwaitingAnswer, findSubmittedQuestionAnswer, indexDurableQuestionAnswers, type ParsedQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { PendingChatMessageQueue } from "./PendingChatMessageQueue";
 import { ProviderIcon } from "./ProviderIcon";
@@ -2144,19 +2144,22 @@ export function TaskPlannerChatTab({ task, columnFlags, projectId, active, expan
                   activeSessionId={sessionId}
                   projectId={projectId}
                   /*
-                  FNXC:ChatQuestionLiveness 2026-09-17-19:30: liveness parity with ChatView — only a last, live, non-interrupted row is awaiting.
+                  FNXC:ChatQuestionLiveness 2026-11-21-12:30: liveness parity with ChatView — the row must be
+                  the last one AND hold an unanswered question tool call; `composerState === "sending"` no
+                  longer stands in for that proof, so a persisted tail question stays answerable after its
+                  turn ends on this surface too.
 
                   FNXC:ChatQuestionAnswerLink 2026-09-23-14:21:
-                  RUFU-258 render precedence: a durably linked answer wins and is shown verbatim; the liveness
-                  await only applies to unlinked rows, so an answered card cannot flip back to pending while a
-                  generation is in flight. Pre-feature rows keep the legacy positional echo untouched.
+                  RUFU-258 render precedence: a durably linked answer wins and is shown verbatim; the tail
+                  await only applies to unlinked rows, so an answered card cannot flip back to pending.
+                  Pre-feature rows keep the legacy positional echo untouched.
                   */
                   isAwaitingQuestionAnswer={durableQuestionAnswers.has(message.id)
                     ? false
                     : isPlannerQuestionAwaitingAnswer({
                       role: message.role,
                       isLastMessage: messages[messages.length - 1]?.id === message.id,
-                      isSending: composerState === "sending",
+                      holdsAwaitingQuestion: holdsAwaitingQuestionToolCall(extractToolCalls(message)),
                       interrupted: message.metadata?.interrupted === true,
                     })}
                   submittedQuestionAnswer={durableQuestionAnswers.get(message.id)?.content ?? (() => {

@@ -238,7 +238,18 @@ describe("TaskPlannerChatTab", () => {
     ];
   });
 
-  it("renders the real planner composer through the shared Alpha boundary", async () => {
+  /*
+  FNXC:UiPrimitiveMarkers 2026-11-21-12:41:
+  RUFU-1065 Step 4 found this case already red on `main`, and its history explains why: it was written
+  against `<AlphaProvider enabled>` rerendered to `<AlphaProvider enabled={false}>`, so "the marker
+  disappears after the rerender" was a real invariant. FN-399 (cbbe0f88d0) deleted the presentation
+  perimeter, no provider, boundary, or surface branch remains, and renamed `data-alpha-ui` to `data-ui`
+  in place, which left the negative assertion pointing at a switch the product no longer has. Recorded
+  here is the truth that replaces it: the shared primitive marker is unconditional and a rerender of the
+  same tree keeps it on the same DOM node. That is the stronger claim, and it is the one that still
+  catches a remount, which is what the rerender leg was ever worth.
+  */
+  it("renders the planner composer from the shared UI primitives and keeps its markers across a rerender", async () => {
     const view = render(
       <>
         <>
@@ -248,6 +259,7 @@ describe("TaskPlannerChatTab", () => {
     );
     expect(await screen.findByLabelText("Message task chat")).toHaveAttribute("data-ui", "textarea");
     expect(view.container.querySelector('[data-ui="button"]')).not.toBeNull();
+    const composer = screen.getByLabelText("Message task chat");
 
     view.rerender(
       <>
@@ -256,7 +268,8 @@ describe("TaskPlannerChatTab", () => {
         </>
       </>,
     );
-    expect(screen.getByLabelText("Message task chat")).not.toHaveAttribute("data-ui");
+    expect(screen.getByLabelText("Message task chat")).toBe(composer);
+    expect(composer).toHaveAttribute("data-ui", "textarea");
   });
 
   afterEach(() => {
@@ -1811,6 +1824,64 @@ describe("TaskPlannerChatTab", () => {
       undefined,
       { taskId: "FN-7310" },
     );
+  });
+
+  /*
+  FNXC:ChatQuestionLiveness 2026-11-21-12:41:
+  RUFU-1065 cross-surface parity. The planner card was already content-driven through
+  `buildPlannerQuestionRenderStates` — which is why the operator only ever met the dead card on Direct
+  chat — but the message-item liveness prop beside it read `composerState === "sending"` and now takes
+  the same transcript-tail proof `ChatView` passes. These two cases are what stop the surfaces drifting
+  apart again: one tail row is actionable on both, and one durable link turns it into a record on both.
+  */
+  it("keeps a persisted tail question actionable after its turn, matching the Direct chat card", async () => {
+    const user = userEvent.setup();
+    mockFetchChatMessages.mockResolvedValue({
+      messages: [plannerQuestionMessage("assistant-question", { question: "Pick a path", options: ["Conservative", "Aggressive"] })],
+    });
+    renderPlannerChat();
+
+    const question = await screen.findByTestId("chat-question-response");
+    expect(question).not.toHaveClass("chat-question-response--answered");
+    expect(within(question).queryByText("Answered")).not.toBeInTheDocument();
+    expect(within(question).queryByTestId("chat-question-response-submitted-answer")).not.toBeInTheDocument();
+
+    const submit = within(question).getByTestId("chat-question-response-submit");
+    expect(submit).toBeDisabled();
+    await user.click(screen.getByTestId("chat-question-response-option-q-0-opt-0"));
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+
+    expect(mockStreamChatResponse).toHaveBeenCalledWith(
+      "chat-planner",
+      "> Q: Pick a path\nConservative",
+      expect.any(Object),
+      undefined,
+      undefined,
+      { taskId: "FN-7310" },
+    );
+  });
+
+  it("renders a planner question whose answer is durably linked as a read-only record", async () => {
+    mockFetchChatMessages.mockResolvedValue({
+      messages: [
+        plannerQuestionMessage("assistant-question", { question: "Pick a path", options: ["Conservative", "Aggressive"] }),
+        {
+          id: "user-answer",
+          sessionId: "chat-planner",
+          role: "user",
+          content: "Conservative, please",
+          metadata: { questionAnswer: { questionMessageId: "assistant-question" } },
+          createdAt: "2026-06-30T00:03:00.000Z",
+        },
+      ],
+    });
+    renderPlannerChat();
+
+    const question = await screen.findByTestId("chat-question-response");
+    expect(question).toHaveClass("chat-question-response--answered");
+    expect(within(question).getByTestId("chat-question-response-submitted-answer")).toHaveTextContent("Conservative, please");
+    expect(within(question).queryByTestId("chat-question-response-submit")).not.toBeInTheDocument();
   });
 
   it("renders steering-tool confirmation and refreshes task detail after persistence", async () => {

@@ -11,6 +11,7 @@ import {
   parseQuestionToolCall,
   QUESTION_ANSWER_METADATA_KEY,
   readQuestionAnswerLink,
+  holdsAwaitingQuestionToolCall,
 } from "../parseQuestionToolCall";
 
 function toolCall(toolName: string, args?: Record<string, unknown>): ToolCallInfo {
@@ -154,31 +155,98 @@ describe("parseQuestionToolCall", () => {
 });
 
 /*
-FNXC:ChatQuestionLiveness 2026-09-17-19:30:
-Question cards may only look actionable while the asking turn is provably still waiting;
-a dead or interrupted last row must render as a disabled record on both surfaces.
+FNXC:ChatQuestionLiveness 2026-11-21-12:30:
+RUFU-1065. The awaiting proof is a transcript tail holding an unanswered question tool call, never a
+generation or sending clock. These blocks replace the 2026-09-17 ones, whose `isSessionGenerating:
+false` and `isSending: false` cases asserted the removed rule — the rule that rendered an unanswered
+question as an answered record because no writer ever holds a turn that ended by asking.
+Fixtures are composed once through `awaitingOnDirectChat` / `awaitingOnPlanner` so a row shape is
+stated in one place rather than re-typed per case.
 */
-describe("isLiveQuestionAwaitingAnswer", () => {
-  const live = { role: "assistant", isLastMessage: true, isStreaming: false, isSessionGenerating: true };
+const QUESTION_TOOL_CALLS = [toolCall("fn_ask_question", { question: "Which branch?", options: ["main", "feature"] })];
 
-  it("opens only for a live, generating, non-interrupted last assistant row", () => {
-    expect(isLiveQuestionAwaitingAnswer(live)).toBe(true);
-    expect(isLiveQuestionAwaitingAnswer({ ...live, isSessionGenerating: false })).toBe(false);
-    expect(isLiveQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
-    expect(isLiveQuestionAwaitingAnswer({ ...live, isStreaming: true })).toBe(false);
-    expect(isLiveQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
-    expect(isLiveQuestionAwaitingAnswer({ ...live, role: "user" })).toBe(false);
+function questionToolCall(overrides: Partial<ToolCallInfo> = {}): ToolCallInfo {
+  return { ...QUESTION_TOOL_CALLS[0], ...overrides };
+}
+
+/** Composes the row-level content proof with the Direct chat predicate, as `ChatView` does. */
+function awaitingOnDirectChat(toolCalls: ToolCallInfo[] | undefined, overrides: Record<string, unknown> = {}): boolean {
+  return isLiveQuestionAwaitingAnswer({
+    role: "assistant",
+    isLastMessage: true,
+    isStreaming: false,
+    holdsAwaitingQuestion: holdsAwaitingQuestionToolCall(toolCalls),
+    ...overrides,
+  });
+}
+
+/** Composes the same content proof with the planner predicate, as `TaskPlannerChatTab` does. */
+function awaitingOnPlanner(toolCalls: ToolCallInfo[] | undefined, overrides: Record<string, unknown> = {}): boolean {
+  return isPlannerQuestionAwaitingAnswer({
+    role: "assistant",
+    isLastMessage: true,
+    holdsAwaitingQuestion: holdsAwaitingQuestionToolCall(toolCalls),
+    ...overrides,
+  });
+}
+
+describe("holdsAwaitingQuestionToolCall", () => {
+  it("accepts a question tool call that did not error", () => {
+    expect(holdsAwaitingQuestionToolCall(QUESTION_TOOL_CALLS)).toBe(true);
+  });
+
+  it("answers no for a row that holds no question tool call", () => {
+    expect(holdsAwaitingQuestionToolCall(undefined)).toBe(false);
+    expect(holdsAwaitingQuestionToolCall([])).toBe(false);
+    expect(holdsAwaitingQuestionToolCall([toolCall("bash", { command: "ls" })])).toBe(false);
+  });
+
+  it("answers no when every question tool call errored", () => {
+    expect(holdsAwaitingQuestionToolCall([questionToolCall({ isError: true })])).toBe(false);
+  });
+
+  it("is row-level: one live question among other tool calls still awaits", () => {
+    expect(holdsAwaitingQuestionToolCall([
+      toolCall("bash", { command: "ls" }),
+      questionToolCall({ isError: true }),
+      questionToolCall(),
+    ])).toBe(true);
+  });
+});
+
+describe("isLiveQuestionAwaitingAnswer", () => {
+  it("opens only for the last, non-streaming, non-interrupted assistant row holding a question", () => {
+    expect(awaitingOnDirectChat(QUESTION_TOOL_CALLS)).toBe(true);
+    expect(awaitingOnDirectChat(QUESTION_TOOL_CALLS, { interrupted: true })).toBe(false);
+    expect(awaitingOnDirectChat(QUESTION_TOOL_CALLS, { isStreaming: true })).toBe(false);
+    expect(awaitingOnDirectChat(QUESTION_TOOL_CALLS, { isLastMessage: false })).toBe(false);
+    expect(awaitingOnDirectChat(QUESTION_TOOL_CALLS, { role: "user" })).toBe(false);
+  });
+
+  it("stays closed for a tail row that could not be answered by a reply", () => {
+    // A row with no tool calls, a question-free assistant row, and an errored question row are each
+    // rows the server would never stamp an answer onto, so their card must not offer one.
+    expect(awaitingOnDirectChat(undefined)).toBe(false);
+    expect(awaitingOnDirectChat([toolCall("bash", { command: "ls" })])).toBe(false);
+    expect(awaitingOnDirectChat([questionToolCall({ isError: true })])).toBe(false);
+  });
+
+  it("claims nothing from a row that merely arrived while a turn is running", () => {
+    // The removed rule's shape: a generating session used to be the whole proof, so an assistant row
+    // with no question on it claimed awaiting. Content, not the clock, now decides.
+    expect(awaitingOnDirectChat([toolCall("bash", { command: "ls" })], { isLastMessage: true })).toBe(false);
   });
 });
 
 describe("isPlannerQuestionAwaitingAnswer", () => {
-  const live = { role: "assistant", isLastMessage: true, isSending: true };
-
-  it("opens only for a sending, non-interrupted last assistant row", () => {
-    expect(isPlannerQuestionAwaitingAnswer(live)).toBe(true);
-    expect(isPlannerQuestionAwaitingAnswer({ ...live, isSending: false })).toBe(false);
-    expect(isPlannerQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
-    expect(isPlannerQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
+  it("opens on the same content proof the Direct chat surface uses", () => {
+    expect(awaitingOnPlanner(QUESTION_TOOL_CALLS)).toBe(true);
+    expect(awaitingOnPlanner(QUESTION_TOOL_CALLS, { interrupted: true })).toBe(false);
+    expect(awaitingOnPlanner(QUESTION_TOOL_CALLS, { isLastMessage: false })).toBe(false);
+    expect(awaitingOnPlanner(QUESTION_TOOL_CALLS, { role: "user" })).toBe(false);
+    expect(awaitingOnPlanner(undefined)).toBe(false);
+    expect(awaitingOnPlanner([toolCall("bash", { command: "ls" })])).toBe(false);
+    expect(awaitingOnPlanner([questionToolCall({ isError: true })])).toBe(false);
   });
 });
 

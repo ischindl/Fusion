@@ -270,19 +270,52 @@ function isChatQuestionOption(value: ChatQuestionOption | null): value is ChatQu
 }
 
 /*
-FNXC:ChatQuestionLiveness 2026-09-17-19:30:
-A question card must look actionable only while the turn that asked it is actually still
-waiting. The sentinel keeps the session's in-flight generation alive for the whole wait, so
-"is last row + session generating" is the liveness proof; a restart, a Stop, or an
-interrupted turn clears it and the card must fall back to a disabled record instead of an
-input that posts into a dead turn (previously every last assistant row claimed awaiting, and
-the planner claimed it for ALL assistant rows).
+FNXC:ChatQuestionLiveness 2026-11-21-12:30:
+RUFU-1065. The awaiting proof for a question card is a transcript fact, never a clock: the row must
+be the newest row and must itself hold an unanswered question tool call. That is exactly the decision
+`findAwaitingQuestionMessageId` in `src/shared/chat-question-link.ts` makes before it stamps
+`metadata.questionAnswer`, so a card is actionable for precisely as long as a reply would still be
+recorded as its answer, and the card's own submit keeps travelling the composer route that stamps it.
+
+The previous rule proved liveness with the session's in-flight generation (`isSessionGenerating` on
+Direct chat, `composerState === "sending"` on the planner) and asserted a sentinel that holds the
+generation "for the whole wait". No writer ever realized that holder: `src/chat.ts` flushes the
+in-flight generation unconditionally when a turn completes, so the proof went false the moment the
+question row was persisted and the card rendered as an answered record with an empty submitted answer
+("A later user reply answered this question.") although nothing had been sent.
+
+Two rules the 2026-09-17 revision established and this one keeps: an assistant row that holds no
+question tool call must never claim awaiting, and a restart, a Stop, or an interrupted turn must fall
+back to a record instead of an input that posts into a dead turn. The first is carried by
+`holdsAwaitingQuestionToolCall` plus `isLastMessage` and `!isStreaming`; the second by the
+`interrupted` guard, which is also why an interrupted question stays a record forever. Form (a),
+holding the generation instead, was rejected: any holder is time- or flag-bound, and RUFU-144's stale
+in-flight sweep would clear a long-unanswered question into a phantom `interrupted` row while a held
+generation keeps the composer in generating state.
 */
+
+/**
+ * Whether a persisted row's tool calls include one that is still waiting for operator input: a
+ * question tool name that did not error.
+ *
+ * Mirrors the server's `isAwaitingQuestionToolCall`, which additionally rejects `failed` and `error`
+ * statuses. The client `ToolCallInfo` union only carries `"running" | "completed"`, so the client
+ * proof can never be wider than the stamping decision that uses the same two checks.
+ *
+ * Granularity is the ROW, matching the server: one row may hold several question tool calls and a
+ * reply answers all of them, which is why the card renders from this one row-level answer.
+ */
+export function holdsAwaitingQuestionToolCall(toolCalls: ToolCallInfo[] | undefined): boolean {
+  if (!toolCalls || toolCalls.length === 0) return false;
+  return toolCalls.some((toolCall) => !toolCall.isError && isQuestionToolName(toolCall.toolName));
+}
+
+/** Direct chat: the newest persisted row is an assistant row holding an unanswered question. */
 export function isLiveQuestionAwaitingAnswer(options: {
   role: string;
   isLastMessage: boolean;
   isStreaming: boolean;
-  isSessionGenerating: boolean;
+  holdsAwaitingQuestion: boolean;
   interrupted?: boolean;
 }): boolean {
   return (
@@ -290,27 +323,28 @@ export function isLiveQuestionAwaitingAnswer(options: {
     && options.isLastMessage
     && !options.isStreaming
     && options.interrupted !== true
-    && options.isSessionGenerating
+    && options.holdsAwaitingQuestion
   );
 }
 
 /**
-FNXC:ChatQuestionLiveness 2026-09-17-19:30:
-Planner parity. The planner keeps `composerState === "sending"` for the whole in-flight turn
-(the sentinel holds the response), so a persisted last row with no live send is a dead or
-already-resolved question and renders as a record; the composer stays a usable answer path.
+FNXC:ChatQuestionLiveness 2026-11-21-12:30:
+Planner parity with the predicate above: one shared content proof, no sending clock. The planner used
+to claim awaiting only while `composerState === "sending"`, so the same tail row went inert on the
+planner surface the moment its turn ended. `isStreaming` has no planner equivalent here because the
+planner keeps its in-flight row under the `streaming-assistant` id rather than in `messages`.
 */
 export function isPlannerQuestionAwaitingAnswer(options: {
   role: string;
   isLastMessage: boolean;
-  isSending: boolean;
+  holdsAwaitingQuestion: boolean;
   interrupted?: boolean;
 }): boolean {
   return (
     options.role === "assistant"
     && options.isLastMessage
     && options.interrupted !== true
-    && options.isSending
+    && options.holdsAwaitingQuestion
   );
 }
 
@@ -333,8 +367,8 @@ message, and any pending queue.
 
 Render precedence, applied by every consumer of these helpers:
 1. a durable link (these readers) — authoritative;
-2. the live-turn await (`isLiveQuestionAwaitingAnswer` / `isPlannerQuestionAwaitingAnswer`) — the only
-   mechanism for a send still in flight, whose answer row has not reached the client list yet;
+2. the transcript-tail await (`isLiveQuestionAwaitingAnswer` / `isPlannerQuestionAwaitingAnswer`) —
+   true exactly while the server would still stamp a reply as this card's answer;
 3. the legacy positional scan (`findSubmittedQuestionAnswer`) — rows written before this feature.
 A card WITH a link is answered with the linked row's content and is never actionable, even while the
 session is generating. A card WITHOUT a link must never adopt someone else's linked answer, so the
