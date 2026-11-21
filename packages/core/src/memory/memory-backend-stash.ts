@@ -316,7 +316,13 @@ message — the map stores only the fixed code, the fixed endpoint id, a boolean
 */
 
 /** Fixed read-endpoint ids. An id names the route; a URL never enters this record. */
-export const STASH_READ_ENDPOINTS = ["keyword-search", "semantic-search", "read", "exists"] as const;
+/*
+FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+`recent-events` is the lane that answers a query with NO terms. It is a different route from
+`keyword-search` — not a keyword request with an empty `q` — so it gets its own endpoint id rather than
+borrowing one that would put the wrong URL under the outcome the operator reads.
+*/
+export const STASH_READ_ENDPOINTS = ["keyword-search", "semantic-search", "recent-events", "read", "exists"] as const;
 export type StashReadEndpoint = (typeof STASH_READ_ENDPOINTS)[number];
 
 /** Closed read-outcome vocabulary (see the FNXC block above for each meaning). */
@@ -914,6 +920,13 @@ export const STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT = 200;
 export const STASH_SEMANTIC_SEARCH_SERVER_MAX_LIMIT = 100;
 
 /**
+ * Stash `GET /me/sessions/events` (the list route) validates `limit` at `le=200`
+ * (`backend/routers/memory.py:120` in the pinned deploy `4585c2d24`) — the same ceiling as the
+ * keyword route, which is why one window factor serves both without a second constant's arithmetic.
+ */
+export const STASH_RECENT_EVENTS_SERVER_MAX_LIMIT = 200;
+
+/**
  * How much wider than the page to ask for. From the measurement above the shared-owner own-row rate
  * is 0.31, so a 6x window fills a 10-row page from a store shared by 25 projects without a second
  * call in the common case, and the widening below is what covers the queries the project barely
@@ -1183,16 +1196,17 @@ export class StashMemoryBackend implements MemoryBackend {
   // ── read ───────────────────────────────────────────────────────────
 
   /**
-   * Read the most relevant stash memories for a project as markdown.
-   * Sends a broad empty query. Fails CLOSED: any error -> {content:"",exists:false}.
+   * Read the most recent stash memories for a project as markdown.
+   * A broad read carries no terms, so it travels the recency lane (RUFU-1152); its page is scoped and
+   * cleaned like every other answer. Fails CLOSED: any error -> {content:"",exists:false}.
    */
   async read(rootDir: string): Promise<MemoryReadResult> {
     try {
-      const results = await this.search(rootDir, { query: "", limit: 10 });
+      // RUFU-994 + RUFU-1152: the `read` outcome carries the code the lane actually produced, so a
+      // refused request can never be reported to an operator as an empty memory.
+      const { rows: results, outcome } = await this.searchWithOutcome(rootDir, { query: "", limit: 10 }, "read");
       if (results.length === 0) {
-        // RUFU-994: `read()` reports its own endpoint so a broad-recall miss is attributed to
-        // `read`, not to whichever keyword URL the search happened to use.
-        this.noteReadOutcome("read", "no-match", 0);
+        this.noteReadOutcome("read", outcome === "ok" ? "no-match" : outcome, 0);
         return { content: "", exists: false, backend: this.type };
       }
       this.noteReadOutcome("read", "ok", results.length);
@@ -1310,6 +1324,23 @@ export class StashMemoryBackend implements MemoryBackend {
    *   fallback for undeployed servers only). Missing/non-finite rank → 1.0.
    */
   async search(rootDir: string, options: MemorySearchOptions): Promise<MemorySearchResult[]> {
+    return (await this.searchWithOutcome(rootDir, options)).rows;
+  }
+
+  /*
+  FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+  The read lane with one seam that reports its own verdict. `search()` cannot tell a caller whether an
+  empty result means "the server answered and found nothing" or "the server refused the request", and
+  `read()` used to paper over that by recording `no-match` for both after the fact — so a refused broad
+  read looked like an empty memory in the very outcome the dashboard and the audit show. Passing the
+  surface's own endpoint id down here makes the lane that ran also the lane that is recorded, once,
+  with the code the transport actually produced.
+  */
+  private async searchWithOutcome(
+    rootDir: string,
+    options: MemorySearchOptions,
+    endpointOverride?: StashReadEndpoint,
+  ): Promise<{ rows: MemorySearchResult[]; outcome: StashReadOutcomeCode; count: number }> {
     const req = options.query || "";
     const limit = Math.max(1, Math.min(options.limit ?? 5, 20));
     // ── RUFU-126 vector-first branch (D1/D2/D3) ──
@@ -1324,7 +1355,7 @@ export class StashMemoryBackend implements MemoryBackend {
       this.vectorSearchAvailable()
     ) {
       const vectorHits = await this.vectorSearchHits(rawTrimmed, limit, rootDir);
-      if (vectorHits) return vectorHits;
+      if (vectorHits) return { rows: vectorHits, outcome: "ok" as const, count: vectorHits.length };
     }
     /*
     FNXC:RUFU121TopicRemoval 2026-08-18-19:53:
@@ -1336,36 +1367,54 @@ export class StashMemoryBackend implements MemoryBackend {
     queryStashEvents() filters.
 
     URL contract (load-bearing):
-    - empty/whitespace raw query → LEGACY URL preserved BYTE-IDENTICAL
-      (raw, as encoded today); read()/exists() broad recall relies on the
-      current fail-closed path for this shape.
+    - empty/whitespace raw query → RECENCY ROUTE `GET /me/sessions/events?limit=<window>&order=desc`.
+      It used to be the keyword route with `q=` preserved byte-identical, and that shape can never be
+      answered: `search_events` declares `q: str = Query(..., min_length=1)`
+      (`backend/routers/memory.py:146`, pinned deploy `4585c2d24`), so an empty `q` is a 422 before any
+      query runs. `read()` and `exists()` were the only senders of that shape, which is why broad recall
+      was dead rather than merely narrow (RUFU-1152).
     - non-empty raw query → `q=` + normalizeStashSearchQuery(raw) (Postgres
       websearch_to_tsquery('english')-safe); a query that normalizes to ""
       returns [] with NO HTTP call (Stash 422s empty q).
     */
+    /*
+    FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152): which route a request belongs to is
+    decided by whether the caller supplied terms, so the outcome attribution is decided at the same
+    point — every exit of this method, including the ones that send no request, records the lane it ran.
+    */
+    const laneEndpoint: StashReadEndpoint = req.trim().length === 0 ? "recent-events" : "keyword-search";
+    const readEndpoint = endpointOverride ?? laneEndpoint;
     let q = req;
     if (req.trim().length > 0) {
       const normalized = normalizeStashSearchQuery(req);
       // RUFU-994: this state sends no request at all, so it records `no-match` — the same
       // "nothing found" answer a 2xx-with-zero-results gives, and never a refusal code.
       if (normalized === "") {
-        this.noteReadOutcome("keyword-search", "no-match", 0);
-        return [];
+        this.noteReadOutcome(readEndpoint, "no-match", 0);
+        return { rows: [], outcome: "no-match" as const, count: 0 };
       }
       q = normalized;
     }
     /*
+    FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+    A query with no terms is not a keyword query, and the keyword route says so (`q` has
+    `min_length=1`). It now asks the list route for the newest events instead, which is what
+    "no terms" means: recency, not relevance. RUFU-1146's carve-out for this shape ("deliberately not
+    widened, its URL is a byte-identical contract") died with the shape — a frozen URL that a
+    spec-correct route 422s is not a contract, it is a dead request. The recency lane buys the SAME
+    window because the store it reads is just as owner-wide: scoping afterwards drops other projects'
+    newest events, and an unwindowed 10-row broad recall would answer "this project remembers 3
+    things" from a store holding hundreds.
+
     FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
-    The window is bought before it is spent (see the block at `stashReadFetchWindow`). The legacy
-    empty-query shape is deliberately NOT widened: its URL is a documented byte-identical contract,
-    `read()`/`exists()` are reachability/broad-recall probes of it, and the shape is the one the
-    deployed route refuses on `q` length anyway, so a wider window would change a contract without
-    buying a single row.
+    The window is bought before it is spent (see the block at `stashReadFetchWindow`).
     */
-    const isLegacyEmptyQuery = req.trim().length === 0;
-    const fetchWindow = isLegacyEmptyQuery
-      ? limit
+    const isRecencyLane = req.trim().length === 0;
+    const fetchWindow = isRecencyLane
+      ? stashReadFetchWindow(limit, STASH_RECENT_EVENTS_SERVER_MAX_LIMIT)
       : stashReadFetchWindow(limit, STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT);
+    const fetchPage = (windowLimit: number) =>
+      isRecencyLane ? this.fetchRecentEventRows(windowLimit) : this.fetchKeywordRows(q, windowLimit);
     try {
       /*
       FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
@@ -1377,12 +1426,12 @@ export class StashMemoryBackend implements MemoryBackend {
       */
       let items: StashSearchResultItem[];
       try {
-        items = await this.fetchKeywordRows(q, fetchWindow);
+        items = await fetchPage(fetchWindow);
       } catch (err) {
         const refusedStatus = parseStashTransportStatus(err);
         if (fetchWindow === limit || (refusedStatus !== 400 && refusedStatus !== 422)) throw err;
-        this.noteReadOutcome("keyword-search", "rejected-request", 0);
-        items = await this.fetchKeywordRows(q, limit);
+        this.noteReadOutcome(readEndpoint, "rejected-request", 0);
+        items = await fetchPage(limit);
       }
       if (
         fetchWindow > limit
@@ -1390,7 +1439,7 @@ export class StashMemoryBackend implements MemoryBackend {
         // the store being exhausted for this query, which no wider request can change.
         && items.length >= fetchWindow
         && classifyStashReadScope(items, stashProjectIdentityFor(rootDir)).kept.length < limit
-        && fetchWindow < STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT
+        && fetchWindow < (isRecencyLane ? STASH_RECENT_EVENTS_SERVER_MAX_LIMIT : STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT)
       ) {
         /*
         FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
@@ -1403,7 +1452,9 @@ export class StashMemoryBackend implements MemoryBackend {
         try {
           items = mergeStashRowsById(
             items,
-            await this.fetchKeywordRows(q, STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT),
+            await fetchPage(
+              isRecencyLane ? STASH_RECENT_EVENTS_SERVER_MAX_LIMIT : STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT,
+            ),
           );
         } catch {
           // Keep the narrow window's answer; the scoped record below still reports what was measured.
@@ -1448,8 +1499,9 @@ export class StashMemoryBackend implements MemoryBackend {
       // RUFU-994: `no-match` (an answered query with nothing found) is recorded as its own outcome.
       // RUFU-1088: the count is taken from the FINAL page, so `resultCount` is what a caller received —
       // a page hygiene emptied records `no-match` rather than the raw hit count.
-      this.noteReadOutcome("keyword-search", filtered.length > 0 ? "ok" : "no-match", filtered.length);
-      return filtered.map((it, idx) => ({
+      const outcome: StashReadOutcomeCode = filtered.length > 0 ? "ok" : "no-match";
+      this.noteReadOutcome(readEndpoint, outcome, filtered.length);
+      const rows = filtered.map((it, idx) => ({
         path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
         lineStart: 1,
         lineEnd: 1,
@@ -1458,12 +1510,14 @@ export class StashMemoryBackend implements MemoryBackend {
         backend: this.type,
         ...(ranked[idx]!.rankingSource ? { rankingSource: ranked[idx]!.rankingSource } : {}),
       }));
+      return { rows, outcome, count: rows.length };
     } catch (err) {
       // FNXC:StashFailClosed 2026-08-05-16:06:
       // stash down -> [] -> LCM cue "" -> run proceeds. Never throws.
       // RUFU-994: the swallowed cause is now recorded (see STASH_READ_OUTCOME_CODES).
-      this.noteReadOutcome("keyword-search", this.readFailureCode(err), 0);
-      return [];
+      const code = this.readFailureCode(err);
+      this.noteReadOutcome(readEndpoint, code, 0);
+      return { rows: [], outcome: code, count: 0 };
     }
   }
 
@@ -1473,6 +1527,21 @@ export class StashMemoryBackend implements MemoryBackend {
   the window). Throws like the transport seam it wraps: the CALLER decides whether a refusal is
   fail-closed or degradable, because the two differ by window, not by error class.
   */
+  /*
+  FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+  The only Stash route that answers a request with no `q`. `order=desc` is explicit rather than left to
+  the route default so the recency direction is part of OUR contract and cannot change under us when the
+  server changes a default. Throws like the transport seam it wraps; the caller classifies.
+  */
+  private async fetchRecentEventRows(windowLimit: number): Promise<StashSearchResultItem[]> {
+    const resp = await this.httpRequest<StashSearchResponse>(
+      `/api/v1/me/sessions/events?limit=${windowLimit}&order=desc`,
+      "GET",
+    );
+    const items = resp.results ?? resp.events ?? [];
+    return items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object");
+  }
+
   private async fetchKeywordRows(q: string, windowLimit: number): Promise<StashSearchResultItem[]> {
     const resp = await this.httpRequest<StashSearchResponse>(
       `/api/v1/me/sessions/events/search?q=${encodeURIComponent(q)}&limit=${windowLimit}`,
@@ -1675,15 +1744,20 @@ export class StashMemoryBackend implements MemoryBackend {
    * (stash down means "no memory here", consistent with fail-closed).
    *
    * FNXC:StashReadScope 2026-11-19-13:41 (RUFU-1008): deliberately NOT scoped.
-   * Its `?q=&limit=1` asks "did the server answer at all"; it is an auth/reachability probe, not a
-   * data surface, and its `true` must never be read as "this project has memories". It therefore
-   * contributes nothing to the scope counters — counting it would put a number on a request that
-   * never inspects an owner.
+   * It asks "did the server answer at all"; it is an auth/reachability probe, not a data surface, and
+   * its `true` must never be read as "this project has memories". It therefore contributes nothing to
+   * the scope counters — counting it would put a number on a request that never inspects an owner.
+   *
+   * FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152): it used to probe
+   * `/events/search?q=&limit=1`, and the pinned route declares `q` with `min_length=1`, so the probe
+   * was answered 422 by a healthy server and reported "no memory here". Every consumer that treats
+   * false as absent (ensureMemoryFileWithBackend re-seeding, the health surface) was acting on that
+   * 422. The recency route answers a no-`q` request, so the probe now measures reachability again.
    */
   async exists(_rootDir: string): Promise<boolean> {
     try {
       const resp = await this.httpRequest<StashSearchResponse>(
-        "/api/v1/me/sessions/events/search?q=&limit=1",
+        "/api/v1/me/sessions/events?limit=1&order=desc",
         "GET",
       );
       const reachable = resp !== null && resp !== undefined;

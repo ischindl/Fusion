@@ -65,6 +65,19 @@ const BEARER_RESOLVED = `Bearer ${RESOLVED_SECRET}`;
 const BATCH_PATH = "/api/v1/me/sessions/events/batch";
 const KEYWORD_PATH = "/api/v1/me/sessions/events/search";
 const SEMANTIC_PATH = "/api/v1/me/sessions/events/semantic-search";
+/*
+FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152): the list route — the only Stash read route a
+request with no `q` can be answered by, which is where `read()`'s broad recall and the `exists()` probe
+now go. It carries the same auth dependency as the routes beside it, so this file's subject (the
+credential on the wire) is unchanged by the move.
+*/
+const RECENT_PATH = "/api/v1/me/sessions/events";
+
+/** True for the list route alone — `RECENT_PATH` is a prefix of the keyword route, so a bare
+ *  `startsWith` would sweep keyword reads into a recency-lane assertion. */
+function readRouteOnly(path: string): boolean {
+  return path.startsWith(RECENT_PATH) && !path.startsWith(KEYWORD_PATH) && !path.startsWith(SEMANTIC_PATH);
+}
 
 interface RecordedRequest {
   method: string;
@@ -142,7 +155,8 @@ async function startLoopbackStash(
       accepted ? send(201, { inserted: 1 }) : send(401, { detail: "Missing Authorization header" });
       return;
     }
-    if (path.startsWith(KEYWORD_PATH) || path.startsWith(SEMANTIC_PATH)) {
+    const isRecentRoute = readRouteOnly(path);
+    if (path.startsWith(KEYWORD_PATH) || path.startsWith(SEMANTIC_PATH) || isRecentRoute) {
       const semantic = path.startsWith(SEMANTIC_PATH);
       if (!accepted || (semantic && state.refuseSemanticOnly)) {
         send(401, { detail: "Missing Authorization header" });
@@ -318,7 +332,11 @@ describe("RUFU-994 Stash read paths carry the resolved key on the wire", () => {
 
     const content = await readProjectMemoryWithBackend("/project", settings, reader);
 
-    const reads = paths(server, KEYWORD_PATH);
+    // RUFU-1152 moved broad recall to the list route; the credential claim is about any read path,
+    // so the assertion follows the lane instead of pinning the old URL.
+    const reads = server.requests.filter(
+      (r) => r.path.startsWith(KEYWORD_PATH) || readRouteOnly(r.path),
+    );
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) expect(read.authorization).toBe(BEARER_RESOLVED);
     expect(content).toContain("recalled memory body");
@@ -329,11 +347,13 @@ describe("RUFU-994 Stash read paths carry the resolved key on the wire", () => {
     const reader = secretsReaderReturning(RESOLVED_SECRET);
     const settings = readPathSettings(server.baseUrl);
 
-    // `ensureMemoryFileWithBackend` is the entry that reaches `exists()`; its
-    // probe URL is the empty-query search family.
+    // `ensureMemoryFileWithBackend` is the entry that reaches `exists()`. Its probe used to be the
+    // empty-query search request that the pinned route refuses with a 422 (RUFU-1152); the probe now
+    // travels the list route, and the thing this case pins — the resolved credential on the wire —
+    // is asserted over whichever read route the probe uses.
     await ensureMemoryFileWithBackend(scratchProjectRoot(), settings, reader);
 
-    const probes = paths(server, KEYWORD_PATH);
+    const probes = server.requests.filter((r) => r.path.startsWith(RECENT_PATH));
     expect(probes.length).toBeGreaterThan(0);
     for (const probe of probes) expect(probe.authorization).toBe(BEARER_RESOLVED);
   });

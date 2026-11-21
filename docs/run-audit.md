@@ -1720,7 +1720,10 @@ The cause was an asymmetry in one argument, not in the transport: every write ca
 default empty string. The transport's `if (apiKey)` header rule then sent no `Authorization` header at
 all. The refusal was real, correct on the server's side, and invisible on ours.
 
-Metadata is four keys: `endpoint` (fixed enum `keyword-search` | `semantic-search` | `read` | `exists`),
+Metadata is four keys: `endpoint` (fixed enum `keyword-search` | `semantic-search` | `recent-events` | `read` |
+`exists` — RUFU-1152 added `recent-events` for the lane that answers a query with no terms, so a refusal on a
+broad recall no longer appears as a keyword-search refusal; `read()` and `exists()` keep their own surface ids
+and record once each),
 `code` (the closed read-outcome vocabulary in
 [`docs/memory-backend-integration.md`](memory-backend-integration.md) § 3 — `key-unresolved`,
 `refused-auth`, `refused-capability`, `rejected-request`, `unreachable`, `malformed`), `keyResolved`

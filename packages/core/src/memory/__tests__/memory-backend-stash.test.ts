@@ -391,8 +391,11 @@ describe("normalizeStashSearchQuery (RUFU-121 Step 2)", () => {
 
 describe("StashMemoryBackend.search URL contract (RUFU-121 Step 2)", () => {
   function searchFake() {
-    const fake = makeFakeHttp((path) => {
+    const fake = makeFakeHttp((path: string) => {
+      // RUFU-1152: a query with no terms no longer reaches the search route; the recency route
+      // answers it. Both stay stubbed so a regression to either shape is visible, not silent.
       if (path.startsWith("/api/v1/me/sessions/events/search")) return { results: [] };
+      if (path.startsWith("/api/v1/me/sessions/events?")) return { events: [] };
       return null;
     });
     const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client });
@@ -400,16 +403,26 @@ describe("StashMemoryBackend.search URL contract (RUFU-121 Step 2)", () => {
     return { fake, backend, searchPath };
   }
 
-  it("preserves the legacy URL BYTE-IDENTICAL for an empty query", async () => {
-    const { backend, searchPath } = searchFake();
+  /*
+  FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+  These two cases froze the request that the pinned Stash route refuses outright —
+  `search_events` declares `q: str = Query(..., min_length=1)` (`backend/routers/memory.py:146` at the
+  deployed commit `4585c2d24`), so `?q=` and `?q=%20%20` were 422s, not a stable contract. A query
+  with no terms is not a keyword query; it asks the recency route, newest first.
+  */
+  it("asks the recency route for an empty query, never the keyword route with an empty q", async () => {
+    const { backend, fake } = searchFake();
     await backend.search("/proj/demo", { query: "" });
-    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=&limit=5");
+    const recency = fake.calls.filter((c) => c.path.startsWith("/api/v1/me/sessions/events?")).pop()?.path;
+    expect(recency).toBe("/api/v1/me/sessions/events?limit=30&order=desc");
+    expect(fake.calls.some((c) => c.path.startsWith("/api/v1/me/sessions/events/search"))).toBe(false);
   });
 
-  it("preserves the legacy URL BYTE-IDENTICAL for a whitespace-only query", async () => {
-    const { backend, searchPath } = searchFake();
+  it("treats a whitespace-only query as no terms, not as an encoded empty q", async () => {
+    const { backend, fake } = searchFake();
     await backend.search("/proj/demo", { query: "  " });
-    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=%20%20&limit=5");
+    expect(fake.calls.every((c) => !c.path.includes("q=%20"))).toBe(true);
+    expect(fake.calls.some((c) => c.path.startsWith("/api/v1/me/sessions/events?"))).toBe(true);
   });
 
   it("normalizes a non-empty query into q= and drops the inert topic param", async () => {
@@ -430,12 +443,16 @@ describe("StashMemoryBackend.search URL contract (RUFU-121 Step 2)", () => {
     expect(fake.calls).toHaveLength(0);
   });
 
-  it("clamps limit into 1..20 (Stash hard limit) and keeps the legacy shape", async () => {
-    const { backend, searchPath } = searchFake();
+  // The 1..20 page clamp is visible in the window the recency route is asked for (page x 6).
+  it("clamps limit into 1..20 (Stash hard limit) and keeps the no-topic rule", async () => {
+    const { backend, fake } = searchFake();
+    const recencyPath = () =>
+      fake.calls.filter((c) => c.path.startsWith("/api/v1/me/sessions/events?")).pop()?.path;
     await backend.search("/proj/demo", { query: "", limit: 0 });
-    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=&limit=1");
+    expect(recencyPath()).toBe("/api/v1/me/sessions/events?limit=6&order=desc");
     await backend.search("/proj/demo", { query: "", limit: 1000 });
-    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=&limit=20");
+    expect(recencyPath()).toBe("/api/v1/me/sessions/events?limit=120&order=desc");
+    expect(recencyPath()).not.toContain("topic");
   });
 });
 

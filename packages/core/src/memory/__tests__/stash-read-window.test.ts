@@ -49,6 +49,15 @@ import { STASH_SECRET_KEY } from "../stash-settings.js";
 const RESOLVED_SECRET = "window-probe-secret";
 const KEYWORD_PATH = "/api/v1/me/sessions/events/search";
 const SEMANTIC_PATH = "/api/v1/me/sessions/events/semantic-search";
+/*
+FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+The list route — the only Stash read route that answers a request with no `q`. Declaring it here is
+what lets this stand-in be route-faithful: `backend/routers/memory.py:146` at the deployed commit
+`4585c2d24` validates `q: str = Query(..., min_length=1)`, so a keyword request with an empty `q` is
+refused BEFORE any query runs. A stand-in that answered `?q=` as if it were fine is what let a dead
+request survive as a frozen contract for three cards.
+*/
+const RECENT_PATH = "/api/v1/me/sessions/events";
 
 type Row = { id: string; content: string; session_id: string; event_type: string; rank?: number; metadata?: Record<string, unknown> };
 type RecordedRequest = { method: string; path: string };
@@ -85,6 +94,10 @@ interface StandInOptions {
   semanticStore?: Row[];
   /** When set, the keyword route answers `422` for any `limit` above it (a stricter deployed route). */
   refuseKeywordAboveLimit?: number;
+  /** Rows the LIST route serves (defaults to the keyword store). */
+  recentStore?: StashRow[];
+  /** Default true: the keyword route refuses an empty/absent `q` with 422, as the deployed route does. */
+  lenientEmptyQ?: boolean;
 }
 
 interface StandIn {
@@ -92,6 +105,7 @@ interface StandIn {
   requests: RecordedRequest[];
   keywordRequests(): RecordedRequest[];
   semanticRequests(): RecordedRequest[];
+  recentRequests(): RecordedRequest[];
   close(): Promise<void>;
 }
 
@@ -110,7 +124,20 @@ async function startStash(options: StandInOptions): Promise<StandIn> {
       res.end(JSON.stringify({ results: (options.semanticStore ?? []).slice(0, limit) }));
       return;
     }
+    if (path.startsWith(RECENT_PATH) && !path.startsWith(KEYWORD_PATH) && !path.startsWith(SEMANTIC_PATH)) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ events: (options.recentStore ?? options.keywordStore).slice(0, limit), has_more: false }));
+      return;
+    }
     if (path.startsWith(KEYWORD_PATH)) {
+      if (!options.lenientEmptyQ && !(url.searchParams.get("q") ?? "").trim()) {
+        // Route-faithful to `q: Query(..., min_length=1)` — the refusal that made broad recall dead.
+        res.statusCode = 422;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ detail: "q String required empty" }));
+        return;
+      }
       if (options.refuseKeywordAboveLimit !== undefined && limit > options.refuseKeywordAboveLimit) {
         // How the real seam surfaces a validation refusal: `Stash returned <status>: <body>`.
         res.statusCode = 422;
@@ -134,6 +161,10 @@ async function startStash(options: StandInOptions): Promise<StandIn> {
     requests,
     keywordRequests: () => requests.filter((r) => r.path.startsWith(KEYWORD_PATH)),
     semanticRequests: () => requests.filter((r) => r.path.startsWith(SEMANTIC_PATH)),
+    recentRequests: () =>
+      requests.filter(
+        (r) => r.path.startsWith(RECENT_PATH) && !r.path.startsWith(KEYWORD_PATH) && !r.path.startsWith(SEMANTIC_PATH),
+      ),
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
@@ -292,14 +323,22 @@ describe("RUFU-1146 keyword lane fills the page from the wider window", () => {
     expect(keywordLimitOf(server, 1)).toBe("5");
   });
 
-  it("leaves the legacy empty-query URL byte-identical and asks for no window", async () => {
-    // `read()` and `exists()` probe this shape; RUFU-121 froze the URL and widening it would change
-    // a documented contract without buying a single row.
+  /*
+  FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+  This case froze "the empty-query shape is untouched and unwindowed", and the stand-in answered the
+  shape. The deployed route never would: `q` has `min_length=1`, so every no-terms read was a 422 and
+  `read()`/`exists()` were dead requests wearing a frozen contract. A query with no terms is a recency
+  request now, and it gets the same window every other read gets.
+  */
+  it("sends a no-terms read to the list route, windowed, and never to the route that refuses it", async () => {
     root = tempRoot("rufu1146-legacy-");
     server = await startStash({ keywordStore: [...ownRows(root, 5)] });
-    await backendFor().search(root, { query: "", limit: 5 });
-    expect(server.keywordRequests()).toHaveLength(1);
-    expect(server.keywordRequests()[0]!.path).toBe("/api/v1/me/sessions/events/search?q=&limit=5");
+    const results = await backendFor().search(root, { query: "", limit: 5 });
+    expect(server.keywordRequests()).toHaveLength(0);
+    expect(server.recentRequests().map((r) => r.path)).toEqual([
+      "/api/v1/me/sessions/events?limit=30&order=desc",
+    ]);
+    expect(results).toHaveLength(5);
   });
 
   it("keeps the scoped record's shape and reports the WINDOW as matchedCount", async () => {
@@ -437,20 +476,26 @@ describe("RUFU-1146 every consumer of the lane gets the page, not the residue", 
   });
 
   /*
-  FNXC:StashReadWindow 2026-11-21-13:45 (RUFU-1146):
-  `read()`'s broad recall asks the empty-query shape, and this card deliberately leaves that shape
-  byte-identical (AC 2): RUFU-121 froze it, and it is the request the surviving `rejected-request`
-  refusals attach to. The consequence is stated rather than hidden: an empty-query window cannot be
-  widened by this card, so a store that leads with other projects' rows still yields nothing here.
-  That gap belongs to RUFU-1033/RUFU-1135 (the empty read body and the stubbed `get()`), and widening
-  it under a frozen URL would trade one card's scope for another's.
+  FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152):
+  RUFU-1146 recorded this as a deliberate boundary — the shape stayed byte-identical, so a store that
+  led with other projects' rows yielded nothing at `read()`. Reading the pinned route closed the
+  boundary for a harder reason: the frozen shape was refused outright, so `read()` could only ever
+  return "". `read()` now travels the recency lane with the same window, which makes that boundary's
+  consequence (a pageful of foreign rows, zero own rows, an empty body) unreachable rather than merely
+  documented — and keeps the keyword route at zero requests, because asking it with no `q` is the
+  failure this card removes.
   */
-  it("read() keeps the frozen empty-query shape and is NOT widened (recorded boundary)", async () => {
+  it("read() travels the windowed recency lane, so foreign rows cannot empty the body", async () => {
     await storeWithOwnRowsBehindForeignOnes();
     const backend = new StashMemoryBackend({ baseUrl: server!.baseUrl, apiKey: RESOLVED_SECRET });
-    await backend.read(root as string);
-    const requests = server!.keywordRequests();
-    expect(requests).toHaveLength(1);
-    expect(requests[0]!.path).toBe("/api/v1/me/sessions/events/search?q=&limit=10");
+    const result = await backend.read(root as string);
+    const requests = server!.recentRequests();
+    expect(requests.map((r) => r.path)).toEqual(["/api/v1/me/sessions/events?limit=60&order=desc"]);
+    // The fixture holds 20 foreign rows AHEAD of the 5 own ones, which is exactly the shape that
+    // used to empty this body: an unwindowed 10-row page was all foreign, so scoping kept nothing.
+    expect(result.exists).toBe(true);
+    expect(result.content).toContain("5 memories recalled");
+    expect(result.content).toContain("own note 4");
+    expect(server!.keywordRequests()).toHaveLength(0);
   });
 });

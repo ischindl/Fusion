@@ -161,8 +161,10 @@ describe("StashMemoryBackend", () => {
         statusCode: 200,
         body: {
           results: [
+            // Two rows from ONE session would survive only as one page row (the per-session cap,
+            // RUFU-1088), and this case's subject is keyword-result mapping, not that cap.
             rowFor("/proj", { id: 1, content: "first memory", session_id: "sess_abc" }),
-            rowFor("/proj", { id: 2, content: "second memory", session_id: "sess_abc" }),
+            rowFor("/proj", { id: 2, content: "second memory", session_id: "sess_def" }),
           ],
         },
       });
@@ -237,7 +239,12 @@ describe("StashMemoryBackend", () => {
     });
 
     it("returns markdown summary when results exist", async () => {
-      responder = () => ({ statusCode: 200, body: { results: [rowFor("/proj", { content: "hello", session_id: "s1" })] } });
+      // Multi-word content: a single-token, non-heading row is filtered before display (RUFU-1088),
+      // and this case's subject is the markdown render, not the filter.
+      responder = () => ({
+        statusCode: 200,
+        body: { results: [rowFor("/proj", { content: "hello from the memory store", session_id: "s1" })] },
+      });
       const promise = backend().read("/proj");
       await deliver();
       const r = await promise;
@@ -605,7 +612,7 @@ describe("StashMemoryBackend", () => {
         expect(httpsCalls).toHaveLength(1);
         expect(httpsCalls[0].hostname).toBe("stash.example");
         expect(httpsCalls[0].port).toBe(443);
-        expect(httpsCalls[0].path).toBe("/stash/api/v1/me/sessions/events/search?q=&limit=1");
+        expect(httpsCalls[0].path).toBe("/stash/api/v1/me/sessions/events?limit=1&order=desc");
       });
 
       it("http: base with a path prefix keeps the prefix (no dropped /stash segment)", async () => {
@@ -619,7 +626,7 @@ describe("StashMemoryBackend", () => {
         expect(httpCalls).toHaveLength(1);
         expect(httpCalls[0].hostname).toBe("stash.example");
         expect(httpCalls[0].port).toBe(80);
-        expect(httpCalls[0].path).toBe("/stash/api/v1/me/sessions/events/search?q=&limit=1");
+        expect(httpCalls[0].path).toBe("/stash/api/v1/me/sessions/events?limit=1&order=desc");
       });
 
       it("base without a path prefix resolves directly under root (no double slash)", async () => {
@@ -631,7 +638,7 @@ describe("StashMemoryBackend", () => {
         await b.exists("proj-a");
         expect(httpsCalls).toHaveLength(0);
         expect(httpCalls).toHaveLength(1);
-        expect(httpCalls[0].path).toBe("/api/v1/me/sessions/events/search?q=&limit=1");
+        expect(httpCalls[0].path).toBe("/api/v1/me/sessions/events?limit=1&order=desc");
       });
     });
   });

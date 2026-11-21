@@ -27,7 +27,14 @@ Stash exposes a small HTTP REST API used by Fusion for both read and write of me
 All calls are scoped to the authenticated operator's own user id.
 
 - **SEARCH (read):** `GET /api/v1/me/sessions/events/search?q=<query>&limit=<n>`
+- **RECENCY (broad read):** `GET /api/v1/me/sessions/events?limit=<n>&order=desc`
 - **CAPTURE (write):** `POST /api/v1/me/sessions/events/batch`
+
+The search route's `q` is declared `Query(..., min_length=1)` (`backend/routers/memory.py:146`), so a request
+with no terms is refused with `422` before any query runs. The recency route is therefore the only route a
+broad read can use, and `read()`/`exists()` use it (RUFU-1152). It requires no `q`, validates `limit` at
+`le=200`, and answers `{ events, has_more }` in newest-first order — the same owner-wide answer shape, so
+project scoping after the answer (below) is still required.
 
 The events sent to `/events/batch` must conform to a Stash event shape that requires a
 top-level `event_type`, `agent_name`, and `session_id` per event; a missing required field is
@@ -82,7 +89,7 @@ outcome per endpoint (`keyword-search`, `semantic-search`, `read`, `exists`) fro
 | Code | What it means for an operator |
 | --- | --- |
 | `ok` | The server answered and returned results. |
-| `no-match` | The server answered and found nothing. This is the honest empty case, not a failure. |
+| `no-match` | The server answered and found nothing. This is the honest empty case, not a failure. A surface may record it only for a request that was ANSWERED: a read lane that was refused records its refusal code under the surface's own endpoint instead, so a 403/422/503 broad read never appears here as an empty memory (RUFU-1152). |
 | `key-unresolved` | Fusion sent **no** credential: no `stash-api-key` secret exists and no per-project override is set. Fix the configuration; Stash is refusing nothing it was given. |
 | `refused-auth` | A credential was sent and Stash refused it (`401`/`403`). The key is wrong, revoked, or not granted on the read routers. |
 | `refused-capability` | The route itself refuses (`404`/`405`/`501`/`503`) — an unpatched server or an unconfigured embedder. |
@@ -164,8 +171,9 @@ all. The keyword and vector branches now ask for `min(route ceiling, 6 × the ca
 (`stashReadFetchWindow`), scope, and trim to the caller's limit, so the page that comes back is the page
 that was asked for and never wider. Three bounds keep that honest:
 
-- the window never exceeds what the route itself validates — `le=200` on `/me/sessions/events/search`,
-  `le=100` on the semantic route — because above either one "wider" is a 422, i.e. a worse read;
+- the window never exceeds what the route itself validates — `le=200` on both `/me/sessions/events/search`
+  and the recency route, `le=100` on the semantic route — because above either one "wider" is a 422, i.e. a
+  worse read;
 - at most **one** widening request per read, and only when the server filled the first window *and*
   fewer than `limit` rows survived scoping, so an exhausted store (the common case) costs nothing and a
   read is two calls, never a paging loop;

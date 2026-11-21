@@ -50,6 +50,12 @@ import { STASH_SECRET_KEY } from "../stash-settings.js";
 const RESOLVED_SECRET = "scope-probe-secret";
 const KEYWORD_PATH = "/api/v1/me/sessions/events/search";
 const SEMANTIC_PATH = "/api/v1/me/sessions/events/semantic-search";
+/*
+FNXC:StashBroadRecallRoute 2026-11-21-14:28 (RUFU-1152): the list route carries the SAME owner-wide
+behavior this card is about (it filters by owner, never by Fusion project), so the drop-class counts
+must hold there too — that route is where `read()`'s broad recall now runs.
+*/
+const RECENT_PATH = "/api/v1/me/sessions/events";
 
 type RecordedRequest = { method: string; path: string };
 type Row = { id: string; content: string; session_id: string; event_type: string; metadata?: Record<string, unknown> };
@@ -90,6 +96,12 @@ async function startStash(
     res.setHeader("content-type", "application/json");
     if (path.startsWith(SEMANTIC_PATH)) {
       res.end(JSON.stringify({ results: state.semanticRows }));
+      return;
+    }
+    if (path.startsWith(RECENT_PATH) && !path.startsWith(KEYWORD_PATH) && !path.startsWith(SEMANTIC_PATH)) {
+      // Same owner-wide answer as the keyword route, no project filter — the drop class this card
+      // counts has to hold on the route `read()` now uses (RUFU-1152).
+      res.end(JSON.stringify({ events: state.keywordRows, has_more: false }));
       return;
     }
     if (path.startsWith(KEYWORD_PATH)) {
