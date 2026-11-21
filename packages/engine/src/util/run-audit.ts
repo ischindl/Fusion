@@ -926,6 +926,29 @@ export type DatabaseMutationType =
   | "mergeQueue:enqueue-rejected"
   | "mergeQueue:stale-lease-on-column-exit"
   | "mergeQueue:auto-cleanup-stale-row"
+  /*
+  FNXC:MergeSingleFlight 2026-11-21-17:40 (RUFU-1148):
+  The two halves of the durable integration-landing claim, recorded in the DATABASE domain because the
+  fact they record is one row of the durable lease table — who may move an integration ref right now —
+  not a git command that ran. Git-domain siblings (`merge:ai-clean-room`, `merge:integration-ref-advance`)
+  describe repository mutations; these describe the board's ordering decision, so a query for
+  "who was writing, and who was made to wait" must not have to join two domains.
+
+  Metadata is EXACTLY `{ taskId, holderTaskId, outcome }` for both events — ids and one fixed enum.
+  `outcome` is `acquired` | `reentrant` | `reclaimed-expired` on the acquired row and `conflict` on the
+  contended row; `holderTaskId` is null on an uncontended acquire and the owning card's id on a
+  conflict. No lease key, no path, no ref tip, no error sentence — `target` already names the lease
+  key. Purpose: the question was previously answerable only by interleaving two cards' agent logs,
+  which is how RUFU-702's lost approved squash had to be reconstructed after the fact.
+  A store with no durable lease layer emits NOTHING: the absent row is the signal that this board has
+  only its in-process single-flight, and a row claiming a wait that never happened is a false measurement.
+
+  Deliberately OUTSIDE `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`: `run-audit-catalogue.test.ts` locks that
+  array table-for-table against the doc's table rows, and a claim acquisition is a concurrency guard,
+  not a delivery-pipeline step. Documented as a heading plus prose in `docs/run-audit.md`.
+  */
+  | "merge:integration-land-acquired"
+  | "merge:integration-land-contended"
   | "task:auto-recover-already-merged"
   /*
   FNXC:TaskWedgeNotifications 2026-08-10-19:12:

@@ -429,9 +429,20 @@ pgDescribeIfGit("workspace land dispatch finalization (PostgreSQL)", () => {
     */
     const releasedHandles = releaseLease.mock.calls.map((call) => call[0] as WorkspaceLeaseHandle);
     expect(releasedHandles.length).toBeGreaterThan(0);
+    /*
+    FNXC:MergeSingleFlight 2026-11-21-19:20 (RUFU-1148): a fence token is a per-ROW counter, so a token
+    is only comparable against another token from the SAME lease key. RUFU-1148 gave a landing pass a
+    second durable row to own (the integration-landing claim, key `integration-land:<repo>:<branch>`),
+    and that row's own token reached the same integer the successor's `repo:<repoRel>` token had — an
+    incidental coincidence of two independent counters that this loop read as a fencing violation. The
+    invariant is unchanged and still total: for the lease the successor took over, the predecessor must
+    never release it. Across other keys it only has to release its OWN owner triple.
+    */
     for (const released of releasedHandles) {
       expect(released.owner).not.toEqual(successor.owner);
-      expect(released.fenceToken).not.toBe(successor.fenceToken);
+      if (released.leaseKey === successor.leaseKey) {
+        expect(released.fenceToken).not.toBe(successor.fenceToken);
+      }
     }
     expect(vi.getTimerCount()).toBe(0);
     vi.useRealTimers();

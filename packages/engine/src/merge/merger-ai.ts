@@ -1,3 +1,15 @@
+/*
+FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2):
+The durable integration-landing claim. Nesting is fixed and must not invert: `merge-dispatch:<taskId>`,
+then the workspace `repo:<repoRel>` land lease, then `integration-land:<repoKey>:<branch>`. The two
+outer leases are per-task and per-sub-repo, so neither one orders two DIFFERENT cards against the same
+branch - which is precisely the race that cost RUFU-702 an already-approved squash.
+*/
+import {
+  acquireIntegrationLandClaim,
+  assertIntegrationLandClaimHeld,
+  IntegrationLandClaimBusyError,
+} from "./integration-land-claim.js";
 import { commitIdentityArgs, resolveCommitIdentity } from "../git-identity.js";
 /**
  * Standalone AI merge path (FN-5633).
@@ -1248,28 +1260,83 @@ export async function landOneRepo(
   const repoContext = repoRelPath ? { ...ctx, log } : ctx;
   let dependencySyncDecision = "not-run";
 
-  // If a prior merger died after the clean-room squash was approved but before
-  // landing/finalization, land that commit before the normal pre-merge prune can
-  // delete the only easy reference to it.
-  const recovered = await recoverApprovedPreexistingAiMergeWorktree(repoRootDir, branch, integrationBranch, repoContext);
-  if (recovered) return { ...recovered, dependencySyncDecision: "recovered-no-new-sync" };
+  /*
+  FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2):
+  The key is one (repository, integration branch) pair — `root` for a single-repo landing, the
+  repo-relative path for a workspace sub-repo — because that pair, not the task, is the shared
+  resource two landings collide on.
+  */
+  const claimRepoKey = repoRelPath ?? "root";
+  const acquireLandClaim = (phase: "recovery" | "base" | "land") =>
+    acquireIntegrationLandClaim(store, { taskId, repoKey: claimRepoKey, integrationBranch })
+      .then((claim) => {
+        let open = Boolean(claim);
+        const release = async () => {
+          if (!open) return;
+          open = false;
+          await claim?.release();
+        };
+        return claim ? { claim, phase, release } : undefined;
+      })
+      .catch((error: unknown) => {
+        // Contention is renamed with the burst that met it, so an operator can tell a wait during
+        // base selection from a wait during the advance. The class and its fields are unchanged.
+        if (error instanceof IntegrationLandClaimBusyError) {
+          error.phase = phase;
+          throw error;
+        }
+        throw error;
+      });
 
-  // Pre-merge prune is rooted at THIS sub-repo (KTD1): N per-repo clean rooms for
-  // one task share the `fusion-ai-merge-<taskId>-` prefix, so a prune rooted at a
-  // shared root could reap a sibling repo's live clean room. Rooting it at
-  // repoRootDir keeps each repo's prune to its own temp roots.
+  /*
+  BURST 1 (recovery + prune). Both mutate the shared repository: the recovery of a prior pass's
+  approved squash can advance the integration ref itself, and the pre-merge prune reaps worktree
+  registrations a concurrent pass may be reading. Agent latency is never inside a claim (operator
+  decision 2026-11-21), and neither is anything here — this burst is git plumbing only.
+  */
+  const recoveryBurst = await acquireLandClaim("recovery");
   try {
-    const pruned = await pruneExistingAiMergeWorktrees(taskId, repoRootDir, audit, log, settings);
-    if (pruned > 0) await log(`AI merge: pruned ${pruned} pre-existing worktree(s) for ${taskId}`);
-  } catch (err: unknown) {
-    await log(`AI merge: pre-merge prune failed: ${getErrorMessage(err)}`);
+    // If a prior merger died after the clean-room squash was approved but before
+    // landing/finalization, land that commit before the normal pre-merge prune can
+    // delete the only easy reference to it.
+    const recovered = await recoverApprovedPreexistingAiMergeWorktree(repoRootDir, branch, integrationBranch, repoContext);
+    if (recovered) return { ...recovered, dependencySyncDecision: "recovered-no-new-sync" };
+
+    // Pre-merge prune is rooted at THIS sub-repo (KTD1): N per-repo clean rooms for
+    // one task share the `fusion-ai-merge-<taskId>-` prefix, so a prune rooted at a
+    // shared root could reap a sibling repo's live clean room. Rooting it at
+    // repoRootDir keeps each repo's prune to its own temp roots.
+    try {
+      const pruned = await pruneExistingAiMergeWorktrees(taskId, repoRootDir, audit, log, settings);
+      if (pruned > 0) await log(`AI merge: pruned ${pruned} pre-existing worktree(s) for ${taskId}`);
+    } catch (err: unknown) {
+      await log(`AI merge: pre-merge prune failed: ${getErrorMessage(err)}`);
+    }
+  } finally {
+    // Release on every exit including an abort: a leaked claim would cost the next landing one TTL.
+    await recoveryBurst?.release();
   }
   let advanceRetries = 0;
   // Structured reconciliation state is read by mergeAndReview; task logs are not a fallback authority.
   let outstandingReviewReasons: string[] = [];
   while (true) {
     throwIfAborted(signal, taskId);
-    const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir);
+    /*
+    BURST 2 (base selection). The integration-tip read, the clean-room creation, and `git worktree
+    add` + its canonical registration run claimed, so two passes never fix candidate bases on the
+    same branch at the same moment. It is released the instant the candidate base is fixed — BEFORE
+    the dependency sync and before the merge and review agents run — because agent latency must never
+    sit inside the claim (operator decision 2026-11-21: an episode-wide lock caps the board near one
+    landing per hour against ~450 open cards).
+    */
+    const baseBurst = await acquireLandClaim("base");
+    const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir)
+      .catch(async (error: unknown) => {
+        // The tip read is the only statement between acquiring and the cleanup guard below; without
+        // this its throw would strand the claim until the TTL instead of releasing at once.
+        await baseBurst?.release();
+        throw error;
+      });
 
     // Short-circuit a branch with zero commits ahead of the integration tip
     // BEFORE building a clean room + installing deps. A truly-empty branch would
@@ -1284,6 +1351,8 @@ export async function landOneRepo(
     Zero commits ahead is only an unconditional no-op when no durable blocker remains. A retry after reset, rebase, or prior integration must still review the complete integration tree before clearing previously rejected correctness concerns.
     */
     if (Number.parseInt(aheadRaw.trim(), 10) === 0 && outstandingReviewReasons.length === 0) {
+      // No clean room is ever built on this base, so the burst ends here rather than at the guard.
+      await baseBurst?.release();
       /*
       FNXC:EmptyLandEvidence 2026-10-15-11:49 (RUFU-293 acceptance 4c):
       `merge:ai-empty` had one shape for two causally different verdicts, so an operator reading the
@@ -1331,6 +1400,14 @@ export async function landOneRepo(
       for (const pathToRegister of new Set([canonicalMergeRoot, mergeRoot])) {
         registerMergeRoot(pathToRegister);
       }
+      /*
+      FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2):
+      The candidate base is fixed and registered — this is exactly where the base burst ends. From
+      here the pass runs dependency sync plus the merge and review agents UNCLAIMED, and the advance
+      re-proves both the claim and the tip in the land burst below. Holding through review was the
+      shape the operator rejected: it converts agent latency into landing throughput.
+      */
+      await baseBurst?.release();
       await audit.git({ type: "merge:ai-clean-room", target: integrationBranch, metadata: { taskId, tipSha, mergeRoot } });
       await log(`AI merge: merging ${branch} into ${integrationBranch} (clean room at ${short(tipSha)})${advanceRetries ? ` — retry ${advanceRetries} after concurrent advance` : ""}`);
 
@@ -1494,6 +1571,17 @@ export async function landOneRepo(
       }
 
       /*
+      BURST 3 (land). Claimed from the squash gates through the ref advance and the local checkout
+      sync, which is the whole git-MUTATING section of a landing: the squash gates validate the
+      candidate against `tipSha`, the write-ahead land intent records the intended sha, and
+      `landSquash` is the one place `refs/heads/<integration>` moves. Release is in the `finally`
+      below, so a gate refusal, a concurrent rebuild `continue`, or an abort all give it back.
+      Finalize stays OUTSIDE: it writes task rows and no ref, and holding a shared branch across a
+      task-row write is throughput bought with a contention window nobody needs.
+      */
+      const landBurst = await acquireLandClaim("land");
+      try {
+      /*
        * FNXC:AIMerge 2026-08-15-22:55:
        * This is the sole production pre-land seam: the reviewer approved the
        * clean-room squash but the integration ref has not advanced, so scope and
@@ -1529,7 +1617,38 @@ export async function landOneRepo(
       //        checkout (AI reconciles a conflicting restore).
       ctx.workspaceLand?.assertLive();
       await setStatus("landing");
-      const landed = await landSquash({
+      /*
+      FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2 — AC3):
+      The claim proves ordering only if the write re-proves it. Immediately before the one mutating
+      advance, re-assert BOTH halves: this pass still owns the claim (a successor can have taken it if
+      our TTL lapsed — the fence refuses a stale token rather than letting a non-ff write through), and
+      the branch tip is still the base this candidate was actually built on. Losing either half takes
+      the SAME rebuild path a concurrent advance already takes — never a silent non-ff write, never a
+      force. Direct commits to `main` outside the queue are not claimable by anything here, which is
+      why this re-proof and RUFU-1100's `assertCurrentEpisodeIdentity` are both load-bearing.
+      */
+      let advanceRefused: "claim-lost" | "tip-moved" | undefined;
+      try {
+        await assertIntegrationLandClaimHeld(store, landBurst?.claim);
+      } catch {
+        advanceRefused = "claim-lost";
+      }
+      if (!advanceRefused) {
+        const tipNow = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], repoRootDir)
+          .then((sha) => sha.trim())
+          .catch(() => "unreadable");
+        if (tipNow !== tipSha) advanceRefused = "tip-moved";
+      }
+      if (advanceRefused) {
+        await audit.git({
+          type: "merge:integration-ref-advance",
+          target: integrationBranch,
+          metadata: { taskId, reason: advanceRefused, rebuild: true },
+        }).catch(() => undefined);
+      }
+      const landed = advanceRefused
+        ? { outcome: "concurrent" as const, localSync: "none-not-landed" as const }
+        : await landSquash({
         projectRootDir: repoRootDir, mergeRoot, integrationBranch, tipSha, squashSha, taskId, audit,
         resolveConflicts: stashResolveAgent,
         allowDirtyLocalCheckoutSync: ctx.allowDirtyLocalCheckoutSync === true,
@@ -1553,7 +1672,22 @@ export async function landOneRepo(
       await store.updateTask(taskId, { aiMergeReviewReconciliation: null });
       await log(`AI merge: advanced ${integrationBranch} → ${short(squashSha)} (local checkout: ${landed.localSync})`);
       return { outcome: "landed", squashSha, localSync: landed.localSync, tipSha, integrationBranch, dependencySyncDecision };
+      } finally {
+        /*
+        FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2):
+        The land burst is handed back on EVERY exit: landed, gate refusal, the concurrent-rebuild
+        `continue`, a thrown git error, an abort. A claim a dying pass left standing costs the next card
+        at most one TTL, because a successor's `reclaimed-expired` acquire and
+        `reconcileExpiredWorkspaceLeases` both clear it - but release is the fast path, and a release
+        belongs in `finally`, not in a sweep.
+        */
+        await landBurst?.release();
+      }
     } finally {
+      // The base burst is released on its linear path above; this is the unwinding path (throw,
+      // early return, or a `continue` before the candidate base was fixed), so a failed pass never
+      // leaves its claim standing for the next card to wait out.
+      await baseBurst?.release();
       for (const registeredPath of registeredMergePaths) {
         activeSessionRegistry.unregisterPath(registeredPath);
       }
@@ -4047,6 +4181,13 @@ export async function landWorkspaceTask(
       */
       if (leaseLost) throw new WorkspaceMergeTechnicalError("durable-lease", `Workspace repository lease renewal was lost for ${repoRel}`);
       if (isMergeAbortedError(err)) throw err;
+      /*
+      FNXC:MergeSingleFlight 2026-11-21-18:05 (RUFU-1148 Step 2):
+      Waiting for another card's landing burst is NOT a sub-repo land failure. Falling through would
+      persist a `landFailure`, mark the repo failed, and let the pump consume a `mergeRetry` on a card
+      that merely waited - AC2's exact prohibition. Propagate to the pump's contention ladder.
+      */
+      if (err instanceof IntegrationLandClaimBusyError) throw err;
       // A WorkspacePartialLandError from the persist-failure window above must PROPAGATE
       // (the engine parks/retries). The outer try/finally below resets status first (A3).
       if (err instanceof WorkspacePartialLandError) throw err;

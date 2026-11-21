@@ -1,5 +1,24 @@
 import type { Task } from "../types.js";
 
+/*
+FNXC:MergeSingleFlight 2026-11-21-17:52 (RUFU-1148):
+The integration-landing claim (RUFU-1148) is a FOURTH tenancy over this table, and it reuses
+`kind: "land"` rather than adding a fifth kind value. The reason is measured, not stylistic: `kind`
+is `text` but the table carries `workspace_coordination_leases_kind_check CHECK(kind IN
+('acquire','land','merge-dispatch'))` (postgres schema `project.ts`, created by migration
+`0060_fn_9059_workspace_coordination_leases.sql`), so a new kind value is a DDL change, and RUFU-1148
+declared migrations out of scope. Measured on a provisioned PostgreSQL board: the first insert of
+`kind = 'integration-land'` died with `23514 violates check constraint
+workspace_coordination_leases_kind_check` — a unit run against a store double cannot see that, which
+is why `merge-integration-land.pg.test.ts` exists.
+
+What distinguishes the tenancies is therefore the KEY namespace, not the kind: the workspace sub-repo
+land lease owns `repo:<repoRel>` and RUFU-1148's claim owns `integration-land:<repoKey>:<branch>`
+(derived in `packages/engine/src/merge/integration-land-claim.ts`). A reader that wants one family
+filters on `lease_key LIKE 'integration-land:%'`; a reader that wants every landing claim reads
+`kind = 'land'`, which is honest — both are claims on a landing write window. The claim nests INSIDE
+`merge-dispatch:<taskId>` and `repo:<repoRel>` — never the reverse.
+*/
 export type WorkspaceLeaseKind = "acquire" | "land" | "merge-dispatch";
 export type WorkspaceLeaseStatus = "held" | "released" | "expired";
 export type WorkspaceLeaseOwner = { taskId: string; nodeId: string; incarnationId: string; runId?: string };

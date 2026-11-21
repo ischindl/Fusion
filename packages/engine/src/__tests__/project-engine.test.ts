@@ -16,6 +16,13 @@ import {
   WorkspaceRepoLandBusyError,
   WorkspaceReviewRequiredError,
 } from "../merge/merger-ai.js";
+/*
+FNXC:MergeSingleFlight 2026-11-21-19:00 (RUFU-1148 Step 5):
+The durable integration-landing claim's busy class, imported from its own module so the pump's
+class-based recognition is exercised across the real module boundary rather than through a local
+look-alike.
+*/
+import { IntegrationLandClaimBusyError } from "../merge/integration-land-claim.js";
 import { runtimeLog } from "../logger.js";
 import { TunnelProcessManager } from "../remote-access/tunnel-process-manager.js";
 import { __resetRemoteTunnelServicesForTests } from "../remote-access/remote-tunnel-service.js";
@@ -2430,6 +2437,141 @@ describe("ProjectEngine workspace merge dispatch hardening (Phase C review)", ()
 
       await expect(engine.stop()).resolves.toBeUndefined();
       expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /*
+  FNXC:MergeSingleFlight 2026-11-21-19:00 (RUFU-1148 Step 5 — AC2):
+  RUFU-702's measured failure is the thing this test forbids: a card that merely arrived second spent a
+  `mergeRetries` unit, took a `failed` status and an `error` sentence naming ANOTHER card's queue
+  ("another merge is already queued for this task"), and reached `merge:graph-failed`. The durable
+  integration-landing claim turns that into a named wait, so this asserts the whole negative space: no
+  retry burned, no status, no error, the holder named, and the cadence owned by the busy scheduler.
+  */
+  it("waiting for another card's integration-landing claim names the wait and burns no merge retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      let liveTask = { ...(workspaceTask() as Record<string, unknown>), mergeRetries: 0 };
+      mockStore.store.getTask.mockImplementation(async () => liveTask as never);
+      mockStore.store.updateTask.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+        liveTask = { ...liveTask, ...patch };
+      return liveTask as never;
+      });
+      mocks.currentStore = mockStore.store;
+      /*
+      FNXC:MergeSingleFlight 2026-11-21-21:45 (RUFU-1148 Step 3): a faithful `logEntryOnce` — the real seam
+      collapses a repeat of the same dedupe key inside its window and returns false. Without it the arm
+      would take the plain `logEntry` fallback and the test would never see the dedupe it is meant to prove.
+      */
+      const landWaitLines: Array<{ action: string; outcome?: string; dedupeKey: string }> = [];
+      const landWaitSeen = new Map<string, number>();
+      mockStore.store.logEntryOnce = vi.fn(async (_id: string, input: { action: string; outcome?: string; dedupeKey: string; windowMs: number }) => {
+        const last = landWaitSeen.get(input.dedupeKey);
+        if (last !== undefined && Date.now() - last < input.windowMs) return false;
+        landWaitSeen.set(input.dedupeKey, Date.now());
+        landWaitLines.push(input);
+        return true;
+      }) as never;
+      mocks.landWorkspaceTask.mockRejectedValue(
+        new IntegrationLandClaimBusyError("FN-WSH", "FN-OTHER", "integration-land:repo-a:main"),
+      );
+
+      const engine = createEngine();
+      await engine.start();
+      const scheduleBusyRetrySpy = vi.spyOn(
+        engine as unknown as { scheduleWorkspaceBusyReenqueue: (id: string, delayMs: number) => void },
+        "scheduleWorkspaceBusyReenqueue",
+      );
+      engine.enqueueMerge("FN-WSH");
+
+      // The wait is narrated on the card, naming who holds the branch, under its own outcome label.
+      await vi.waitFor(() => {
+        expect(landWaitLines).toHaveLength(1);
+      }, { timeout: 2000, interval: 5 });
+      expect(landWaitLines[0]!.action).toContain("FN-OTHER");
+      expect(landWaitLines[0]!.action).toContain("integration-land:repo-a:main");
+      expect(landWaitLines[0]!.outcome).toBe("IntegrationLandClaimWait");
+      expect(landWaitLines[0]!.dedupeKey).toBe("integration-land-wait:FN-OTHER:integration-land:repo-a:main");
+
+      const writes = mockStore.store.updateTask.mock.calls as Array<[string, Record<string, unknown>]>;
+      // AC2, in full: no attempt consumed, and neither of the two fields that would call this a
+      // failure is touched at all — the wait is recorded on the durable transient counter instead.
+      expect(writes.some(([, patch]) => "mergeRetries" in patch)).toBe(false);
+      expect(writes.some(([, patch]) => "status" in patch || "error" in patch)).toBe(false);
+      expect(liveTask.mergeTransientRetryCount).toBe(1);
+      expect(scheduleBusyRetrySpy).toHaveBeenCalledWith("FN-WSH", 5_000);
+
+      await expect(engine.stop()).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /*
+  FNXC:MergeSingleFlight 2026-11-21-19:00 (RUFU-1148 Step 5):
+  The other half of "bounded, not unbounded": a contention that never clears reaches its OWN named
+  terminal after the declared ceiling instead of spinning forever or borrowing the generic merge-failure
+  sentence. Even at exhaustion no `mergeRetries` unit is consumed — the ceiling counts WAITS.
+  */
+  it("a wedged integration-landing claim reaches its own named terminal without burning mergeRetries", async () => {
+    vi.useFakeTimers();
+    try {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      let liveTask = { ...(workspaceTask() as Record<string, unknown>), mergeRetries: 0 };
+      mockStore.store.getTask.mockImplementation(async () => liveTask as never);
+      mockStore.store.updateTask.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+        liveTask = { ...liveTask, ...patch };
+        return liveTask as never;
+      });
+      mocks.currentStore = mockStore.store;
+      // Faithful `logEntryOnce`: collapses a repeat of the same dedupe key inside its window.
+      const wedgedWaitLines: Array<{ dedupeKey: string }> = [];
+      const wedgedWaitSeen = new Map<string, number>();
+      mockStore.store.logEntryOnce = vi.fn(async (_id: string, input: { dedupeKey: string; windowMs: number }) => {
+        const last = wedgedWaitSeen.get(input.dedupeKey);
+        if (last !== undefined && Date.now() - last < input.windowMs) return false;
+        wedgedWaitSeen.set(input.dedupeKey, Date.now());
+        wedgedWaitLines.push(input);
+        return true;
+      }) as never;
+      mocks.landWorkspaceTask.mockRejectedValue(
+        new IntegrationLandClaimBusyError("FN-WSH", "FN-STUCK", "integration-land:repo-a:main"),
+      );
+
+      const engine = createEngine();
+      await engine.start();
+      const errorLogSpy = vi.spyOn(runtimeLog, "error").mockImplementation(() => undefined);
+      engine.enqueueMerge("FN-WSH");
+
+      // Drive the whole ladder: every cadence step re-arms the merge body until the ceiling answers.
+      for (let pass = 0; pass < 40; pass++) {
+        await vi.advanceTimersByTimeAsync(60_000);
+        if (typeof liveTask.error === "string" && liveTask.error.includes("INTEGRATION_LAND_CLAIM_STUCK")) break;
+      }
+
+      await vi.waitFor(() => {
+        expect(errorLogSpy).toHaveBeenCalledWith(
+          expect.stringContaining("INTEGRATION_LAND_CLAIM_STUCK"),
+        );
+      }, { timeout: 2000, interval: 20 });
+      // The terminal names the wedge and its holder, and still consumed no merge attempt.
+      expect(liveTask.error).toContain("INTEGRATION_LAND_CLAIM_STUCK");
+      expect(liveTask.error).toContain("FN-STUCK");
+      const writes = mockStore.store.updateTask.mock.calls as Array<[string, Record<string, unknown>]>;
+      expect(writes.some(([, patch]) => typeof patch.mergeRetries === "number")).toBe(false);
+      /*
+      FNXC:MergeSingleFlight 2026-11-21-21:50 (RUFU-1148 Step 3): twenty deferred passes must NOT be twenty
+      History lines. The card's own History is where an operator reads what happened to it; twenty copies of
+      one wait bury everything else, so the wait narrates once per refresh window instead — a handful of
+      lines, still naming the holder that never released.
+      */
+      expect(Number(liveTask.mergeTransientRetryCount)).toBeGreaterThanOrEqual(20);
+      expect(wedgedWaitLines.length).toBeGreaterThan(0);
+      expect(wedgedWaitLines.length).toBeLessThanOrEqual(6);
+      await expect(engine.stop()).resolves.toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

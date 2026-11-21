@@ -177,6 +177,27 @@ import {
   type VerificationResourceBoundConfig,
 } from "./execution/verification-resource-bound.js";
 import { runtimeLog } from "./logger.js";
+/*
+FNXC:MergeSingleFlight 2026-11-21-18:20 (RUFU-1148 Step 3):
+The busy class the durable integration-landing claim throws, recognised HERE by class. A busy class the
+merge pump does not name becomes an ordinary merge failure, which is the exact defect this card removes:
+the losing card burned a `mergeRetries` unit on another card's queue depth.
+*/
+import { IntegrationLandClaimBusyError } from "./merge/integration-land-claim.js";
+
+/*
+FNXC:MergeSingleFlight 2026-11-21-18:20 (RUFU-1148 Step 3):
+Contention predicate for the integration-landing claim. `instanceof` first, then a duck-type on `name`
+plus the holder id, because a bundled-module boundary can lose `instanceof` identity and an
+unrecognised busy class is how a wait silently becomes a failure. Same reasoning as the
+`WorkspaceMergeDispatchBusyError` handling below.
+*/
+function isIntegrationLandContention(error: unknown): boolean {
+  return error instanceof IntegrationLandClaimBusyError
+    || (typeof error === "object" && error !== null
+      && (error as { name?: unknown }).name === "IntegrationLandClaimBusyError"
+      && typeof (error as { holderTaskId?: unknown }).holderTaskId === "string");
+}
 import { emitBoundedRunAudit, type RunAuditSinkHost } from "./util/emit-bounded-run-audit.js";
 
 class WorkspaceMergeDispatchBusyError extends Error {
@@ -705,7 +726,22 @@ export class ProjectEngine {
     updatedAt: new Date().toISOString(),
   };
 
-  // ── Auto-merge state ──
+  /*
+  ── Auto-merge state ──
+
+  FNXC:MergeSingleFlight 2026-11-21-17:13 (RUFU-1148):
+  EVERY field in this block is per-process. `mergeQueue` orders one Node process's cards, `mergeActive`
+  and `activeMergeTaskId` are this process's witnesses of what it is itself doing, and the merge-pump
+  latch below cannot be seen by a second daemon sharing the same board. Measured on main `e1cfe1961f`
+  that was not a theoretical gap: RUFU-893's pass advanced `main` while RUFU-702 sat inside its own pass
+  on the same branch, and RUFU-702 lost an already-approved squash.
+
+  What this block still owns: queue order, admission, capacity, and the local "am I already doing this?"
+  question. What it no longer owns: the right to write an integration ref. That right is a durable row
+  (`merge/integration-land-claim.ts`, key `integration-land:<repo>:<branch>`) that both processes
+  contend for, and the git-mutating section of a landing runs only while that row is held. So do not
+  read `activeMergeTaskId` as "the project's merge" — it is "this process's merge".
+  */
   private mergeQueue: string[] = [];
   /* FNXC:MergeAuthority 2026-08-23-18:05: last logged sweep-hold reason per task, so a held card is
      reported once per reason change instead of every 15s poll. In-memory by design — it is a log
@@ -789,6 +825,20 @@ export class ProjectEngine {
   private workspaceBusyReenqueues = new Map<string, number>();
   private readonly workspaceBusyReenqueueTimers = new Set<ReturnType<typeof setTimeout>>();
   private static readonly WORKSPACE_BUSY_MAX_REENQUEUES = 10;
+
+  /*
+  FNXC:MergeSingleFlight 2026-11-21-18:20 (RUFU-1148 Step 3):
+  How many deferred passes one card may spend waiting behind another card's integration-landing claim
+  before the wait is named a wedge. Deliberately NOT `WORKSPACE_BUSY_MAX_REENQUEUES`: that ceiling
+  belongs to the sub-repo land lease and its exhaustion arm writes that lease's failure sentence. The
+  cadence here is the shared 5 s doubling to 60 s, so 20 passes is about a quarter of an hour against
+  claim bursts that contain no agent latency at all. The counter itself is durable
+  (`mergeTransientRetryCount`) so a restarted engine cannot restart the same livelock episode, and it
+  is never `mergeRetries` — a wait spent no attempt, and a longer queue must not age a card into the
+  merge-failure lane, which is the invariant RUFU-887 states for technical transients and this card
+  extends to contention.
+  */
+  private static readonly INTEGRATION_LAND_BUSY_MAX_DEFERRALS = 20;
 
   /*
   FNXC:WorkspaceMergeDispatch 2026-08-05-23:56:
@@ -3265,8 +3315,18 @@ export class ProjectEngine {
 
   /**
    * Perform an AI-powered merge for a task, serialized through the merge queue.
-   * This is the manual "merge now" path — it shares the same queue as auto-merge
-   * so only one merge runs at a time per project.
+   * This is the manual "merge now" path — it shares the same queue as auto-merge.
+   *
+   * FNXC:MergeSingleFlight 2026-11-21-17:13 (RUFU-1148):
+   * This comment used to promise "only one merge runs at a time per project", and that promise was
+   * false in exactly the way this card was filed for: the queue and `activeMergeTaskId` live in ONE
+   * Node process, so a second daemon on the same shared board, a manual merge started from the
+   * dashboard, or a re-dispatch after the 30-minute graph merge timeout could each sit mid-pass on the
+   * same integration branch while this process believed it was alone.
+   * What the queue still provides is per-process serialization. What is now true across processes is
+   * the durable integration-landing claim, which the landing path acquires for its git-mutating bursts:
+   * a manual merge that arrives while another process is inside its landing burst meets
+   * `IntegrationLandClaimBusyError` naming the holder, instead of racing it to `refs/heads/main`.
    * Returns the full MergeResult so it can be used as the `onMerge` callback
    * in createServer().
    */
@@ -5923,6 +5983,80 @@ export class ProjectEngine {
               this.rejectMergeResolvers(taskId, err);
             } else if (!(await this.maybeRetryTransientMerge(store, taskId, await store.getTask(taskId).catch(() => null), err.message, true))) {
               await store.updateTask(taskId, { status: "failed", error: err.message }).catch(() => undefined);
+            }
+            continue;
+          }
+
+          /*
+          FNXC:MergeSingleFlight 2026-11-21-18:20 (RUFU-1148 Step 3 — AC2):
+          Another card currently owns the integration-landing claim for this repository and branch. That
+          is a WAIT, not a merge failure, so this arm deliberately differs from every failure arm below:
+          it consumes no `mergeRetries`, writes neither `status` nor `error`, and parks no badge — it
+          advances the durable `mergeTransientRetryCount` (the same restart-safe counter the sub-repo
+          land-lease contention arm uses two blocks down, cleared to zero on a successful landing at
+          `resetMergeRetryCounters`) and re-arms the merge queue on the same exponential cadence.
+          Why it does not join `isWorkspaceBusyError` below: that arm writes `status: null` and, on
+          exhaustion, parks `status: "failed"` with the sub-repo sentence. A card whose only crime was
+          arriving second must not be relabelled by another card's queue depth — RUFU-702's card sat
+          `failed` behind an in-process `mergeQueue` of one, and the whole point of the durable claim is
+          that the wait is now a named, budget-neutral state instead of a failure.
+          The bound still has to exist: 20 passes at the doubling cadence is about eighteen minutes
+          against claim bursts that are git plumbing with no agent inside them, so a pass that exhausts
+          it is facing a wedged claim row and gets its OWN named terminal
+          sentence rather than an unbounded spin or the generic merge-failure text.
+          */
+          if (isIntegrationLandContention(err)) {
+            const holderTaskId = (err as { holderTaskId?: string }).holderTaskId ?? "unknown";
+            /*
+            FNXC:MergeSingleFlight 2026-11-21-21:40 (RUFU-1148 Step 3 — the History line is deduped):
+            ONE line per (holder, ref) inside a refresh window, through `logEntryOnce` when the store has it
+            and plain `logEntry` when it does not — the same seam the workspace-environment arm above this
+            one uses. The deferral ladder is up to twenty passes: a card waiting behind one holder says so
+            once, while a NEW holder or a different ref is new information and narrates again. A line per
+            pass would bury the card's own History in twenty copies of the same wait.
+            */
+            const waitLine =
+              `Merge deferred: ${holderTaskId} is inside its integration-landing burst` +
+              (err instanceof IntegrationLandClaimBusyError
+                ? ` on \`${err.leaseKey}\``
+                : "") +
+              " — waiting for the branch to be released (no merge retry consumed)";
+            const landWaitLogOnce = (store as Partial<TaskStore>).logEntryOnce;
+            if (typeof landWaitLogOnce === "function") {
+              await landWaitLogOnce
+                .call(store, taskId, {
+                  action: waitLine,
+                  outcome: "IntegrationLandClaimWait",
+                  // Keys are already per-card (`logEntryOnce` probes inside the card's own rows), so the
+                  // key names only what makes a wait new information: the holder and the ref it holds.
+                  dedupeKey: `integration-land-wait:${holderTaskId}:${err instanceof IntegrationLandClaimBusyError ? err.leaseKey : "unknown"}`,
+                  windowMs: 5 * 60_000,
+                })
+                .catch(() => undefined);
+            } else {
+              await store
+                .logEntry(taskId, waitLine, "IntegrationLandClaimWait")
+                .catch(() => undefined);
+            }
+            if (hasManualResolver) {
+              // A human-triggered merge waits inside its own call like the other busy classes: the
+              // caller learns who holds the branch instead of hanging on a queue it cannot see.
+              this.rejectMergeResolvers(taskId, err instanceof Error ? err : new Error(errorMsg));
+              continue;
+            }
+            const waitingTask = await store.getTask(taskId).catch(() => null);
+            const waited = waitingTask?.mergeTransientRetryCount ?? 0;
+            if (waited < ProjectEngine.INTEGRATION_LAND_BUSY_MAX_DEFERRALS) {
+              await store.updateTask(taskId, { mergeTransientRetryCount: waited + 1 }).catch(() => undefined);
+              const delayMs = Math.min(5_000 * Math.pow(2, waited), 60_000);
+              runtimeLog.log(
+                `Integration-landing claim busy for ${taskId}: deferred pass ${waited + 1}/${ProjectEngine.INTEGRATION_LAND_BUSY_MAX_DEFERRALS} in ${delayMs / 1_000}s behind ${holderTaskId} (mergeRetries untouched)`,
+              );
+              this.scheduleWorkspaceBusyReenqueue(taskId, delayMs);
+            } else {
+              const stuckMessage = `INTEGRATION_LAND_CLAIM_STUCK: waited ${ProjectEngine.INTEGRATION_LAND_BUSY_MAX_DEFERRALS} passes for the integration-landing claim held by ${holderTaskId}; the claim row is wedged and needs a lease reconcile`;
+              await store.updateTask(taskId, { status: "failed", error: stuckMessage }).catch(() => undefined);
+              runtimeLog.error(`Auto-merge: ${taskId} ${stuckMessage}`);
             }
             continue;
           }

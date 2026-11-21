@@ -88,6 +88,8 @@ type MockStore = {
   getActiveMergingTask: ReturnType<typeof vi.fn>;
   recordRunAuditEvent: ReturnType<typeof vi.fn>;
   getRootDir: () => string;
+  getProjectId: () => string;
+  getStaleReviewCallbackWaiverReceipts: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
@@ -153,6 +155,17 @@ function createStore(initialRow: Record<string, unknown>): MockStore {
     getActiveMergingTask: vi.fn(() => null),
     recordRunAuditEvent: vi.fn(async () => undefined),
     getRootDir: () => "/tmp/proj_test",
+    /*
+    FNXC:MergeSingleFlight 2026-11-21-17:15 (RUFU-1148 preflight):
+    Queue admission resolves the pre-merge admission decision, which reads the project id and the stale
+    review-callback waiver receipts off the store (FN-9429, 6e4ab56f44). A double that omits them throws inside
+    that resolution, the pump's catch turns the throw into the fail-closed
+    `merge gate could not resolve the task workflow` blocker, and the card is never dispatched - so the control
+    case here and both hold cases went red on a stale fixture, not on a behaviour change. An empty receipt list
+    is the honest "no waiver" state, not a widened assertion.
+    */
+    getProjectId: () => "proj_test",
+    getStaleReviewCallbackWaiverReceipts: vi.fn(async () => []),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
