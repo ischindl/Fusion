@@ -185,7 +185,12 @@ describe("StashMemoryBackend", () => {
       in default mode (websearch_to_tsquery safety; see its
       FNXC:RUFU121QueryNormalization note), so "api design" sends q=api.
       */
-      expect(req!.path).toContain("q=api&limit=5");
+      /*
+      FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+      `limit` in the URL is the READ WINDOW (6x the page), not the page. This case asserts q
+      normalization; the page-size contract is pinned in src/memory/__tests__/stash-read-window.test.ts.
+      */
+      expect(req!.path).toContain("q=api&limit=30");
       expect(req!.method).toBe("GET");
       expect(String(req!.headers.Authorization)).toBe("Bearer test-key");
     });

@@ -415,7 +415,10 @@ describe("StashMemoryBackend.search URL contract (RUFU-121 Step 2)", () => {
   it("normalizes a non-empty query into q= and drops the inert topic param", async () => {
     const { backend, searchPath, fake } = searchFake();
     await backend.search("/proj/demo", { query: "postgres connection pooling", topic: "mytopic" });
-    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=postgres&limit=5");
+    // RUFU-1146: the WINDOW is 6x the page (default page 5 -> window 30), because the route carries
+    // no project filter and the client drops foreign rows after the answer. The caller still gets at
+    // most the 5 rows it asked for, which is asserted in `stash-read-window.test.ts`.
+    expect(searchPath()).toBe("/api/v1/me/sessions/events/search?q=postgres&limit=30");
     expect(searchPath()).not.toContain("topic");
     expect(fake.calls).toHaveLength(1);
   });
@@ -478,7 +481,7 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     expect(results).toEqual([]);
     expect(semanticCalls()).toHaveLength(0);
     expect(keywordCalls()).toHaveLength(1);
-    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=LCM&limit=5");
+    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=LCM&limit=30");
   });
 
   it("2. flag on + multi-word + semantic 200 hits → semantic URL first (raw trimmed q), no keyword URL, D5 scores mapped", async () => {
@@ -494,7 +497,7 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     expect(semanticCalls()).toHaveLength(1);
     expect(keywordCalls()).toHaveLength(0);
     expect(semanticCalls()[0].path).toBe(
-      `/api/v1/me/sessions/events/semantic-search?q=${encodeURIComponent("LCM B.1 B.2 priorita plan")}&limit=5`,
+      `/api/v1/me/sessions/events/semantic-search?q=${encodeURIComponent("LCM B.1 B.2 priorita plan")}&limit=30`,
     );
     expect(results).toEqual([
       {
@@ -527,7 +530,7 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     const results = await backend.search("/proj/demo", { query: "LCM B.1 B.2 priorita plan" });
     expect(semanticCalls()).toHaveLength(1);
     expect(keywordCalls()).toHaveLength(1);
-    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=LCM&limit=5");
+    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=LCM&limit=30");
     expect(results).toEqual([
       {
         path: "stash://session/kw-ses",
@@ -664,9 +667,9 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     await backend.search("/proj/demo", { query: "B.1" });
     expect(semanticCalls()).toHaveLength(0);
     expect(keywordCalls()).toHaveLength(2);
-    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=postgres&limit=5");
+    expect(keywordCalls()[0].path).toBe("/api/v1/me/sessions/events/search?q=postgres&limit=30");
     // RUFU-121 normalization strips punctuation: "B.1" → "B1".
-    expect(keywordCalls()[1].path).toBe("/api/v1/me/sessions/events/search?q=B1&limit=5");
+    expect(keywordCalls()[1].path).toBe("/api/v1/me/sessions/events/search?q=B1&limit=30");
   });
 
   it("7. semantic hits with rank missing/null → score 1.0; server order preserved", async () => {
@@ -746,8 +749,12 @@ describe("StashMemoryBackend.search relevance score (RUFU-133)", () => {
     return { fake, backend, searchPath };
   }
 
-  /** RUFU-121 URL-contract shape for query "postgres" (single word, default limit 5). */
-  const POSTGRES_URL = "/api/v1/me/sessions/events/search?q=postgres&limit=5";
+  /**
+   * RUFU-121 URL-contract shape for query "postgres" (single word), with the RUFU-1146 read window:
+   * the default page is 5 and the window asked for is 6x it. These cases are about score mapping, so
+   * the window is fixture noise here; the page-size contract is pinned in `stash-read-window.test.ts`.
+   */
+  const POSTGRES_URL = "/api/v1/me/sessions/events/search?q=postgres&limit=30";
 
   it("1. server score present (numeric) → used verbatim", async () => {
     const { backend, searchPath } = keywordFake(() => ({

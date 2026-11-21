@@ -882,6 +882,88 @@ export function classifyStashReadScope(
   return { kept, ownCount: kept.length, foreignCount, unidentifiedCount, outcome };
 }
 
+/*
+FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+RUFU-1008 made every Stash read prove project identity on every returned row, and the price was the
+page size: the server applies `limit` over the WHOLE owner-wide store (it has no project filter to
+honour), and the client drops what is not ours afterwards, so `limit` stopped being the number of
+rows a caller received. Measured on the live server over every scoped read after RUFU-1008 landed
+(`project.run_audit_events`, `memory:stash-read-scope`): 116 reads, 839 rows answered, 261 kept (31
+percent), 33 reads (28 percent) returned an EMPTY page, and ZERO reads filled the requested limit.
+"The project's memory is empty" was mostly this, not an empty store.
+
+The repair is to buy the window before spending it: ask for a wider window, scope, and only then
+trim to what the caller asked for. Two bounds make that safe against the server rather than merely
+optimistic:
+- The window NEVER exceeds what the route validates (`le=200` keyword, `le=100` semantic, verified in
+  `backend/routers/memory.py`). Asking for more would trade a short page for a 422, which is a worse
+  read, not a wider one.
+- A server that refuses the wide window (`rejected-request`) is answered again with the exact
+  requested limit, so shipping the wider window can never produce a worse answer than the pre-fix
+  shape. Same reasoning as RUFU-126's "the vector path can never make recall worse than the keyword
+  baseline".
+
+At most ONE widening request per read, so a read is two HTTP calls and never a paging loop.
+*/
+
+/** Stash `/me/sessions/events/search` validates `limit` at `le=200`; above it the route 422s. */
+export const STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT = 200;
+
+/** Stash `/me/sessions/events/semantic-search` validates `limit` at `le=100`. */
+export const STASH_SEMANTIC_SEARCH_SERVER_MAX_LIMIT = 100;
+
+/**
+ * How much wider than the page to ask for. From the measurement above the shared-owner own-row rate
+ * is 0.31, so a 6x window fills a 10-row page from a store shared by 25 projects without a second
+ * call in the common case, and the widening below is what covers the queries the project barely
+ * matches at all.
+ */
+export const STASH_READ_WINDOW_FACTOR = 6;
+
+/**
+ * The window to ask the server for so that scoping afterwards can still fill `requested`.
+ * Clamped to `serverMax` (the route's own validation ceiling) and never below `requested`.
+ */
+export function stashReadFetchWindow(requested: number, serverMax: number): number {
+  const floor = Math.max(1, requested);
+  return Math.min(serverMax, Math.max(floor, floor * STASH_READ_WINDOW_FACTOR));
+}
+
+/**
+ * Merge a narrow and a wide answer of the SAME query into one list with no row twice, in the
+ * server's order (the wide answer is a superset of the narrow one; the merge is defensive, not
+ * trusting). A row without any usable identity is kept rather than guessed away, because dropping a
+ * row for a missing `id` would reintroduce the loss this merge exists to remove.
+ */
+export function mergeStashRowsById(
+  narrow: readonly StashSearchResultItem[],
+  wide: readonly StashSearchResultItem[],
+): StashSearchResultItem[] {
+  const merged: StashSearchResultItem[] = [];
+  const seen = new Set<string>();
+  for (const item of [...narrow, ...wide]) {
+    const key = stashRowIdentityKey(item);
+    if (key === null) {
+      merged.push(item);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+/** Dedup key for one answer row: its event id, else the (session, content) tuple it arrived with. */
+function stashRowIdentityKey(item: StashSearchResultItem): string | null {
+  if (typeof item.id === "string" && item.id !== "") return `i:${item.id}`;
+  if (typeof item.id === "number") return `i:${item.id}`;
+  const session = typeof item.session_id === "string" ? item.session_id : null;
+  const content = typeof item.content === "string" ? item.content : null;
+  if (session === null && content === null) return null;
+  return `sc:${session ?? ""}\u0000${content ?? ""}`;
+}
+
 /**
  * FNXC:RUFU121QueryNormalization 2026-08-18-19:53:
  * RUFU-121: normalize a raw recall query to a
@@ -1271,17 +1353,65 @@ export class StashMemoryBackend implements MemoryBackend {
       }
       q = normalized;
     }
+    /*
+    FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+    The window is bought before it is spent (see the block at `stashReadFetchWindow`). The legacy
+    empty-query shape is deliberately NOT widened: its URL is a documented byte-identical contract,
+    `read()`/`exists()` are reachability/broad-recall probes of it, and the shape is the one the
+    deployed route refuses on `q` length anyway, so a wider window would change a contract without
+    buying a single row.
+    */
+    const isLegacyEmptyQuery = req.trim().length === 0;
+    const fetchWindow = isLegacyEmptyQuery
+      ? limit
+      : stashReadFetchWindow(limit, STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT);
     try {
-      const resp = await this.httpRequest<StashSearchResponse>(
-        `/api/v1/me/sessions/events/search?q=${encodeURIComponent(q)}&limit=${limit}`,
-        "GET",
-      );
-      const items = resp.results ?? resp.events ?? [];
-      const filtered = this.scopeItemsToProject(
-        items.filter((it) => it && typeof it === "object"),
-        rootDir,
-        limit,
-      );
+      /*
+      FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+      A server that refuses the WIDE window as a REQUEST (400/422 validation of `limit`, i.e. a
+      deployed route narrower than the one this window was sized against) still answers the
+      exact-limit one, and the pre-fix shape is exactly that request. Only those two statuses
+      downgrade the window: a 5xx, a timeout, or an auth refusal is not a window problem, and
+      silently re-asking those would be a retry this card never promised.
+      */
+      let items: StashSearchResultItem[];
+      try {
+        items = await this.fetchKeywordRows(q, fetchWindow);
+      } catch (err) {
+        const refusedStatus = parseStashTransportStatus(err);
+        if (fetchWindow === limit || (refusedStatus !== 400 && refusedStatus !== 422)) throw err;
+        this.noteReadOutcome("keyword-search", "rejected-request", 0);
+        items = await this.fetchKeywordRows(q, limit);
+      }
+      if (
+        fetchWindow > limit
+        // Only a window the server FILLED can hide more rows: an answer shorter than the window is
+        // the store being exhausted for this query, which no wider request can change.
+        && items.length >= fetchWindow
+        && classifyStashReadScope(items, stashProjectIdentityFor(rootDir)).kept.length < limit
+        && fetchWindow < STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT
+      ) {
+        /*
+        FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+        The page came back shorter than what was asked for while the window still had headroom AND the
+        server filled the window we asked for, so the shortness is the owner-wide store, not an empty
+        project. Widen ONCE to the route's own ceiling. A failing widening is swallowed: the rows
+        already in hand are a strictly better answer than no answer, and one refused request may not
+        discard them.
+        */
+        try {
+          items = mergeStashRowsById(
+            items,
+            await this.fetchKeywordRows(q, STASH_KEYWORD_SEARCH_SERVER_MAX_LIMIT),
+          );
+        } catch {
+          // Keep the narrow window's answer; the scoped record below still reports what was measured.
+        }
+      }
+      // One scoped read, one record: `matchedCount` is the whole window the server answered.
+      const filtered = this
+        .scopeItemsToProject(items, rootDir, limit)
+        .slice(0, limit);
       // FNXC:RUFU133StashScore 2026-08-25-20:17:
       // RUFU-133: maxRank = the max usable rank across ALL surviving items
       // (0 when none), computed BEFORE the map — ts_rank is only meaningful
@@ -1313,6 +1443,21 @@ export class StashMemoryBackend implements MemoryBackend {
     }
   }
 
+  /*
+  FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146):
+  One keyword request over the documented URL contract (`q` = the already-normalized query, `limit` =
+  the window). Throws like the transport seam it wraps: the CALLER decides whether a refusal is
+  fail-closed or degradable, because the two differ by window, not by error class.
+  */
+  private async fetchKeywordRows(q: string, windowLimit: number): Promise<StashSearchResultItem[]> {
+    const resp = await this.httpRequest<StashSearchResponse>(
+      `/api/v1/me/sessions/events/search?q=${encodeURIComponent(q)}&limit=${windowLimit}`,
+      "GET",
+    );
+    const items = resp.results ?? resp.events ?? [];
+    return items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object");
+  }
+
   /**
    * RUFU-126 (D3): false while a definitive no-vector OR refused-auth response is cached for this
    * baseUrl and its TTL has not expired. Suppression covers the semantic ATTEMPT only; the keyword
@@ -1340,9 +1485,13 @@ export class StashMemoryBackend implements MemoryBackend {
     rootDir: string,
   ): Promise<MemorySearchResult[] | null> {
     const q = rawQuery.slice(0, 200);
+    // FNXC:StashReadWindow 2026-11-21-12:36 (RUFU-1146): same window-before-scope repair as the
+    // keyword route, bounded by THIS route's own validated ceiling. No widening ladder here: an
+    // answer the scoping empties already falls through to the keyword path below, which widens.
+    const windowLimit = stashReadFetchWindow(limit, STASH_SEMANTIC_SEARCH_SERVER_MAX_LIMIT);
     try {
       const resp = await this.httpRequest<StashSearchResponse>(
-        `/api/v1/me/sessions/events/semantic-search?q=${encodeURIComponent(q)}&limit=${limit}`,
+        `/api/v1/me/sessions/events/semantic-search?q=${encodeURIComponent(q)}&limit=${windowLimit}`,
         "GET",
       );
       const items = resp?.results ?? resp?.events;
@@ -1352,11 +1501,14 @@ export class StashMemoryBackend implements MemoryBackend {
         this.noteReadOutcome("semantic-search", Array.isArray(items) ? "no-match" : "malformed", 0);
         return null;
       }
-      const own = this.scopeItemsToProject(
-        items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object"),
-        rootDir,
-        limit,
-      );
+      const own = this
+        .scopeItemsToProject(
+          items.filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object"),
+          rootDir,
+          limit,
+        )
+        // The caller asked for `limit`; the wider window is the means, not the page.
+        .slice(0, limit);
       const hits = own
         .map((it, idx) => {
           // D5: vector rank = similarity (0..1); missing/null/non-finite → 1.0.

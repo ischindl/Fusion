@@ -1780,7 +1780,10 @@ answer again, one step further along from the RUFU-994 pair.
 
 Metadata is a closed six keys: `outcome` (fixed enum `all-own` | `dropped-foreign` | `dropped-unidentified`),
 `matchedCount`, `ownCount`, `droppedForeignCount`, `droppedUnidentifiedCount` (numbers), and `limit`
-(the row cap the caller asked for). `dropped-foreign` wins over `dropped-unidentified` when a read dropped
+(the row cap the caller asked for). Since RUFU-1146 the read asks for a window wider than that cap (see
+[`docs/memory-backend-integration.md`](memory-backend-integration.md) § 4), so `limit` is still the page
+the caller asked for while `matchedCount` counts what the server answered from that window — the ratio
+between them is what makes the over-fetch measurable, and no other key changed. `dropped-foreign` wins over `dropped-unidentified` when a read dropped
 both classes, and the two counts are reported separately so an operator can tell "the account is shared"
 from "the server stopped returning `metadata`" — the first is expected on a multi-project host, the second
 means recall is going blind and is the one that needs attention. `all-own` writes **no** row, matching

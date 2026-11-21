@@ -155,6 +155,30 @@ Two consequences an operator should know:
   and surfaces its counts as `stashReadScope` on `GET /api/memory/backend` and `POST /api/memory/test`.
   Counts and a fixed class only: never a dropped line, another project's discriminator, or the server URL.
 
+**Scoping after the answer costs rows, so the request buys a window (RUFU-1146).** Filtering on the far
+side of a `limit`-sized request throws away rows that were never fetched, and on a shared account that
+is most of them: measured over every scoped read on the host above (116 reads, `memory:stash-read-scope`),
+Stash answered 839 rows, 261 survived (31 %), **33 reads (28 %) returned an empty page, and zero reads
+returned the full limit they asked for** — the exact-limit request almost never reaches our own rows at
+all. The keyword and vector branches now ask for `min(route ceiling, 6 × the caller's limit)`
+(`stashReadFetchWindow`), scope, and trim to the caller's limit, so the page that comes back is the page
+that was asked for and never wider. Three bounds keep that honest:
+
+- the window never exceeds what the route itself validates — `le=200` on `/me/sessions/events/search`,
+  `le=100` on the semantic route — because above either one "wider" is a 422, i.e. a worse read;
+- at most **one** widening request per read, and only when the server filled the first window *and*
+  fewer than `limit` rows survived scoping, so an exhausted store (the common case) costs nothing and a
+  read is two calls, never a paging loop;
+- if a deployed route refuses the wide window as a request (`400`/`422`), the exact-limit request is
+  replayed and answered — the pre-fix shape — so shipping a wider window cannot produce less than it
+  replaced.
+
+`read()`'s broad recall and `exists()` keep the legacy empty-query URL byte-for-byte (RUFU-121 froze it,
+and it is the shape the surviving `rejected-request` refusals attach to), so they are deliberately not
+widened here. In the scoped row, `matchedCount` is now the rows the server answered **from that window**
+while `limit` stays the page the caller asked for; `stash-read-window.test.ts` pins the arithmetic, the
+single widening, the degrade, and the trim on every read surface.
+
 ## 5. Per-conversation memory focus (read-time ranking bias)
 
 Fusion implements **conversation focus** as an opt-in feature. Enable
