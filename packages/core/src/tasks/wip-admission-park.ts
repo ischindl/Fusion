@@ -50,6 +50,22 @@ const WIP_ADMISSION_GATE_SPECIFICITY: Record<TaskWipAdmissionStallCode, number> 
   "move-rejected-or-no-slot": 3,
   "downstream-full": 4,
   "column-capacity": 4,
+  /*
+  FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+  PARITY with the two capacity gates, deliberately, and the reasoning is the ladder's own behaviour:
+  `wipAdmissionSignatureFrom` passes the constant reason "capacity", so every WIP-admission refusal at one
+  column boundary shares ONE signature and one clock, and `wipAdmissionStallWrite` refreshes it with
+  `moreSpecificWipAdmissionGate`, which keeps an incoming code only when it is AT LEAST as sharp. The gate
+  label is therefore sticky and its rank decides who wins.
+
+  The sweep's capacity arm returns before `issueRelease` is ever called, so a pass reports either a capacity
+  arm or a release refusal and never both — the two are mutually exclusive per pass. At parity the most
+  recent refusal wins with no flicker. Ranked ABOVE the capacity gates, a plan problem would keep advertising
+  itself after the plan had been fixed and the column had genuinely filled, which is the stale-label defect
+  RUFU-372 and RUFU-393 exist to remove; ranked BELOW, one earlier `downstream-full` would mask a real
+  premise refusal permanently. Parity is the only rank that is honest in both directions.
+  */
+  "plan-premise-unmet": 4,
 };
 
 /**
@@ -96,6 +112,16 @@ const WIP_ADMISSION_STALL_CODES: readonly TaskWipAdmissionStallCode[] = [
   "no-downstream-capacity-column",
   "awaiting-planning",
   "awaiting-approval",
+  /*
+  FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758): added deliberately, NOT compiler-forced.
+  `WIP_ADMISSION_GATE_SPECIFICITY` and `WIP_ADMISSION_STALL_SENTENCES` are `Record<TaskWipAdmissionStallCode,…>`,
+  so a new union member fails the typecheck until it is updated. This one is a plain array: forgetting it
+  leaves the typecheck green and silently degrades every stored episode carrying the code to NO EPISODE AT ALL
+  (`readWipAdmissionStallEpisode` fail-closes on an unknown code), i.e. the card would lose its badge, its
+  History line and its record — the exact regression RUFU-758 exists to avoid. `isWipAdmissionStallCode` is
+  the only reader of this set.
+  */
+  "plan-premise-unmet",
 ];
 
 /** True when `code` is one the row may carry. Keeps the union the single source of truth. */

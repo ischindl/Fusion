@@ -51,6 +51,14 @@ import {
   type WorkflowWorkItemKind,
 } from "@fusion/core";
 import { executorLog } from "../logger.js";
+/*
+FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+Type-only import, deliberately: `hold-release.ts` imports `publishWipAdmissionHold` from THIS module at
+runtime, so a value import in this direction would be a real module cycle. `import type` is erased, which
+is what lets the refusal-to-gate table below be `Record<WipAdmissionRejection, …>` and therefore total by
+construction - the compiler, not a test, is what makes an unmapped refusal impossible.
+*/
+import type { WipAdmissionRejection } from "./hold-release.js";
 
 /*
 FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
@@ -236,7 +244,7 @@ export async function wipAdmissionParkDefersGraphEntry(
 
 /** The refusal facts a writer supplies, normalized from either the boundary or the sweep. */
 export interface WipAdmissionParkContext {
-  /** Which gate refused. Must be one of the eight `TaskWipAdmissionStallCode` gates. */
+  /** Which gate refused. Must be one of the nine `TaskWipAdmissionStallCode` gates. */
   code: TaskWipAdmissionStallCode;
   nodeId: string;
   fromColumn: string;
@@ -456,8 +464,70 @@ parking, because a reason nobody mapped is a reason nobody has reasoned about, a
 
 `timer-not-elapsed` is deliberately absent: a timer hold clears itself on a schedule the card already
 reports, which is an ordinary wait and not a stall (RUFU-292's rule).
+
+FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758): the opt-in rule above holds for the SWEEP'S OWN
+measured arms, and it was right there. It stopped holding for the release primitive's REFUSALS the moment
+the sweep began forwarding them verbatim instead of collapsing them: for a refusal, an unmapped reason does
+not merely stay unpublished, it strips an episode the card already had. That half of the table is therefore
+TOTAL by construction - see `RELEASE_REFUSAL_TO_PARK_CODE` below for why publishing nothing is the worse
+failure.
 */
+/*
+FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+The release primitive's own refusals, mapped onto the gate each one names.
+
+This map exists because the sweep's held reason is PUBLISHED, not merely logged: `publishWipAdmissionHold`
+resolves it through `wipAdmissionParkCodeForHeldReason` and RETURNS IMMEDIATELY on `undefined`, so a reason
+that reaches this table with no entry writes no episode, no History line, no bounded record and no badge.
+Forwarding a refusal code without giving it a gate is therefore strictly WORSE than the wrong label it
+replaces - the card would explain itself less than it does today. So the table is declared as a
+`Record<WipAdmissionRejection, TaskWipAdmissionStallCode>`: a refusal literal added to the union without a
+gate is a compile error here, not a silent unparking of a card at runtime. A total map, not an allowlist
+that happens to be total.
+
+Two mappings are decisions rather than translations, and both are the sweep matching a decision it already
+makes elsewhere:
+
+- `unplanned-for-execution` -> `awaiting-planning`. The sweep's readiness arm one block above reports that
+  SAME code as `awaiting-planning:<reason>`; the under-lock re-check inside `issueRelease` returns it as a
+  refusal code instead, and the two must not park one condition under two gates.
+- `capacity-exhausted-or-no-slot` -> `move-rejected-or-no-slot`. `issueRelease` never returns this literal
+  (the sibling surfaces `admitTaskToWip` / `promoteHeldTask` / `releaseHeldTaskByEvent` synthesize it as
+  their OWN fallback), but it is a union member, so the total map must answer it, and the answer is the
+  capacity-shaped gate the label already means. This is NOT the sweep copying the sibling fallback: the
+  sweep keeps `move-rejected-or-no-slot` for the refusals that carry no code at all.
+
+Why the plan-premise family does NOT collapse onto `awaiting-planning`, recorded so nobody re-derives it:
+that collapse is a regression twice over. `announceWipAdmissionPark` returns BEFORE writing the History line
+for `awaiting-planning` and `awaiting-approval`, so the card would lose a surface it has today; and
+`awaiting-planning` ranks 2 against today's 3 while `wipAdmissionStallWrite` sharpens-only, so the ladder
+would discard the incoming code and change nothing anyway.
+
+The doctrine this module was written under stays intact: an explicit table, never a prefix match, so an arm
+nobody has reasoned about defaults to NOT parking. The one prefix rule below remains only for the
+parameterized `awaiting-planning:<reason>` readiness form.
+*/
+/**
+ * Total by construction: every `WipAdmissionRejection` literal names a gate. Adding a refusal to the union
+ * without adding its gate here is a typecheck failure, which is the point - the alternative failure mode is
+ * a real refusal that silently publishes nothing.
+ */
+const RELEASE_REFUSAL_TO_PARK_CODE: Readonly<Record<WipAdmissionRejection, TaskWipAdmissionStallCode>> = {
+  // Readiness, not capacity: the card is not planned. Matches the sweep's own `awaiting-planning:*` arm.
+  "unplanned-for-execution": "awaiting-planning",
+  // The plan-premise family: the card's own contract with the repository is what refuses it.
+  "plan-premise-stale": "plan-premise-unmet",
+  "plan-premise-invalid": "plan-premise-unmet",
+  "plan-premise-unavailable": "plan-premise-unmet",
+  "plan-premise-exhausted": "plan-premise-unmet",
+  // The premise door's own race verdict: the premise the door refused for is now true. Still that gate.
+  "source-changed": "plan-premise-unmet",
+  // Capacity-shaped, and never returned by `issueRelease` - see the note above on why it still needs an arm.
+  "capacity-exhausted-or-no-slot": "move-rejected-or-no-slot",
+};
+
 const SWEEP_ARM_TO_PARK_CODE: Readonly<Record<string, TaskWipAdmissionStallCode>> = {
+  ...RELEASE_REFUSAL_TO_PARK_CODE,
   "downstream-full": "downstream-full",
   "no-downstream-capacity-column": "no-downstream-capacity-column",
   "move-rejected-or-no-slot": "move-rejected-or-no-slot",

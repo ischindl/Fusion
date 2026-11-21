@@ -7,6 +7,14 @@ a single word on the card. That is the second half of the reported defect: the b
 refused every few minutes for two days while the card itself explained nothing, and the operator's only
 source was an audit table nobody reads.
 
+FNXC:WipAdmissionPark 2026-11-20-23:38 (RUFU-758):
+The arm list above is no longer complete: the sweep now also publishes the refusal code its release primitive
+returned, so the plan-premise family reaches the row as `plan-premise-unmet` instead of being folded into
+`move-rejected-or-no-slot`. Read that label narrowly from now on — it is the gate for a refusal that carried NO
+code (no reservable slot, the in-transaction capacity-exhausted transition, a live row paused or gone under the
+move lock). The case pinned below is exactly that shape: the lane counts below its limit and the store still
+refuses the move, so the row must say the move was refused and nothing else.
+
 These tests pin the publication half of the fix, at the sweep seam rather than on the recorder's unit:
 1. the SAME verdict the sweep reports in `result.held` is what lands on the row, with the pool and the first
    occupancy sample, so a reader can tell "the WIP column is full" from "no pool was ever consulted";

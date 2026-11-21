@@ -889,7 +889,24 @@ export type TaskWipAdmissionStallCode =
   /** Release is withheld because the card is not yet planned (readiness, not capacity). */
   | "awaiting-planning"
   /** Release is withheld by an approval gate (readiness, not capacity). */
-  | "awaiting-approval";
+  | "awaiting-approval"
+  /*
+  FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+  The plan-premise gate, the one honest member the vocabulary was missing. Before it existed the hold/release
+  sweep collapsed EVERY refusal its release primitive returned into `move-rejected-or-no-slot`, so a card whose
+  OWN plan document failed the RUFU-246 contract (unreadable, malformed, stale, or exhausted) advertised the
+  single sentence that means "a slot was found but the move was refused". That sentence is false for these
+  cards: no slot was ever sought, because the premise door refuses before any reservation. Merging them into
+  `awaiting-planning` was rejected, not merely unpreferrable: `announceWipAdmissionPark` deliberately skips the
+  card's History line for that gate, so the collapse would REMOVE a surface the card has today, and its rank 2
+  against today's 3 means the sharpen-only ladder would drop the incoming code and change nothing at all.
+  */
+  /**
+   * Release was refused by the card's own plan-premise contract (RUFU-246): the facts its plan states about
+   * the repository do not hold, or the authoritative plan could not be read at all. Readiness, not capacity
+   * and not the move — no slot was requested, so no pool or reservation can be the answer.
+   */
+  | "plan-premise-unmet";
 
 /**
  * Durable withheld-crossing episode for one card (RUFU-393). Absent or `null` means "no withheld

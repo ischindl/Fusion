@@ -11,8 +11,8 @@ import {
   wipAdmissionStallWrite,
   type WipAdmissionStallObservation,
 } from "../tasks/wip-admission-park.js";
-import { deriveTaskStallReason, type TaskStallReasonContext } from "../tasks/task-stall-reason.js";
-import { WIP_ADMISSION_STALL_METADATA_KEY } from "../types.js";
+import { WIP_ADMISSION_STALL_SENTENCES, deriveTaskStallReason, type TaskStallReasonContext } from "../tasks/task-stall-reason.js";
+import { WIP_ADMISSION_STALL_METADATA_KEY, type TaskWipAdmissionStallCode } from "../types.js";
 
 /*
 FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
@@ -227,6 +227,71 @@ describe("readWipAdmissionStallEpisode", () => {
     const patch = clearWipAdmissionStallPatch();
     expect(patch).toEqual({ [WIP_ADMISSION_STALL_METADATA_KEY]: null });
     expect(Object.keys(patch)).toHaveLength(1);
+  });
+
+  /*
+  FNXC:WipAdmissionHeldReason 2026-11-20-23:05 (RUFU-758):
+  `WIP_ADMISSION_STALL_CODES` is the one gate table the compiler does NOT check: the specificity and sentence
+  tables are `Record<TaskWipAdmissionStallCode, …>` and so fail a typecheck when the union grows, while this
+  one is a plain array. Deleting an entry from it leaves every build green and silently degrades each stored
+  episode carrying that code to NO EPISODE — the card loses its badge, its History line and its bounded record
+  at once. So membership is asserted here for every gate the union admits, which is the only seam that turns
+  "someone edited a literal array" into a red test.
+  */
+  it("reads an episode for every gate the union admits, so no stored code degrades to silence", () => {
+    const gates: TaskWipAdmissionStallCode[] = [
+      "scheduler-seam",
+      "column-capacity",
+      "capacity-rejection-without-facts",
+      "downstream-full",
+      "move-rejected-or-no-slot",
+      "no-downstream-capacity-column",
+      "awaiting-planning",
+      "awaiting-approval",
+      "plan-premise-unmet",
+    ];
+    const valid = wipAdmissionStallWrite(undefined, observation(), Date.parse("2026-11-01T00:00:00.000Z"))!;
+    for (const code of gates) {
+      expect(readWipAdmissionStallEpisode({ [WIP_ADMISSION_STALL_METADATA_KEY]: { ...valid, code } })?.code).toBe(code);
+    }
+    // Every gate also carries a sentence: the table is keyed by the union, so this cannot drift silently.
+    for (const code of gates) {
+      expect(WIP_ADMISSION_STALL_SENTENCES[code]).toBeTruthy();
+    }
+  });
+});
+
+/*
+FNXC:WipAdmissionHeldReason 2026-11-20-23:05 (RUFU-758):
+The rank the new gate was given is a decision with two failure modes, and both are one-sided, so both need a
+check. `wipAdmissionSignatureFrom` passes the constant reason "capacity", so a plan-premise refusal and a
+capacity refusal at one boundary share ONE signature, and a same-signature refresh keeps whichever code ranks
+higher. Ranked above the capacity gates, a plan problem would keep advertising itself after the plan had been
+fixed and the column had genuinely filled; ranked below, one earlier `downstream-full` would mask a real
+premise refusal forever. Parity makes the most recent refusal win, which is honest in both directions.
+*/
+describe("plan-premise gate rank — parity keeps the most recent refusal winning", () => {
+  const t0 = Date.parse("2026-11-01T00:00:00.000Z");
+  const next = t0 + WIP_ADMISSION_STALL_REFRESH_FLOOR_MS;
+
+  it("lets a plan refusal replace a capacity gate the pool no longer explains", () => {
+    const full = wipAdmissionStallWrite(undefined, observation({ code: "downstream-full", occupants: 4, limit: 4 }), t0)!;
+    const premise = wipAdmissionStallWrite(full, observation({ code: "plan-premise-unmet" }), next)!;
+    expect(premise.code).toBe("plan-premise-unmet");
+    expect(premise.firstAt).toBe(full.firstAt);
+  });
+
+  it("lets a capacity measurement replace a plan refusal once the plan is fixed", () => {
+    const premise = wipAdmissionStallWrite(undefined, observation({ code: "plan-premise-unmet" }), t0)!;
+    const full = wipAdmissionStallWrite(premise, observation({ code: "column-capacity", occupants: 3, limit: 3 }), next)!;
+    expect(full.code).toBe("column-capacity");
+    expect(full.firstAt).toBe(premise.firstAt);
+  });
+
+  it("still sharpens a lazy seam reading under a plan refusal, so the premise gate outranks no measurement", () => {
+    const premise = wipAdmissionStallWrite(undefined, observation({ code: "plan-premise-unmet" }), t0)!;
+    const dulled = wipAdmissionStallWrite(premise, observation(), next)!;
+    expect(dulled.code).toBe("plan-premise-unmet");
   });
 });
 

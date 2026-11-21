@@ -561,7 +561,7 @@ been reported. A repeated dispatch whose episode is unchanged writes neither.
 
 | key | meaning |
 |---|---|
-| `stallCode` | The gate that is holding the crossing, from the closed vocabulary: `scheduler-seam`, `column-capacity`, `downstream-full`, `move-rejected-or-no-slot`, `no-downstream-capacity-column`, `awaiting-planning`, `awaiting-approval`. Present when this row accompanied an accepted episode write. |
+| `stallCode` | The gate that is holding the crossing, from the closed vocabulary: `scheduler-seam`, `column-capacity`, `downstream-full`, `move-rejected-or-no-slot`, `no-downstream-capacity-column`, `awaiting-planning`, `awaiting-approval`, `plan-premise-unmet`. Present when this row accompanied an accepted episode write. |
 | `stallCount` | How many *records* this one wait has produced — the refresh-floor count, not wall-clock passes. |
 | `stallFirstAt` | ISO instant of the first refusal in the episode. Age is read here, never from `task.updatedAt` (RUFU-350's trap: naming a card bumps the shared clock). |
 | `stallPoolId` | The capacity pool the refusal was measured against, or `null` when no pool was consulted — the same honest-absence rule as the `capacity*` block above. |
@@ -578,7 +578,24 @@ code list above carries more members than the graph seam alone can observe: `dow
 `move-rejected-or-no-slot` are measured by `runHoldReleaseSweep` against the real pool and the in-transaction
 move, and they arrive under the graph's node id when a graph episode already owns the signature, so one
 identity stays one identity whoever measured it last. Arms with no gate to name — `timer-not-elapsed`, and the
-`manual` / `external-event` human waits — publish nothing at all. The episode itself is not a run-audit row and
+`manual` / `external-event` human waits — publish nothing at all.
+
+**`move-rejected-or-no-slot` means the move, and nothing else** (RUFU-758). The sweep forwards the refusal its
+release primitive actually returned, so a card refused by its own plan-premise contract records
+`plan-premise-unmet` — the plan document was unreadable, malformed, stale, exhausted, or overtaken by the
+card's own delivery. It is neither a pool nor a move: the premise door refuses before any slot is requested,
+so the pool facts riding the same episode show the lane with room, and those facts are what make the old
+capacity reading refutable from the row alone. `move-rejected-or-no-slot` is now the label for a refusal that
+carries no code at all — no reservable slot, the in-transaction capacity-exhausted transition, or a live row
+that paused or left its column under the move lock.
+
+The mapping from refusal code to gate is total by construction (`Record<WipAdmissionRejection, …>`), because
+the alternative is not a wrong label but silence: `publishWipAdmissionHold` returns before writing anything
+when it cannot name a gate, so an unmapped refusal would cost the card its badge, its History line and this
+row. `plan-premise-unmet` ranks at PARITY with `downstream-full` and `column-capacity`, and that rank is what
+keeps the newest refusal winning — the sweep reports a capacity arm or a release refusal per pass, never both,
+so a higher rank would keep advertising a plan problem after the plan had been repaired, and a lower one would
+let a single earlier `downstream-full` mask a real premise refusal forever. The episode itself is not a run-audit row and
 holds no prose: it is card state, and the parked marker is never a refusal (FN-7648's durable refusals stay
 confined to `promoteHeldTask` / `releaseHeldByEvent`).
 

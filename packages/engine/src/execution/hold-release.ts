@@ -1865,7 +1865,41 @@ export async function runHoldReleaseSweep(
       if (expired()) { breakIndex = index; break; }
       const releaseResult = await issueRelease(store, deps, task, target, ir, { pass, readinessAlreadyVerified: true });
       if (releaseResult.released) { const waitedMs = deps.now() - (heldSince.get(task.id)?.sinceMs ?? deps.now()); heldSince.delete(task.id); schedulerLog.log(`Hold release for ${task.id} → ${target} after ${waitedMs}ms held (release=${release})`); result.released.push(task.id); }
-      else { trackHeld(task.id, "move-rejected-or-no-slot", deps.now()); result.held.push({ taskId: task.id, reason: "move-rejected-or-no-slot" }); }
+      else {
+        /*
+        FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+        The refusal identity this line records is the one the release call actually returned. Until now this
+        branch threw it away: `IssueReleaseResult.rejection` is a closed, reason-bearing vocabulary
+        (`unplanned-for-execution`, `plan-premise-stale` / `-invalid` / `-unavailable` / `-exhausted`,
+        `source-changed`) and the sweep forwarded one of its forms (`awaiting-planning:<reason>`) five lines
+        above, so the identity was available at precisely the line that discarded it. Every premise refusal
+        therefore reached the card as "move-rejected-or-no-slot", the one label meaning "a slot was found but
+        the move was refused" - a claim that is FALSE for these cards, because the plan-premise door inside
+        `issueRelease` sits in the `targetIsProcessing` arm and runs BEFORE any reservation is taken. That
+        misattribution is what made RUFU-757's two red cases read as "the capacity sweep releases nothing
+        while live_exec=0" when the release call had refused the card before touching the move.
+
+        `move-rejected-or-no-slot` is now the fallback for CODELESS refusals only, and those are exactly three
+        shapes: no reservable slot (`reserveSlot` returned null), the in-transaction capacity-exhausted
+        transition (`TransitionRejectionError`, the lost in-txn race), and the plain not-moved case where the
+        live row under the move lock had paused, left the source column, was blocked on approval, or failed
+        its reservation's admission validation. It is NOT a capacity fallback and it deliberately does not
+        copy what the sibling surfaces (`admitTaskToWip`, `promoteHeldTask`, `releaseHeldTaskByEvent`) do -
+        they synthesize `capacity-exhausted-or-no-slot` as their own answer to a caller who demanded a
+        reason; the sweep's caller is the publication loop, which reads the reason as-is.
+
+        This string is not test-only text. The same value goes to `trackHeld` (the held-since clock, which
+        restarts on a reason CHANGE - intended semantics, unchanged here) AND, identically, onto
+        `result.held`, which the publication loop at the end of this pass feeds to
+        `publishWipAdmissionHold`. That publication resolves the reason through the explicit refusal-to-gate
+        map in `wip-admission-park.ts`, so the reason names the gate on the card's badge, its History line and
+        its bounded record too. Divergence between the two writes below is the bug class this branch is about,
+        which is why ONE derived value is passed to both.
+        */
+        const heldReason = releaseResult.rejection ?? "move-rejected-or-no-slot";
+        trackHeld(task.id, heldReason, deps.now());
+        result.held.push({ taskId: task.id, reason: heldReason });
+      }
       evaluatedTaskIds.add(task.id);
     }
     if (breakIndex !== undefined) { result.budgetTruncated = true; result.unevaluatedCount = tasksForReleaseEvaluation.length - breakIndex;

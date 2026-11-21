@@ -60,6 +60,17 @@ lane it counts as **full**, so it cannot originate from a mirror that saw free c
 that pairs "the sweep saw free capacity" with cards held `downstream-full` is self-contradictory, and it
 is the reverse of what happened here.
 
+A second consistency rule, added by RUFU-758 because this article's own held-reason column was being read as a
+capacity column: a card held under a **plan-premise** gate was never refused by capacity at all. The gate is
+`plan-premise-unmet`, and it means the card's own plan contract could not be verified — its authoritative plan
+document unreadable, its premises malformed, a verdict still unposted, its budget exhausted, or the source
+already overtaken by its own delivery. That door shuts **before** any slot is requested, so a premise refusal
+riding an episode whose pool facts show the lane with room is coherent, not contradictory: the pool had room
+and the plan did not. Read the gate before the counts. Until RUFU-758 these cards were recorded
+`move-rejected-or-no-slot` — the sweep discarded the refusal code its release primitive returned and published
+a constant — which made a broken plan indistinguishable from a full lane, and was the reason this table's
+evidence read as capacity pressure on a board with zero live executions.
+
 ## Fix
 
 Extract the failed-park rule that FN-8704 had already written down inside `isRunningAgentTask` into one

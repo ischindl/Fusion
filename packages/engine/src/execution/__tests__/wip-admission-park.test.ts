@@ -174,6 +174,15 @@ describe("publishWipAdmissionHold", () => {
 });
 
 describe("sweep-arm and release-kind eligibility", () => {
+  /*
+  FNXC:WipAdmissionPark 2026-11-20-23:38 (RUFU-758):
+  The sweep now publishes the refusal its release primitive returned, so the release-refusal codes are held
+  reasons too and belong in the same arm-to-gate table as the measured capacity arms. `move-rejected-or-no-slot`
+  is asserted as the identity for a CODELESS refusal only -- a premise refusal must never land on it, because
+  that gate means a slot was found and the move was refused, which the premise door contradicts (it refuses
+  before any slot is requested). The premise family collapses to ONE gate on purpose: the distinguishing detail
+  lives in the card's History line and the sweep's held reason, not in nine badge sentences.
+  */
   it("maps each measured sweep arm onto a gate and refuses to invent one", () => {
     expect(wipAdmissionParkCodeForHeldReason("downstream-full")).toBe("downstream-full");
     expect(wipAdmissionParkCodeForHeldReason("no-downstream-capacity-column")).toBe("no-downstream-capacity-column");
@@ -181,6 +190,11 @@ describe("sweep-arm and release-kind eligibility", () => {
     expect(wipAdmissionParkCodeForHeldReason("awaiting-approval")).toBe("awaiting-approval");
     // The readiness probe is parameterized; the gate is one thing.
     expect(wipAdmissionParkCodeForHeldReason("awaiting-planning:seed-prompt")).toBe("awaiting-planning");
+    // Released refusals that carry a code reach the same table (RUFU-758), each under its own gate.
+    expect(wipAdmissionParkCodeForHeldReason("plan-premise-unavailable")).toBe("plan-premise-unmet");
+    expect(wipAdmissionParkCodeForHeldReason("plan-premise-invalid")).toBe("plan-premise-unmet");
+    expect(wipAdmissionParkCodeForHeldReason("unplanned-for-execution")).toBe("awaiting-planning");
+    expect(wipAdmissionParkCodeForHeldReason("capacity-exhausted-or-no-slot")).toBe("move-rejected-or-no-slot");
     expect(wipAdmissionParkCodeForHeldReason("timer-not-elapsed")).toBeUndefined();
     expect(wipAdmissionParkCodeForHeldReason("manual-only")).toBeUndefined();
     expect(wipAdmissionParkCodeForHeldReason("reason-someone-adds-tomorrow")).toBeUndefined();

@@ -304,10 +304,10 @@ FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
 One fixed sentence per REFUSING GATE, in the shape `PLAN_*_STALL_REASON` establishes — each names its own
 gate rather than sharing a generic "capacity" phrase. Two deliberate differences from the planning table:
 
-- All eight gate literals collapse onto the ONE stall code `wip-admission-throttled`. The planning family
+- All nine gate literals collapse onto the ONE stall code `wip-admission-throttled`. The planning family
   exposes its episode codes as stall codes; here the operator's question is one thing ("why has this
   planned card not entered WIP?") and the gate is the detail, so the code stays stable while the
-  sentence names the gate. Splitting it into eight codes would force every consumer that branches on
+  sentence names the gate. Splitting it into nine codes would force every consumer that branches on
   code to enumerate a vocabulary it does not need.
 - `scheduler-seam` says plainly that NO capacity pool was consulted. RUFU-372's entire finding was that
   two different shapes both reported `reason=capacity`, which sent operators hunting a limit that was
@@ -350,6 +350,22 @@ export const WIP_ADMISSION_AWAITING_PLANNING_STALL_REASON =
 export const WIP_ADMISSION_AWAITING_APPROVAL_STALL_REASON =
   "Waiting to enter work-in-progress: an approval gate is withholding release";
 
+/*
+FNXC:WipAdmissionHeldReason 2026-11-20-22:52 (RUFU-758):
+The plan-premise gate's sentence, worded deliberately: it names the card's OWN contract as the refusing
+authority and never says "slot", "capacity" or "move". That wording is the whole deliverable. Before it
+existed, a card refused by RUFU-246's premise gate read as `WIP_ADMISSION_MOVE_REFUSED_STALL_REASON`,
+"a slot was found but the move was refused" — a sentence that is not merely unhelpful but false, because
+the premise door refuses BEFORE any reservation is taken, so no slot was ever sought. An operator
+following that sentence adjusts a WIP limit that is not binding, which is RUFU-372's wrong-knob defect
+reproduced one level down. It covers the whole premise family (stale, invalid, unreadable, exhausted) in
+one fixed string like every other gate here: no id, count or path interpolates it, and the specific
+premise verdict rides the episode and the task history, not the badge.
+*/
+/** Readiness, not capacity: the card's own plan-premise contract does not hold. */
+export const WIP_ADMISSION_PLAN_PREMISE_STALL_REASON =
+  "Waiting to enter work-in-progress: the card's own plan-premise contract does not hold, so release is withheld until its plan is verified again";
+
 /** Code union of the persisted WIP-admission episode — the gates the row itself can carry (RUFU-393). */
 type WipAdmissionEpisodeCode = TaskWipAdmissionStallCode;
 
@@ -363,6 +379,7 @@ export const WIP_ADMISSION_STALL_SENTENCES: Record<WipAdmissionEpisodeCode, stri
   "no-downstream-capacity-column": WIP_ADMISSION_NO_TARGET_STALL_REASON,
   "awaiting-planning": WIP_ADMISSION_AWAITING_PLANNING_STALL_REASON,
   "awaiting-approval": WIP_ADMISSION_AWAITING_APPROVAL_STALL_REASON,
+  "plan-premise-unmet": WIP_ADMISSION_PLAN_PREMISE_STALL_REASON,
 };
 
 /** Code union of the persisted episode — the codes the row itself can carry (RUFU-273). */
