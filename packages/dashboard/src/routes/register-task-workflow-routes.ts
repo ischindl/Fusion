@@ -222,6 +222,7 @@ import {
 } from "./task-transfer.js";
 import { restartStageRefusalError, restartTaskStage } from "./task-restart-stage.js";
 import { resumeExternallyBlockedTask } from "./task-external-block-resume.js";
+import { redriveLandedPostMergeGate } from "./task-post-merge-redrive.js";
 import type { ApiRoutesContext } from "./types.js";
 import { deriveAutoTaskBranch, derivePerTaskBranch, getBranchSelectionMode, resolveBranchSelection } from "./branch-selection.js";
 
@@ -4432,6 +4433,26 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         if (noVerdictOutcome === "unavailable") {
           throw conflict("Retry is unavailable because review recovery ownership is unavailable");
         }
+      }
+
+      /*
+      FNXC:ReviewRecovery 2026-11-21-05:01 (RUFU-556):
+      A card whose landing proof is already durable has no stage left to discard, so it must be classified
+      BEFORE the destructive restart below and answered through the fenced post-merge recovery seam —
+      `redriveLandedPostMergeGate` holds why the arm lives in its own module and why the stage restart must
+      stay structurally incapable of reaching that seam. Its placement in this ladder is the contract: after
+      the no-verdict reroute above, so a verdict-less PRE-merge gate keeps its existing owner, and before
+      `restartTaskStage`, so a landed card can never enter the destructive publication. Seeded answers 200
+      with the fresh row like the other success arms; a refusal answers 409 naming the seam's reason code;
+      every other card falls through unchanged. No new route is mounted.
+      */
+      const landedRedrive = await redriveLandedPostMergeGate({ store: scopedStore, task, ir: workflowIr });
+      if (landedRedrive.kind === "seeded") {
+        res.json(await scopedStore.getTask(req.params.id));
+        return;
+      }
+      if (landedRedrive.kind === "refused") {
+        throw conflict(landedRedrive.message);
       }
 
       /*

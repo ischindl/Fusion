@@ -731,7 +731,21 @@ Auto-merge authorization governs autonomous landing, not verification of a landi
 on the durable task row. The closeout recovery can dispatch only the authored evidence gate; it
 never changes auto-merge, performs another merge, or advances an unmerged manual hold.
 -->
-When a confirmed landing is durable but an enabled required post-merge gate has **no result**, recovery resumes that authored graph node in the existing review lane through the normal continuation fence, including when `autoMerge:false`. This is not an approval or a second merge: only zero durable results are resumable. Pending, duplicate, skipped, failed, and non-approved results remain visible blockers, including skipped evidence retained with remediation-archive or bypass provenance; only a new approved result can clear that state. Human and engine pauses, active sessions, execution ownership, checkout leases, deleted tasks, malformed workflow resolution, and absent merge proof still block recovery. Manual reconciliation reports whether it resumed the node, remains blocked, or is already complete; it never reports completion until the task is in its resolved complete lane with approved required evidence.
+<!--
+FNXC:ReviewRecovery 2026-11-21-05:01 (RUFU-556):
+The sentence this replaces ("only zero durable results are resumable") had been true of the arm that existed
+first and stopped being true twice over: FN-9502's adopted ladder re-drives a REJECTED report on a capped
+revisit schedule, and RUFU-556 made the operator's Retry a caller of the same seam. The paragraph now names
+each arm the code enforces, because an operator reading the old wording would conclude a Retry on a landed
+card with a failed post-merge row could never move it - and would be wrong.
+-->
+When a confirmed landing is durable but an enabled required post-merge gate is still owed, recovery resumes that authored graph node in the existing review lane through the normal continuation fence, including when `autoMerge:false`. This is not an approval or a second merge, and what is resumable is decided per arm:
+
+- **No durable result at all** — any recovery lane may re-seed the gate, bounded by the per-(task, gate) budget of three attempts.
+- **A rejected report** (`failed`, e.g. a `REVISE`) — becomes resumable again on the capped 15/30/60-minute-then-hourly revisit schedule, so hosted evidence that lands after the early retries is never stranded by a total attempt cap.
+- **An explicit operator Retry overrides that schedule** and asks for the recheck immediately, through the same seam, the same fence, and the same named-refusal taxonomy. It overrides the wait and nothing else: `manualRetry` is honoured only on the rejected arm, every other guard inside the seam still refuses, and the rejected history it re-runs over is kept in the row.
+
+A `pending`, `skipped` (including skipped evidence retained with remediation-archive or bypass provenance), waived, or duplicate row is **not** re-driven and keeps its existing owner; re-seeding one would overwrite a real verdict, so only a new approved result clears that state. Human and engine pauses, active sessions, execution ownership, checkout leases, deleted tasks, malformed workflow resolution, and absent merge proof still block recovery, and a refusal names which of them applies. Manual reconciliation reports whether it resumed the node, remains blocked, or is already complete; it never reports completion until the task is in its resolved complete lane with approved required evidence. The dashboard **Retry** button reaches the same seam for an already-landed card (`packages/dashboard/src/routes/task-post-merge-redrive.ts`): it answers 200 when the verification was re-driven, or 409 naming the seam's reason code with the remedy for it, and a landed card never falls through to the destructive stage restart, because a card whose landing proof is durable has no stage left to discard (RUFU-556).
 
 > **Note on Fast Mode:** When a task has `executionMode: "fast"`, every **pre-merge** optional group is bypassed, including groups explicitly named in `enabledWorkflowSteps`. The graph records terminal `skipped` evidence for each bypassed pre-merge group so merge admission remains auditable. `parse-steps` is retargeted to one synthetic implementation occurrence, per-step `step-review` is routed past without a verdict, and post-merge groups remain active and run normally.
 

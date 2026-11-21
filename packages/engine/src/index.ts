@@ -498,6 +498,24 @@ so the pair must be public. `@fusion/*` imports are statically analyzable (named
 */
 export { resolvePostMergeEvidenceContract, invalidatePostMergeEvidenceContractCache } from "./merge/post-merge-evidence-contract.js";
 export type { PostMergeContractStore, PostMergeContractResolverDeps } from "./merge/post-merge-evidence-contract.js";
+/*
+FNXC:PostMergeRecovery 2026-11-19-21:10 (RUFU-556):
+The post-merge gate resume seam becomes public because the operator's Retry on an already-landed card is a
+fourth caller of the SAME fenced recovery the automatic lanes use (auto-merge finalizer, the four
+self-healing contract-passing sites, and `fn task reconcile`). A second route-local implementation is what
+this seam exists to prevent — `post-merge-seam-fork-decision.test.ts` is the ratchet for that decision, and
+it pins one recovery mechanism per seam. The dashboard Retry cannot reach a module-private function, so the
+function, its closed result/reason union (the refusal name is what the 409 sentence must carry, RUFU-370),
+and `isTerminalPostMergeReseedRefusal` (it is what tells "wait and Retry again" from "Retry can never
+produce this evidence") cross the package boundary.
+
+Deliberately NOT exported: `isPostMergeGateRecoveryDue`, `MAX_POST_MERGE_GATE_RESEED_ATTEMPTS`, and
+`postMergeGateReseedLogMarker`. The 15/30/60-then-hourly revisit schedule and the per-(task, gate) seed
+budget are decided INSIDE the seam; a caller that read them would be re-deriving a cooldown it does not
+own, which is the fork this union of arms was built to close.
+*/
+export { resumeMissingPostMergeGate, isTerminalPostMergeReseedRefusal } from "./merge/post-merge-gate-reseed.js";
+export type { PostMergeGateReseedResult, PostMergeGateReseedReason } from "./merge/post-merge-gate-reseed.js";
 export { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 export { runAiMerge } from "./merge/merger-ai.js";
 // STAS-292: the shared guarded ref lane. Recovery callers outside the merger (the CLI's
