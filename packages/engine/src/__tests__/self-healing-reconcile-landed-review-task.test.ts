@@ -477,10 +477,20 @@ describe("SelfHealingManager.reconcileLandedReviewTask", () => {
   });
 
   it.each([
-    ["pending", [{ workflowStepId: "code-review", phase: "pre-merge", status: "pending" }]],
-    ["failed", [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" }]],
-    ["missing", []],
-  ])("refuses externally landed work without a current required review approval: %s", async (_state, workflowStepResults) => {
+    ["pending", [{ workflowStepId: "code-review", phase: "pre-merge", status: "pending" }], {
+      gateId: "code-review", gateState: "not-approved", gateStatus: "pending",
+    }],
+    ["failed", [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" }], {
+      gateId: "code-review", gateState: "not-approved", gateStatus: "failed",
+    }],
+    /*
+    A gate with no row at all is refused through the unrun-gate sentence, which names no gate id, so the
+    refusal keeps the exact shape it had before RUFU-1097. An absent `approvalDetail` means "this refusal
+    names no gate" and is deliberately not spelled as a null — a null would claim the gate was consulted and
+    answered nothing.
+    */
+    ["missing", [], undefined],
+  ])("refuses externally landed work without a current required review approval: %s", async (_state, workflowStepResults, approvalDetail) => {
     const guardedTask = baseTask({
       enabledWorkflowSteps: ["code-review"],
       workflowStepResults: workflowStepResults as Task["workflowStepResults"],
@@ -492,9 +502,15 @@ describe("SelfHealingManager.reconcileLandedReviewTask", () => {
     }));
     const manager = managerWithStubs(store);
 
+    /*
+    FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097): the refusal now also names WHICH gate it
+    refused and the row it selected, so an operator can tell "the reviewer rejected this" from "the gate
+    reported but this lane does not read that as approval" without DB access.
+    */
     await expect(manager.reconcileLandedReviewTask("FN-9304", { source: "manual" })).resolves.toEqual({
       outcome: "ineligible",
       reason: "workflow-approval-blocked",
+      ...(approvalDetail && { approvalDetail }),
     });
     expect(updateTaskAtomic).not.toHaveBeenCalled();
   });
@@ -652,21 +668,41 @@ describe("reconcileLandedReviewTask durable refusal marker", () => {
     }
   });
 
-  it("records a refusal of an unmerged card nowhere — the marker belongs to the merged lane alone", async () => {
+  it("records the refusal of an unmerged card too — the marker repairs the silence, it is not a merged-lane perk", async () => {
+    /*
+    FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097) — this assertion is INVERTED on purpose.
+    It used to read "records a refusal of an unmerged card nowhere — the marker belongs to the merged lane
+    alone", and that was the true shape of RUFU-306's design: the marker was authored for merge-confirmed
+    cards. But `logMergeConfirmedReconcileRefusal` carries no `mergeConfirmed` guard, and the population
+    RUFU-718 belongs to was exactly the one this arm refuses — an unmerged card held by a required pre-merge
+    gate. Its refusal reached stdout only, so three retry attempts left nothing durable to compare, which is
+    the same invisibility RUFU-306 was written against, in a different arm.
+
+    What the widened population must not lose is the guarantee the old title was really guarding: no WRITE to
+    the card. The refusal stays a report; the assertions below keep `updateTaskAtomic` untouched.
+    */
     const guarded = baseTask({
       enabledWorkflowSteps: ["code-review"],
       workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" } as never],
     });
-    const { store, tasks } = storeWithTask(guarded);
+    const { store, tasks, updateTaskAtomic } = storeWithTask(guarded);
     (store as unknown as { getTaskWorkflowSelection: ReturnType<typeof vi.fn> }).getTaskWorkflowSelection = vi.fn(() => ({
       workflowId: "builtin:coding", stepIds: ["code-review"],
     }));
     const manager = managerWithStubs(store);
 
     await expect(manager.reconcileLandedReviewTask("FN-9304", { source: "manual" }))
-      .resolves.toEqual({ outcome: "ineligible", reason: "workflow-approval-blocked" });
+      .resolves.toEqual({
+        outcome: "ineligible",
+        reason: "workflow-approval-blocked",
+        approvalDetail: { gateId: "code-review", gateState: "not-approved", gateStatus: "failed" },
+      });
 
-    expect(reconcileRefusalLines(tasks.get("FN-9304"))).toEqual([]);
+    const lines = reconcileRefusalLines(tasks.get("FN-9304"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.startsWith(`${landedReviewReconcileLogMarker("workflow-approval-blocked")} `)).toBe(true);
+    expect(lines[0]!).toContain("for gate 'code-review'");
+    expect(updateTaskAtomic).not.toHaveBeenCalled();
   });
 
   it("keeps the successful outcomes silent: a resume and an awaiting-finalization pass write no refusal", async () => {

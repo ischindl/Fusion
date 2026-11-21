@@ -65,6 +65,22 @@ describe("RUFU-300 — gate release is read from the latest row", () => {
     expect(isGateReleased(row("plan-review", { status: "REVISE" }))).toBe(false);
     expect(isGateReleased(row("plan-review", { status: "pending" }))).toBe(false);
     expect(isGateReleased(row("plan-review", { status: "failed" }))).toBe(false);
+    /*
+    FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097) — may-RESUME-PAST is NOT widened:
+    An accepted terminal Plan Review close (`passed` + `CLOSE_NO_OP` + a leading sentinel) releases its gate
+    for MAY-EXECUTE (`isPlanReviewSatisfied`) and, as of RUFU-1097, for MAY-LAND (`evaluatePreMergeApprovals`).
+    It must stay unreleased HERE. Releasing a close forward is RUFU-599's measured reproduction 3: the card
+    resumes, executes the steps of the plan it just closed, and completes as ordinary work — which is exactly
+    why `mayResumePast` stayed untouched when the close was introduced. One row in this table is the cheapest
+    place the three authorities can be told apart, so it is pinned beside the APPROVE shapes rather than only
+    in `plan-review-terminal-close.test.ts`.
+    */
+    expect(isGateReleased(row("plan-review", {
+      status: "passed",
+      reviewKind: "plan",
+      verdict: "CLOSE_NO_OP",
+      notes: "NO-OP: the guard this card asks for already ships on main",
+    }))).toBe(false);
     expect(isGateReleased(undefined)).toBe(false);
   });
 

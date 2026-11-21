@@ -1,5 +1,6 @@
 import type { Task, WorkflowStepResult } from "../types.js";
 import { evaluateZeroCommitEmptyInputContentProof } from "./zero-commit-landing-proof.js";
+import { isTerminalPlanReviewCloseRow } from "./no-op-completion-marker.js";
 import { PLAN_REVIEW_GROUP_ID } from "../workflows/builtin-plan-review-group.js";
 import { FAST_MODE_BYPASS_ACTOR } from "../workflows/workflow-fast-lane.js";
 import { deriveStaleReviewCallbackAttemptId, isRequiredGateOwedVerdictReason, isWorkflowStepNotRun } from "../workflows/workflow-step-results.js";
@@ -547,9 +548,47 @@ function evaluateStep(
       hasOpenFindings: options.staleReviewCallbackWaiver?.hasOpenFindings === true,
       receipts: options.staleReviewCallbackWaiver?.receipts,
     });
+    /*
+    FNXC:PlanClosePreMergeApproval 2026-11-21-13:55 (RUFU-1097):
+    An ACCEPTED terminal Plan Review close is the fourth way a required pre-merge gate is satisfied, and
+    until now it satisfied none of them. The authoring route is FN-8841: the executor's
+    `finalizeAcceptedNoOpCompletion` (`packages/engine/src/executor/plan-review-no-op.ts`) records Plan Review
+    `passed` + verdict `CLOSE_NO_OP` when the reviewer closes the card as already-satisfied work, and
+    `workflow-step-verdict.ts` keeps that verdict Plan-Review-only, so no other gate can ever carry it. The
+    row identity belongs to RUFU-599/SANE-532 and lives in ONE place,
+    `isTerminalPlanReviewCloseRow` (`no-op-completion-marker.ts`); this clause consumes it and re-derives
+    nothing.
+
+    What was measured (RUFU-1097, three cards): RUFU-718 answered `fn task reconcile` with the bare
+    `workflow-approval-blocked` while its plan gate stood `passed`. Three authorities read that same row and
+    two of them refused it: `isPlanReviewSatisfied` said satisfied, `isGateReleased` said NOT released, and
+    both may-land doors - this predicate and `classifyPreMergeGateEvidence` - said `not-approved`, because
+    `approvedVerdict` knows only APPROVE/APPROVE_WITH_NOTES and `CLOSE_NO_OP` is neither. A closed card could
+    therefore never land, not even after an operator bypass of the other gate.
+
+    Boundaries that make this an identity, not a widening:
+    - The leading sentinel (`NO-OP:` / `NOOP:` / `PREMISE STALE:` / `DUPLICATE:` / `REDUNDANT:`) is part of the
+      identity because it is what legalised the close at the authoring gate; `passed` + `CLOSE_NO_OP` with
+      sentinel-less or empty `notes` stays `not-approved`. The status alone is never trusted.
+    - A `supersededAt` row cannot approve. That check is load-bearing HERE, not decorative:
+      `latestResultForStep` takes the array-last row and filters no supersession, so a superseded close can
+      reach this line as the selected row.
+    - `remediationArchivedAt` still refuses this row: the helper deliberately does not read that field, and
+      the archive guard immediately below still evaluates it, which is why the OR-ing sits INSIDE `approved`
+      and never after that guard.
+    - The identity is `PLAN_REVIEW_GROUP_ID`-keyed, so a forged `code-review` row or a custom plan-kind gate
+      cannot borrow it, and it does not route through the `isPlanDomain` local above or the
+      `reviewKind === "plan"` return below - those two plan notions answer their own questions (honest-not-run
+      suppression and plan-fingerprint non-comparison) and stay exactly as they were.
+    - The plan arm returns before `bindsContent`, so nothing here can relax the FN-180 content-binding
+      guarantee: a `code-review` or `reviewKind: "code"` row missing its `reviewInputFingerprint` is still
+      refused. A close row that DOES carry a fingerprint still reaches the same content comparison it reaches
+      today, because only `approved` changed.
+    */
     const approved = (result.status === "passed" && (requiresAuthoredVerdict ? approvedVerdict : (result.verdict === undefined || approvedVerdict)))
       || (result.status === "skipped" && (!!result.bypassedBy || receiptWaiver))
-      || notRunApproves;
+      || notRunApproves
+      || isTerminalPlanReviewCloseRow(result);
     /*
     FNXC:PreMergeApproval 2026-09-06-00:47:
     Remediation archives suppress automatic re-approval, but cannot disarm the audited FN-7720

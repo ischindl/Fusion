@@ -65,14 +65,14 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
      repetition logic calls these two in-review-stall helpers; the union import carries them. */
   getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
-  detectDependencyCycle, detectSelfDefeatingDependency, /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451): the partial-land sweep builds and reads its own park sentence through ONE core fact, so a wording change can never silently orphan the waiver that lets a zero-commit card reach `done`. */ evaluateNoCommitsNoOpFinalize, hasZeroCommitDeliveryAuthorization, isWorkspacePartialLandParkError, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
+  detectDependencyCycle, detectSelfDefeatingDependency, /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451): the partial-land sweep builds and reads its own park sentence through ONE core fact, so a wording change can never silently orphan the waiver that lets a zero-commit card reach `done`. */ evaluateNoCommitsNoOpFinalize, hasZeroCommitDeliveryAuthorization, isWorkspacePartialLandParkError, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, evaluatePreMergeAdmissionDecision, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
   isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker,
   /* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the stall ladder and the bounded park repair
      both consume the authored-REVISE-with-pending-remediation predicate from its single core seam. */
-  isAwaitingReviewRevision, findAwaitingReviewRevisionGate, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isAwaitingReviewRevision, findAwaitingReviewRevisionGate, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type PreMergeApprovalState, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -1935,7 +1935,7 @@ export type LandedReviewReconcileResult =
   landed-truth census names. Without this reason the arm would have had to report `raced` or `not-landed`
   for a refusal whose cause it actually knows.
   */
-  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "complete-lane-gate-evidence" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group" | "landing-proof-unproven"; repos?: LandedReviewWorkspaceRepoDetail[] };
+  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "complete-lane-gate-evidence" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group" | "landing-proof-unproven"; repos?: LandedReviewWorkspaceRepoDetail[]; approvalDetail?: PreMergeGateApprovalDetail };
 
 /*
 FNXC:LandedTruthReopen 2026-11-06-10:05 (RUFU-702):
@@ -2042,6 +2042,69 @@ exact shape or it will not be counted.
 */
 export function landedReviewReconcileLogMarker(reason: string): string {
   return `[landed-review reconcile: ${reason}]`;
+}
+
+/*
+FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+WHAT A GATE REFUSAL HAS TO SAY ABOUT ITSELF.
+
+Measured on RUFU-718: `fn task reconcile` answered the bare token `workflow-approval-blocked` for a card
+whose `plan-review` row stood `passed`, and that token was the whole answer on every surface. Two facts are
+missing from it, and the operator needs both to act — WHICH gate the authority refused, and WHAT ROW that
+authority selected when it refused. The gate id is recoverable from the merge door's own refusal sentence
+(`parsePreMergeGateApprovalBlocker`); the carrier is not, because the compact `evaluatePreMergeApprovals`
+projection drops the selected row by construction. `evaluatePreMergeAdmissionDecision` is the only function
+that exposes it, which is exactly why it was built (FN-288's missing-verdict repair reads the same field).
+
+Why the carrier matters more here than for any other refusal: for the disputed row the operator must be able
+to distinguish "the gate is not approved" from "the gate is approved and this lane does not accept that
+answer". `gateStatus: "passed"` beside `gateState: "not-approved"` is that distinction, and it is the same
+sentence the RUFU-805 decline was written for — a refusal the board cannot show is a refusal the operator
+cannot act on.
+
+The three-way divergence is REPORTED, never adjudicated here. May-EXECUTE (`isPlanReviewSatisfied`),
+may-LAND (`evaluatePreMergeApprovals`) and may-RESUME-PAST (`isGateReleased`) are three different authorities
+with three deliberately different answers, and reconciliation is nobody's decider among them: it names the
+gate and the row and performs no move. A future change to any of the three therefore still has to be made in
+that authority, not patched over at this report seam.
+
+Metadata discipline: every key is an id or a value from a closed enum (`PreMergeApprovalState`,
+`WorkflowStepResult["status"]`, `WorkflowStepResult["verdict"]`). No row prose, no notes, no paths.
+*/
+/** The gate half of a `workflow-approval-blocked` refusal: which gate, and the row the door selected. */
+export interface PreMergeGateApprovalDetail {
+  gateId: string;
+  gateState: PreMergeApprovalState;
+  /** The selected row's status; absent when the gate has no row at all. */
+  gateStatus?: WorkflowStepResult["status"];
+  /** The selected row's verdict; absent when the row records none. */
+  gateVerdict?: WorkflowStepResult["verdict"];
+}
+
+/**
+ * Derive the refused gate and its carrier for a merge-door blocker, or `undefined` when the blocker names no
+ * gate. Returning `undefined` — rather than a detail with nulls — is the contract: a non-gate-named blocker
+ * (`missing` → the unrun-gate sentence, `stale-content`, `unprovable-content`, incomplete steps, a pause)
+ * keeps its refusal shape byte-identical, so only the arm that genuinely knows a gate grows keys.
+ */
+export function resolvePreMergeGateApprovalDetail(
+  task: Pick<Task, "workflowStepResults" | "repositoryScope">,
+  requiredPreMergeStepIds: ReadonlySet<string>,
+  blocker: string | undefined,
+): PreMergeGateApprovalDetail | undefined {
+  const gateId = parsePreMergeGateApprovalBlocker(blocker);
+  if (!gateId) return undefined;
+  const gate = evaluatePreMergeAdmissionDecision(task, { requiredPreMergeStepIds })
+    .gates
+    .find((candidate) => candidate.workflowStepId === gateId);
+  // The door named a gate this authority no longer refuses: the card moved under us. Report nothing rather than a stale claim.
+  if (!gate || gate.state === "approved") return undefined;
+  return {
+    gateId,
+    gateState: gate.state,
+    ...(gate.selectedResult?.status !== undefined && { gateStatus: gate.selectedResult.status }),
+    ...(gate.selectedResult?.verdict !== undefined && { gateVerdict: gate.selectedResult.verdict }),
+  };
 }
 
 export class SelfHealingManager extends SelfHealingGitEvidence {
@@ -24213,7 +24276,36 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         reviewColumns,
         requiredPreMergeStepIds,
       });
-      if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
+      if (approvalBlocker) {
+        /*
+        FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+        This refusal used to be one bare token on all three surfaces, and RUFU-718 is the card that proves
+        a token is not an answer: its `plan-review` row stood `passed` with an accepted no-op close, and
+        `workflow-approval-blocked` said neither which gate nor that the gate's own row disagreed with the
+        refusal. The detail is read from the door's own blocker sentence plus the canonical admission
+        decision — no parallel gate logic is written here, and reconciliation adjudicates nothing: it names
+        the gate and the row it selected, and returns the same refusal it always returned.
+
+        The History line is the point of the exercise. Until now this arm wrote nothing durable at all, so
+        `logMergeConfirmedReconcileRefusal` now serves an unmerged card too: the method's name records the
+        population RUFU-306 authored it for, not a precondition — it has no `mergeConfirmed` guard, and its
+        own docstring names the defect it repairs (a refusal reaching only stdout). The dedup contract is
+        unchanged: a sweep records one line per (card, reason), an explicit `fn task reconcile` is a human
+        asking "why?" and earns its own line every time.
+        */
+        const approvalDetail = resolvePreMergeGateApprovalDetail(task, requiredPreMergeStepIds, approvalBlocker);
+        await this.logMergeConfirmedReconcileRefusal(
+          task,
+          options.source,
+          "workflow-approval-blocked",
+          approvalDetail?.gateId,
+        );
+        return {
+          outcome: "ineligible",
+          reason: "workflow-approval-blocked",
+          ...(approvalDetail && { approvalDetail }),
+        };
+      }
     }
     /*
     FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
@@ -25257,9 +25349,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               const reason = result.outcome === "not-landed" ? "not-landed" : result.reason;
               const key = `${task.id}:${reason}`;
               if (!this.absentBranchUnprovenAuditKeys.has(key)) {
+                /*
+                FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+                The gate half of an approval refusal rides this row too, so the audit surface, the card's
+                History line and `fn task reconcile` quote ONE measurement rather than three. The keys are
+                spread, never defaulted: a refusal that named no gate writes exactly the metadata it wrote
+                before, because an absent key means "this refusal names no gate" while `gateStatus: null`
+                would mean "the gate has no row" — two different claims, and RUFU-372's honest-absence rule
+                is the reason they stay distinct. Every value is an id or a closed-enum token; the door's
+                refusal sentence stays out of metadata by convention and lives on the History line.
+                */
+                const approvalDetail = result.outcome === "ineligible" ? result.approvalDetail : undefined;
                 const audit = await emitBoundedRunAuditWithOutcome(this.store, {
                   taskId: task.id, agentId: "self-healing", runId: generateSyntheticRunId("reconcile-absent-branch", task.id), domain: "database", mutationType: "task:reconcile-absent-branch-unproven", target: task.id,
-                  metadata: { taskId: task.id, source: "self-healing", branch, baseBranch, reason },
+                  metadata: { taskId: task.id, source: "self-healing", branch, baseBranch, reason, ...(approvalDetail ?? {}) },
                 }, { log });
                 if (audit.outcome === "recorded") this.absentBranchUnprovenAuditKeys.add(key);
               }

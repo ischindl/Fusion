@@ -9,7 +9,7 @@ but the merged body has no call site, so keeping them would be dead references. 
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
 import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, findApprovalDestroyingRetry, recordApprovalDestroyingRetryRefusal, buildPlanningStrandedRetryPatch, classifyPlanningStrandedRetry, describePlanningStrandedRetryAdmission, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
-import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
+import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager, type PreMergeGateApprovalDetail } from "@fusion/engine";
 /*
 FNXC:SpecLockGuard 2026-11-19-10:15 (RUFU-535): `fn task lock-census` reads through the SAME three core
 seams the approval funnel uses — the probe, the binding derivation, and the spec reader — so a census
@@ -1628,6 +1628,41 @@ export function parseTaskReconcileArgs(args: string[]): { id: string | null; reo
   return { id, reopen: args.slice(1).includes("--reopen") };
 }
 
+/*
+FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+The one sentence `fn task reconcile` prints when a required pre-merge gate is what stands between a landed
+card and finalization. Kept pure for the same reason `parseTaskReconcileArgs` is: the CLI's value here is the
+WORDS it puts in front of an operator, and a spawned-CLI test cannot assert them without a store, a repo and
+a git worktree.
+
+Why the bare token was not enough: RUFU-718 printed `Cannot reconcile RUFU-718: workflow-approval-blocked.`
+three times while its `plan-review` row read `passed` and Code Review carried an audited operator bypass.
+The token names no gate, and the two situations it covers need opposite remedies — a gate that was never run
+("go run it") versus a gate whose answer this lane does not accept ("the gate reported; the refusal is the
+door's, not the reviewer's"). `gateStatus: "passed"` beside `gateState: "not-approved"` is the only pair that
+tells them apart, so it is quoted verbatim rather than paraphrased.
+
+Nothing here decides anything: the gate id and the carrier arrive from the engine's single derivation over
+the merge door's own blocker sentence and the canonical admission decision. No row prose is available by
+construction — `gateStatus` and `gateVerdict` are closed-enum tokens — so the sentence cannot leak reviewer
+notes, and it never claims an approval or a move that did not happen.
+*/
+export function formatApprovalBlockerRefusal(id: string, detail: PreMergeGateApprovalDetail): string {
+  const carrier = [
+    detail.gateStatus && `status ${detail.gateStatus}`,
+    detail.gateVerdict && `verdict ${detail.gateVerdict}`,
+  ].filter(Boolean).join(", ");
+  const rowClause = !carrier
+    ? "it has no result row at all"
+    : detail.gateStatus === "passed"
+      // The contradiction the operator has to see to act: the gate reported, this lane did not accept it.
+      ? `its latest row reads ${carrier} — the gate reported, but this lane does not accept that answer as approval`
+      : `its latest row reads ${carrier}`;
+  return `Cannot reconcile ${id}: required pre-merge gate '${detail.gateId}' is ${detail.gateState}; ${rowClause}. `
+    + `Reconcile never fabricates a verdict and never re-runs a gate — run '${detail.gateId}' or record an audited bypass `
+    + `(fn task bypass-review ${id}); this refusal is also on this task's History.`;
+}
+
 /** Reconcile an in-review card after its already-landed branch was deliberately cleaned up. */
 export async function runTaskReconcile(id: string, projectName?: string, options: { reopen?: boolean } = {}) {
   const context = await resolveBoardContext(projectName, id, "resolve project");
@@ -1775,6 +1810,25 @@ export async function runTaskReconcile(id: string, projectName?: string, options
       */
       if (result.reason === "complete-lane-gate-evidence") {
         console.error(`Cannot reconcile ${id}: the card already sits in its complete column while a gate its workflow requires has no approving evidence there. Reconcile never moves a card backward out of a terminal lane and never fabricates a verdict — run the gate (or record an audited bypass), and see this task's History for the finding.`);
+        await closeBoardContextAndExit(context, 1);
+        return;
+      }
+      /*
+      FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+      The bare token was the whole answer, and RUFU-718 proves a token is not an answer. The card sat
+      `in-review` with `plan-review` = `passed` and Code Review operator-bypassed, and every retry printed
+      `Cannot reconcile RUFU-718: workflow-approval-blocked.` — naming no gate and hiding the one fact that
+      makes the refusal actionable: the gate's own row says `passed` while the door says it is not approved.
+      That is the difference between "go run a review" and "this lane does not accept the answer your gate
+      already gave", and only the operator can tell which one they are holding.
+
+      So name the gate and quote the row the authority selected. Both come from the engine's derivation
+      (`resolvePreMergeGateApprovalDetail`) — the CLI re-derives no gate logic of its own, and says nothing
+      it cannot support when the refusal named no gate (that case falls through to the sentence below,
+      byte-identical).
+      */
+      if (result.reason === "workflow-approval-blocked" && result.approvalDetail) {
+        console.error(formatApprovalBlockerRefusal(id, result.approvalDetail));
         await closeBoardContextAndExit(context, 1);
         return;
       }

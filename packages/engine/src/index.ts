@@ -1189,7 +1189,7 @@ export {
   type CompactionGateResult,
   type CompactionGateSession,
 } from "./chat-context-guard.js";
-export { SelfHealingManager, type SelfHealingOptions, type RebindResult, type LandedReviewReconcileResult } from "./self-healing.js";
+export { SelfHealingManager, type SelfHealingOptions, type RebindResult, type LandedReviewReconcileResult, type PreMergeGateApprovalDetail, resolvePreMergeGateApprovalDetail } from "./self-healing.js";
 
 /*
 FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):

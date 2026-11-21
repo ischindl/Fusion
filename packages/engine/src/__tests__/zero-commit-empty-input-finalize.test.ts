@@ -260,6 +260,64 @@ describe("RUFU-365 replay: an approved zero-commit card can finally be closed", 
     expect(mutationTypes).toContain("task:reconcile-absent-branch-unproven");
     expect(store.row.column).toBe("in-review");
   });
+
+  /*
+  FNXC:ApprovalRefusalCarrier 2026-11-21-14:30 (RUFU-1097):
+  The third surface of an approval refusal. `fn task reconcile` prints it, `logEntry` puts it on the card, and
+  this row is what a query sees — all three now name the same gate and the same carrier, because the sweep
+  spreads the ONE detail the fence derived rather than re-deriving its own.
+
+  The honest-absence half matters as much as the present half: an absent key means "this refusal names no
+  gate", while `gateStatus: null` would mean "the gate was consulted and has no row". Those are different
+  claims and RUFU-372's rule is that they must not share a spelling, so the keys are spread, never defaulted.
+  */
+  it("names the refused gate and its carrier on the -unproven row, and grows no key when the refusal names none", async () => {
+    cleanZeroAheadEvidence();
+    const rejected = wedgedCard({
+      id: "RUFU-1097",
+      branch: "fusion/rufu-1097",
+      noCommitsExpected: undefined,
+      workflowStepResults: [{ workflowStepId: "code-review", status: "failed", verdict: "REVISE" }],
+    });
+    const store = storeFor(rejected);
+
+    await reconcileSweep(fenceFor(store));
+
+    const row = store.recordRunAuditEvent.mock.calls
+      .map((call) => call[0] as { mutationType?: string; metadata?: Record<string, unknown> })
+      .find((call) => call.mutationType === "task:reconcile-absent-branch-unproven");
+    expect(row?.metadata).toMatchObject({
+      reason: "workflow-approval-blocked",
+      gateId: "code-review",
+      gateState: "not-approved",
+      gateStatus: "failed",
+      gateVerdict: "REVISE",
+    });
+    // Closed-enum tokens and an id only — the reviewer's notes and the door's sentence stay off this row.
+    expect(JSON.stringify(row?.metadata)).not.toContain("AUTO_MERGE_RETRY_REJECTED");
+    expect(JSON.stringify(row?.metadata)).not.toContain("no provable approval");
+  });
+
+  it("keeps the -unproven row's metadata exactly as it was for a refusal that names no gate", async () => {
+    cleanZeroAheadEvidence();
+    // A gate with no row at all is refused through the unrun-gate sentence, which carries no gate id.
+    const store = storeFor(wedgedCard({
+      id: "RUFU-1098",
+      branch: "fusion/rufu-1098",
+      noCommitsExpected: undefined,
+      workflowStepResults: [],
+    }));
+
+    await reconcileSweep(fenceFor(store));
+
+    const row = store.recordRunAuditEvent.mock.calls
+      .map((call) => call[0] as { mutationType?: string; metadata?: Record<string, unknown> })
+      .find((call) => call.mutationType === "task:reconcile-absent-branch-unproven");
+    expect(row?.metadata).toBeDefined();
+    for (const key of ["gateId", "gateState", "gateStatus", "gateVerdict"]) {
+      expect(row?.metadata).not.toHaveProperty(key);
+    }
+  });
   it("keeps the core-side marker constant equal to the engine's fingerprint fact", () => {
     /*
     FNXC:ZeroCommitEmptyInputContentProof 2026-11-03-19:15 (RUFU-384):
@@ -371,7 +429,13 @@ describe("RUFU-365 replay: the line RUFU-337 drew is still there", () => {
     // Stronger than `not-landed`: the fence's own approval pre-check refuses BEFORE the discharge arm runs,
     // so an empty-input marker can never stand in for an approval that was never given. No marker-shaped row
     // reaches the delivery door at all.
-    expect(result).toEqual({ outcome: "ineligible", reason: "workflow-approval-blocked" });
+    // RUFU-1097: the refusal also names the gate and the row it refused, so the operator sees REVISE/failed
+    // rather than a bare token — a reviewer answered this card, and that is the actionable fact.
+    expect(result).toEqual({
+      outcome: "ineligible",
+      reason: "workflow-approval-blocked",
+      approvalDetail: { gateId: "code-review", gateState: "not-approved", gateStatus: "failed", gateVerdict: "REVISE" },
+    });
     expect(collectZeroCommitEvidence).not.toHaveBeenCalled();
     expect(store.row.mergeDetails?.mergeConfirmed).toBeUndefined();
   });

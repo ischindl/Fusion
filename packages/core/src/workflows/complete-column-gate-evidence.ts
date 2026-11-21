@@ -5,6 +5,7 @@ import {
   isAuditedOperatorBypass,
   requiresAuthoredReviewVerdict,
 } from "../merge/pre-merge-approval.js";
+import { isTerminalPlanReviewCloseRow } from "../merge/no-op-completion-marker.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
 import { TransitionRejectionError } from "../task-store/errors.js";
 import type { TransitionRejection } from "../tasks/transition-types.js";
@@ -152,6 +153,22 @@ Everything else agrees with the door because it reuses the door's own predicates
 (`isAuditedOperatorBypass`, `requiresAuthoredReviewVerdict`). The parity test in
 `__tests__/complete-column-gate-evidence.test.ts` pins both the agreement and these two exceptions,
 so a future change to merge authority cannot silently move this gate.
+
+FNXC:PlanCloseGateEvidence 2026-11-21-13:55 (RUFU-1097) — a third agreement, and one honest leftover:
+An ACCEPTED terminal Plan Review close (`passed` + `CLOSE_NO_OP` + a leading sentinel) is the THIRD state
+where this classifier and the merge door now answer the same thing, and it is an agreement, not a new
+exception: both call the one exported identity, `isTerminalPlanReviewCloseRow` in
+`merge/no-op-completion-marker.ts` (RUFU-599/SANE-532). Before this the
+classifier refused that row (`passed` with a defined non-APPROVE verdict -> `not-approved`), which is why an
+operator's manual move to a complete lane was refused for a card Plan Review had already closed — the same
+row three authorities read three ways. Nothing is re-derived here.
+
+One residue of that agreement is a genuine permissive divergence and is recorded rather than hidden: a close
+carrying `remediationArchivedAt` classifies `satisfied` here (this switch never reads that field for any
+shape) while the merge door still refuses it, because its archive suppression runs on `approved`. That is
+the same direction as exception 1 — the terminal lane opens, publication does not — and the door stays the
+stricter authority, so no content can merge on an archived carrier. It is pinned by name in the parity test
+so widening the door's archive guard cannot silently widen this one too.
 */
 /** Classify one required pre-merge gate from its latest row (delegating waiver/verdict-owed truth). */
 export function classifyPreMergeGateEvidence(
@@ -168,6 +185,8 @@ export function classifyPreMergeGateEvidence(
       return "advisory";
     case "passed": {
       if (result.verdict === "APPROVE" || result.verdict === "APPROVE_WITH_NOTES") return "satisfied";
+      // RUFU-1097: the one accepted-close identity the merge door uses, so this lane cannot disagree with it.
+      if (isTerminalPlanReviewCloseRow(result)) return "satisfied";
       if (result.verdict !== undefined) return "not-approved";
       // Status-only `passed`: a gate that owed no authored verdict is satisfied by its own pass.
       return requiresAuthoredReviewVerdict(gateId, result) ? "not-approved" : "satisfied";
