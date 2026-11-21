@@ -40,6 +40,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { storeLog } from "../store.js";
+import { projectDependencyBindingsFromPromptText } from "./dependency-projection.js";
 import { ARCHIVED_SENTINEL_LANES } from "../project-lane-vocabulary.js";
 
 
@@ -484,32 +485,41 @@ export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Pr
     return job.then(copyPromptSteps);
 }
 
+/**
+ * Project the task row's dependency edges out of the card's `PROMPT.md`.
+ *
+ * FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+ * The signature and the `Promise<string[]>` return are unchanged on purpose (36 test mocks and the
+ * durable-write inventory name this method), but the body no longer owns a prose-blind regex. It hands
+ * the document to `projectDependencyBindingsFromPromptText` and returns ONLY the projected half, so a
+ * bullet whose own prose says "not a dependency" or "does not wait for" stops reaching the row as an
+ * edge. That matters because the store treats a newly appearing edge as `hasNewDeps`, which moves the
+ * card's lane and logs "Re-seeded for re-specification - new dependency added" on every pass that
+ * re-stamps it (measured on RUFU-747: two whole planning passes bought by two denying bullets).
+ *
+ * It never rewrites `PROMPT.md`. Spec-lock canonicalizes the document textually, so the guard may only
+ * decide which ids reach the row; the text the operator reads stays the author's.
+ *
+ * A denial is reported once per card through the shared warn-once gate, keyed on the CARD ID alone, so
+ * an under-projected specification is diagnosable in the daemon log without repeating on every read.
+ * That gate is the same one `reads.ts` uses for the steps funnel; unlike that funnel this call is not a
+ * `catch` clause, so it stays outside `prompt-parse-warning-gate.test.ts`'s census and needs no
+ * allow-list entry.
+ */
 export async function parseDependenciesFromPromptImpl(store: TaskStore, id: string): Promise<string[]> {
     const dir = store.taskDir(id);
     const promptPath = join(dir, "PROMPT.md");
     if (!existsSync(promptPath)) return [];
 
     const content = await readFile(promptPath, "utf-8");
+    const { projected, negated } = projectDependencyBindingsFromPromptText(content);
 
-    // Find the ## Dependencies section.
-    // We locate the heading then slice to the next heading (or end of file)
-    // to avoid multiline `$` anchor issues with lazy quantifiers.
-    const headingMatch = content.match(/^##\s+Dependencies\s*$/m);
-    if (!headingMatch) return [];
-
-    const startIdx = headingMatch.index! + headingMatch[0].length;
-    const rest = content.slice(startIdx);
-    const nextHeading = rest.search(/\n##?\s/);
-    const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-
-    const ids: string[] = [];
-    const taskIdRegex = /^-\s+\*\*Task:\*\*\s+([A-Z]+-\d+)/gm;
-    let match;
-    while ((match = taskIdRegex.exec(section)) !== null) {
-      ids.push(match[1]);
+    if (negated.length > 0) {
+      const detail = `withheld ${negated.length} negated dependency bullet(s) from the dependency projection for ${id}: ${negated.join(", ")}`;
+      if (shouldWarnPromptParseFailure(store, id, detail)) storeLog.warn(`[task-detail] ${detail}`);
     }
 
-    return ids;
+    return projected;
 }
 
 export async function parseFileScopeFromPromptImpl(store: TaskStore, id: string): Promise<string[]> {

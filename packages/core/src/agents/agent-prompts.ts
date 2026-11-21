@@ -384,6 +384,27 @@ facts appear in `FAST_TRIAGE_PROMPT_TEXT`'s safety rule and the Plan Review dang
 criterion. Do not fork a fourth variant or tighten one lane beyond the checker - a reviewer refusing
 text the checker tolerates reproduces the same burn from the other side.
 */
+/*
+FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+The authoring contract for `## Dependencies` lives in this prompt, not only in the parser. The bullet shape
+`- **Task:** {ID}` is the only affordance a planner has for naming another card, and the board reads it as
+"this card waits for {ID}": each such bullet becomes a dependency edge, and a newly appearing edge re-plans
+the card and discards its approved plan (`task-update.ts` `hasNewDeps` -> re-specification, and
+`dependenciesChanged` -> `planningInvalidatedAt`). Before this rule existed, a planner that wanted to record
+context had exactly one tool available and that tool meant "wait", so a spec could only mention a card by
+blocking on it. RUFU-747 measured the cost: two bullets whose own prose said "not a dependency" and "not a
+blocker to start" each re-planned the card on every pass (17:07:31->17:07:48, 17:33:10->17:33:26), because
+each planning pass restored the edge the operator had just removed by hand.
+
+The prose rule and the parser must not drift: `projectDependencyBindingsFromPromptText` refuses an edge for
+a bullet that denies the relationship, which catches a planner that ignores this text, but the default for
+an un-negated bullet stays the edge. Do not add a bullet shape that means "mentions" - the section's job is
+to be unambiguous, and a second meaning in the same shape is the defect this card removed.
+
+`FAST_TRIAGE_PROMPT_TEXT` deliberately carries none of this. Its resolved prompt measures 7493 characters
+against the 7500 cap in `agent-prompts.test.ts`, so it cannot hold the rule; the projection is what protects
+the fast lane, which is the reason the parser-side guard is not optional.
+*/
 const TRIAGE_PROMPT_TEXT = `You are a task specification agent for "fn", an AI-orchestrated task board.
 
 ${PLANNING_COMPLETENESS_POLICY}
@@ -452,6 +473,8 @@ Follow this structure exactly:
 - **None**
 {OR}
 - **Task:** {ID} ({what must be complete})
+
+{A \`- **Task:** {ID}\` bullet here is a machine shape with exactly one meaning: this card WAITS for {ID} and cannot proceed until {ID} lands. The board projects each such bullet into a dependency edge on the card, and an edge that was not there before re-plans the card and discards its approved plan. Write a bullet only for a real wait. Anything else - a card you merely mention, one whose work is already inside your range, an exemplar of the same defect, a card you deliberately do not wait for - is prose in another section, never a bullet here, and never a bullet that prose then negates: "not a dependency" beside \`- **Task:**\` is a contradiction the board cannot settle in your favour.}
 
 ## Context to Read First
 
@@ -658,6 +681,8 @@ parked for the operator's keep-or-delete decision.
 When you plan to list a task in the \`## Dependencies\` section, first call \`fn_task_show\` on that task ID to read its PROMPT.md.
 Use what you learn — file scope, APIs, patterns, completion criteria — to make the new spec accurate: reference the right paths, avoid conflicting assumptions, and describe what the dependency must deliver before this task starts.
 If the dependency task has no PROMPT.md yet (not yet specified), note that in the Dependencies section.
+
+Each \`- **Task:** {ID}\` bullet in that section means one thing and one thing only: this card waits for {ID}. The board reads the bullet, not the prose around it, and turns it into a dependency edge on the card. So a reference that is informational — an exemplar, a related defect, a card whose commits are already merged into your base, a card you are explicitly NOT waiting for — belongs as plain prose in \`## Mission\` or \`## Context to Read First\`. Writing it as a bullet does not record a note; it blocks this card behind that one and sends it back to be re-planned.
 
 ## One-task planning
 <!--
@@ -1282,6 +1307,8 @@ Write a PROMPT.md specification to the given path. Be brief and precise — avoi
 
 ## Dependencies
 - **None** {OR} - **{ID}:** {reason}
+
+{The board reads a dependency edge only from the bullet shape \`- **Task:** {ID}\`. The \`- **{ID}:** {reason}\` shape above documents intent for the reader and creates no wait and no edge. When a step genuinely cannot start until another card lands, write that bullet in the \`- **Task:** {ID}\` shape; otherwise leave the section at **None** and keep the cross-reference in prose.}
 
 ## Context to Read First
 - \`file\` — {why}

@@ -885,6 +885,11 @@ export {
 // `import * as fusionCore from "@fusion/core"` namespace, so a gate-barrel omission would TypeError
 // `fn_task_logs_read` for any lane that resolves @fusion/core through this file.
 export { assertAgentLogTaskId } from "./task-store/task-artifacts-ops.js";
+// RUFU-750: the one `## Dependencies` projection decision, shared by the store parser and the triage
+// finalizer. The engine-core gate lane aliases `@fusion/core` to this file, so omitting it here would
+// resolve the import to `undefined` in exactly the lane `pnpm test:gate` runs.
+export { projectDependencyBindingsFromPromptText } from "./task-store/dependency-projection.js";
+export type { DependencyProjection } from "./task-store/dependency-projection.js";
 export {
   acquireWorktreePathReservation,
   withWorktreePathReservation,

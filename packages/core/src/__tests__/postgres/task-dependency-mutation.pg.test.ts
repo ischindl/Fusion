@@ -683,4 +683,91 @@ pgTest("TaskStore dependency mutations (PostgreSQL)", () => {
       store.updateTaskDependencies(a.id, { operation: "add", dependency: c.id }),
     ).rejects.toThrow(/Dependency cycle detected/);
   });
+
+  /*
+  FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+  The store-seam half of the negated-dependency fix. `projectDependencyBindingsFromPromptText` stops a
+  denied bullet from ever creating an edge; this pair proves the other half - that retiring an edge an
+  earlier prose-blind pass already stamped is a ONE-TIME cost rather than a loop. The store derives two
+  separate consequences from a dependency write and only the first is optional:
+  `hasNewDeps` -> re-specification (lane move plus the "new dependency added" history line), and
+  `dependenciesChanged` -> `planningInvalidatedAt` -> `needs-replan`, dropped approval, superseded Plan
+  Review evidence. A shrink takes only the second leg, and re-writing the resulting set changes nothing,
+  which is the fixed point that ends the churn RUFU-747 paid twice (17:07:31->17:07:48, 17:33:10->17:33:26).
+  */
+  it("charges only plan invalidation for a shrink-only dependency write, and nothing for its repeat", async () => {
+    const falseEdge = await store.createTask({ description: "projection false edge", column: "done" });
+    const realEdge = await store.createTask({ description: "projection real edge", column: "done" });
+    const card = await store.createTask({
+      description: "projection card",
+      column: "todo",
+      dependencies: [falseEdge.id, realEdge.id],
+    });
+    await store.updateTask(card.id, {
+      approvedPlanFingerprint: "sha256:projection-approved",
+      workflowStepResults: [{
+        workflowStepId: "plan-review",
+        workflowStepName: "Plan Review",
+        status: "passed",
+        completedAt: "2026-11-13T19:11:00.000Z",
+      }],
+    });
+    const beforeShrink = await store.getTask(card.id);
+    const logLengthBefore = beforeShrink.log.length;
+
+    // The shrink the finalizer now writes: the projected set, with the false edge retired.
+    await store.updateTask(card.id, { dependencies: [realEdge.id] });
+
+    const afterShrink = await store.getTask(card.id);
+    expect(afterShrink.dependencies).toEqual([realEdge.id]);
+    /*
+    Leg A is charged and MUST stay charged: an approval bound to the retired set is exactly the drift
+    spec-lock exists to detect, so asserting "no needs-replan" here would be asking for the wrong fix.
+    */
+    expect(afterShrink.status).toBe("needs-replan");
+    expect(afterShrink.approvedPlanFingerprint).toBeUndefined();
+    expect(afterShrink.workflowStepResults).toEqual([
+      expect.objectContaining({
+        workflowStepId: "plan-review",
+        status: "passed",
+        supersededReason: "dependency-change",
+      }),
+    ]);
+    // Leg B is not: nothing NEW appeared, so no re-specification notice and no lane move.
+    expect(afterShrink.column).toBe(beforeShrink.column);
+    const shrinkNotice = afterShrink.log.slice(logLengthBefore).filter((entry) => /for re-specification/.test(entry.action));
+    expect(shrinkNotice).toEqual([]);
+
+    /*
+    The fixed point. The next planning pass projects the same bytes and re-writes the same set; a write
+    that changes nothing must charge nothing, or the card re-plans itself forever - which is the defect
+    this card removes.
+    */
+    const logLengthBeforeRepeat = afterShrink.log.length;
+    await store.updateTask(card.id, { dependencies: [realEdge.id] });
+    const afterRepeat = await store.getTask(card.id);
+    expect(afterRepeat.dependencies).toEqual([realEdge.id]);
+    expect(afterRepeat.status).toBe("needs-replan");
+    expect(afterRepeat.column).toBe(afterShrink.column);
+    expect(afterRepeat.workflowStepResults).toEqual(afterShrink.workflowStepResults);
+    expect(afterRepeat.log.slice(logLengthBeforeRepeat)).toEqual([]);
+  });
+
+  it("still charges re-specification when an edge is genuinely added, next to a shrink in the same write", async () => {
+    // The contrast that makes the absence above meaningful: the additive leg keeps firing on a real wait.
+    const retired = await store.createTask({ description: "contrast retired edge", column: "done" });
+    const arrived = await store.createTask({ description: "contrast new edge", column: "done" });
+    const card = await store.createTask({
+      description: "contrast card",
+      column: "todo",
+      dependencies: [retired.id],
+    });
+
+    await store.updateTask(card.id, { dependencies: [arrived.id] });
+
+    const updated = await store.getTask(card.id);
+    expect(updated.dependencies).toEqual([arrived.id]);
+    expect(updated.status).toBe("needs-replan");
+    expect(updated.log.some((entry) => /re-specification/.test(entry.action))).toBe(true);
+  });
 });

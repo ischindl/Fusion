@@ -1146,6 +1146,9 @@ export {
 export { writePromptFileAtomic, promptByteLength, isPromptWriteIntegrityError, PromptWriteIntegrityError, isPromptShrinkRejectedError, PromptShrinkRejectedError, isMaterialPromptShrink, largestPriorPromptBytes, assertNoAuthoritativePromptShrink, PROMPT_SHRINK_MIN_PRIOR_BYTES, PROMPT_SHRINK_MIN_RATIO } from "./task-store/prompt-file.js";
 // RUFU-204: the one shared task-id validator guarding every agent-log read against a path-shaped target.
 export { assertAgentLogTaskId } from "./task-store/task-artifacts-ops.js";
+// RUFU-750: the one `## Dependencies` projection decision, shared by the store parser and the triage finalizer.
+export { projectDependencyBindingsFromPromptText } from "./task-store/dependency-projection.js";
+export type { DependencyProjection } from "./task-store/dependency-projection.js";
 export {
   acquireWorktreePathReservation,
   withWorktreePathReservation,

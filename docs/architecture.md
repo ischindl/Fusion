@@ -160,6 +160,28 @@ The conservative stranded-shape recovery claims only a complete non-seed prompt 
 <!-- FNXC:TaskReset 2026-08-22-18:15: Reset holds this non-reentrant lock while it cancels planner ownership and clears discarded output, so planner publications re-check their attempt generation inside the authoritative lock-held mutation. The reset disposer only aborts/disposes and unregisters its own planning paths; it never waits for a finalizer that needs this lock. -->
 A task Reset is therefore a planner-inclusive but lock-free cancellation fence. A surviving self-owned worktree registration is reconciled only after normal live-owner and idle checks, while live or foreign holders remain conflicts rather than force-removal candidates.
 
+## Dependency projection from `PROMPT.md`
+
+<!--
+FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+Written from a measured reproduction, not a hypothesis: RUFU-747 paid two complete planning passes
+(17:07:31->17:07:48 and 17:33:10->17:33:26) for two dependency bullets whose own prose said "not a
+dependency" and "not a blocker to start", because the projection could not read the difference.
+-->
+
+`projectDependencyBindingsFromPromptText()` in `packages/core/src/task-store/dependency-projection.ts` is the one decision that turns a `## Dependencies` section into edges. It is pure and fs-free, and `parseDependenciesFromPrompt` is its only production reader besides the planning finalizer, so the store and the finalizer cannot disagree about what a bullet means.
+
+The invariant: **a `- **Task:** <ID>` bullet inside `## Dependencies` means "this card waits for <ID>", and only that.** The section slice (heading to the next `#`/`##`) and the id language `[A-Z]+-\d+` are unchanged from the prose-blind regex it replaced, and the default is unchanged too: a bullet with no recognized denial projects an edge. Two closed phrase lists decide the exception - a negated bullet is never an edge. Matching is per occurrence and negation-aware, so a bullet that both names a wait and disclaims a different relationship keeps the wait; positive beats negation for the same id, whichever order they appear in.
+
+The reason this is an invariant and not a parsing preference is what the store derives from the write. A dependency id that was not on the row before is `hasNewDeps`, which moves the card and writes "Re-seeded for re-specification - new dependency added"; and `dependenciesChanged` - true for ANY set change, removals included - stamps `planningInvalidatedAt`, applied as `status = "needs-replan"`, a cleared `approvedPlanFingerprint`, and superseded Plan Review evidence. So one unreadable bullet cost a full planning pass, and hand-deleting the resulting edge was futile because the next pass projected it again.
+
+Two consequences every reader must respect:
+
+- **A denied bullet creates no edge, so it charges neither leg.** The finalizer's additive write is untouched: a genuine new wait keeps charging re-specification and invalidation exactly as before.
+- **A false edge already on the row converges instead of oscillating.** When the section projects nothing but names denials, the finalizer submits a *shrink-only* write as a function patch to `updatePlanningStateIfStillCurrent`, computed from the row read inside the task lock, never from the row the planner was handed - so an edge another writer added during the planner's run survives. Only an id currently on the row, named by a denying bullet, and not the card's own lineage parent is dropped; when nothing qualifies, the patch carries no `dependencies` key and the store sees no transition at all. The shrink legitimately invalidates the plan once (an approval bound to the retired set is precisely the drift spec-lock detects), and the pass after that re-writes an identical set and invalidates nothing. That fixed point is pinned on the real store seam in `task-dependency-mutation.pg.test.ts`.
+
+The authoring half lives in the planner prompts: the bullet shape is stated where the planner meets it, and the fast lane is deliberately excluded because its resolved prompt measures 7493 of the 7500-character budget - the parser-side guard is what protects that lane. The projection never rewrites `PROMPT.md`, never clears `dependencies` when nothing was denied, and adds no public `TaskStore` surface.
+
 ## Unchanged-spec release predicate and its budget scopes (RUFU-527)
 
 A planner session that finishes without touching `PROMPT.md` is the one planning outcome with two opposite meanings, and the release predicate decides which one a card gets. It is `specReleasableUnchanged` in `packages/engine/src/triage.ts`, and it asks five things of the artifact the planner left behind: the pass changed nothing, no dispatch-shape veto fired, the content is non-empty, the ONE deterministic validator (`validateGeneratedPrompt`, never re-run and never widened per call site) returns null for it, and it is neither the engine's own seed prompt (`isUnplannedSeedPrompt`) nor a `DUPLICATE:`-only redirect (`isDuplicateRedirectOnlyPrompt`) — the same two classifiers `hold-release` and the "Queued to plan" badge use, so triage cannot release a state the admission door then refuses. A release is an ordinary handoff: `tryFinalizeExplicitDuplicateMarker` then `finalizeApprovedTask`, with their human-approval, gate-ordering, fingerprint, and spec-drift checks intact. The card gets one History sentence (`PLANNER_NOOP_RELEASE_NO_PROJECTION_LOG`) saying the plan released on its own merits.

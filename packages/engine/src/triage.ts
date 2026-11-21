@@ -37,6 +37,9 @@ import {
   STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
   // FNXC:TaskFollowUp 2026-09-17-16:10: FN-513's shared sub-type test; never re-derived here.
   isFollowUpTask,
+  // FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750): the one `## Dependencies` decision, shared with
+  // the store parser so the finalizer and the parser cannot disagree about the same document.
+  projectDependencyBindingsFromPromptText,
   isTaskAwaitingPlanning,
   isFastExecutionMode,
   getTaskDuplicateLineage,
@@ -6847,6 +6850,38 @@ export class TriageProcessor {
 
     const parsedDeps = await this.store.parseDependenciesFromPrompt(task.id);
 
+    /*
+    FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+    Invariant: a dependency edge from `PROMPT.md` arises only from a bullet that expresses waiting. A
+    bullet that denies the relationship ("not a dependency", "does not wait for") is a note, and it must
+    create no edge and no re-seed.
+
+    The old behaviour read the section with one prose-blind regex, so every `- **Task:** <ID>` bullet was
+    an edge. A new edge is `hasNewDeps` in the store, which moves the lane and logs "Re-seeded for
+    re-specification - new dependency added", so a card whose own specification denied the relationship
+    threw itself back into planning on every pass (measured on RUFU-747: passes 17:07:31->17:07:48 and
+    17:33:10->17:33:26 bought by two such bullets), and hand-deleting the edge on the row only made the
+    next pass restore it.
+
+    The denied ids come from the text this finalizer already holds (`written`), never from a second store
+    call or a second copy of the regex, so the parser's `projected` list and this `negated` list are one
+    reading of one document.
+
+    The honest cost, stated so nobody "fixes" it: a card whose row already carries a false edge is
+    converged by the shrink below, and a dependency-set change invalidates the approved plan by contract
+    (`task-update.ts` Leg A: `dependenciesChanged` -> `planningInvalidatedAt` -> `needs-replan`, cleared
+    `approvedPlanFingerprint`, superseded Plan Review evidence). That is the same consequence an
+    operator-driven removal already has, it is paid ONCE per already-afflicted card, and it is what the
+    alternative must never be: suppressing the invalidation would leave `approvedPlanFingerprint` bound to
+    a dependency set the row no longer holds, which is exactly the drift spec-lock exists to detect. What
+    this card forbids is Leg B (the lane move plus the "new dependency added" line) for a denied bullet,
+    and any REPEAT of the invalidation on a stable specification - after the one shrink, the projection
+    writes an identical set and invalidates nothing.
+    */
+    const negatedDeps = projectDependencyBindingsFromPromptText(written).negated;
+    /** Captured inside the task lock, logged outside it: the lock callback must not do I/O. */
+    let prunedNegatedDependencyIds: string[] = [];
+
     // Keep status in its planning state until the guarded release move; clearing it here
     // would make the finalizer's own later writes fail the planning-stage predicate.
     const taskUpdates: Record<string, any> = { error: null };
@@ -7059,7 +7094,44 @@ export class TriageProcessor {
     case), but "the finalize declined to hand off" must be observable — so warn with the live state
     that made the decision. Cheap: it fires at most once per finalize attempt, not per poll.
     */
-    if (!await this.updatePlanningStateIfStillCurrent(task, taskUpdates)) {
+    /*
+    FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+    The residual half of the invariant. The additive write above already shrinks a MIXED section (it
+    REPLACES the list with the projected ids plus the FN-513 parent), but a wholly denied section has no
+    ids to write, and the `parsedDeps.length > 0` gate exists precisely so that `- **None**` never sweeps
+    an operator's edges. That left an edge an earlier prose-blind pass had already stamped on the row with
+    no owner at all: the card stayed blocked behind a card it explicitly does not wait for, forever.
+
+    So the shrink runs only when the section is empty of positives and non-empty of denials, and it
+    removes EXACTLY the denied ids that are present on the row. Three properties decide the shape:
+
+    1. It is a FUNCTION patch, evaluated by `updatePlanningStateIfStillCurrent` inside the task lock, so
+       the kept list is computed from the LIVE row. Basing it on `task.dependencies` as captured before
+       the provider call would delete any edge another writer legitimately added while the planner ran,
+       which is the opposite of what the FN-513 union was for. The function form is already the house
+       idiom in this file (`:5454`, `:5509`, `:5573`).
+    2. It never touches the FN-513 follow-up parent edge: a follow-up's prose denial of its own source is
+       weaker than the deliberate parent link the lineage carries.
+    3. It returns `taskUpdates` untouched when nothing needs pruning, so a spec that merely mentions
+       denial-free prose writes no `dependencies` key and invalidates no plan. That is the fixed point
+       which ends the churn loop.
+    */
+    const finalizerPatch = parsedDeps.length === 0 && negatedDeps.length > 0
+      ? (live: Task) => {
+          const liveDependencies = live.dependencies ?? [];
+          const liveFollowUpParentId = isFollowUpTask(live) ? live.sourceParentTaskId : undefined;
+          const pruneIds = negatedDeps.filter((dependencyId) =>
+            liveDependencies.includes(dependencyId) && dependencyId !== liveFollowUpParentId);
+          if (pruneIds.length === 0) return taskUpdates;
+          prunedNegatedDependencyIds = pruneIds;
+          return {
+            ...taskUpdates,
+            dependencies: liveDependencies.filter((dependencyId) => !pruneIds.includes(dependencyId)),
+          };
+        }
+      : taskUpdates;
+
+    if (!await this.updatePlanningStateIfStillCurrent(task, finalizerPatch)) {
       const live = await this.store.getTask(task.id).catch(() => null);
       planLog.warn(
         `${task.id}: planning finalize skipped — task no longer in the planning stage `
@@ -7067,6 +7139,10 @@ export class TriageProcessor {
         + `executionStartedAt=${live?.executionStartedAt ?? "null"}). Handoff NOT performed.`,
       );
       return;
+    }
+    if (prunedNegatedDependencyIds.length > 0) {
+      // Outside the lock callback on purpose: the lock body computes, the finalizer narrates.
+      planLog.log(`${task.id} dependencies: dropped negated ${prunedNegatedDependencyIds.join(", ")}`);
     }
 
     try {

@@ -55,6 +55,18 @@ Key fields stored in the `tasks` table:
 
 The AI triage agent generates this file with the following structure:
 
+<!--
+FNXC:DependencyProjection 2026-11-13-19:11 (RUFU-750):
+The `- **Task:** <ID>` bullet in the example below is a machine shape, not a stylistic choice.
+`projectDependencyBindingsFromPromptText` reads it inside `## Dependencies` as "this card waits for <ID>"
+and writes a dependency edge on the card; an edge that was not there before re-plans the card and discards
+its approved plan. So a bullet belongs there only for a real wait. Anything else - an exemplar, a related
+defect, a card whose work is already inside your base, a card you deliberately do NOT wait for - is prose
+in `## Mission` or `## Context to Read First`. Writing it as a bullet does not record a note: it blocks the
+card behind the one it mentions, and a bullet that prose then negates is a contradiction the board cannot
+settle in the author's favour.
+-->
+
 ```markdown
 # Task: FN-001 — Task Title
 
@@ -69,7 +81,7 @@ What the task should accomplish.
 
 ## Dependencies
 
-- FN-040 — Prerequisite task description
+- **Task:** FN-040 (Prerequisite task description)
 
 ## Context to Read First
 
