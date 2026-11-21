@@ -24,6 +24,29 @@ max when timestamps are non-monotonic), and `detectStalledReview` matches
 `STALLED_REVIEW_INVALID_TRANSITION_PATTERN` against `outcome` too, which is capped at 4 000 chars per
 entry — so any truncated-outcome slice is not match-equivalent. Storing signals instead keeps every
 pattern match running against full text, where the full text still exists: at write time.
+
+FNXC:TaskLogProjections 2026-11-21-00:55 (RUFU-636):
+WHO READS THE PROOF. The paragraphs above describe what the envelope holds; what RUFU-615 left unfinished was
+who consumes its self-assessment. Its docstring promised "a reader whose window cannot be proved keeps the
+`log` column instead", and no reader did: all four resolvers computed `provablyComplete` and every caller
+ignored it — and RUFU-312 then made EVERY list read log-free while the badges kept being derived, so the
+promise became structurally unkeepable (a board refresh has no `log` to keep). What ships instead is ONE
+verdict, {@link taskLogEnvelopeProves}, asked by the four resolvers here and by the two log-free badge sites
+in `reads.ts` (`listTasksImpl`, `hydrateSearchTaskRows`). A row whose envelope cannot answer for the window
+that read serves gets its recent History back through ONE `readTaskLogEntriesBatch` statement, bounded per
+row to the horizon those badges consult ({@link horizonFromServedWindows} — a derivation with a longer
+lookback must register there or the fallback must not serve its badge), and it may answer only when the four
+ground-truth proofs in {@link withholdReasonForGatedRow} hold. Proof 4 exists because the envelope has two
+authors: the rollup one derives over the MERGED legacy+side view while storing a SIDE-row count, and
+`catchUpLegacyTaskLogEntries` copies only lines stamped `>= backfilledAt` for 200 tasks per pass, so an
+envelope can name an in-window line `project.task_log_entries` never received — and a newest-only comparison
+passes such a row, serving a `matchCount` LOWER than today's. A repair that cannot prove it holds the card's
+History, line by named line, is a worse answer than the card already had, so every failed proof keeps
+today's answer and tallies its fixed reason (`side-history-absent`, `side-window-truncated`,
+`side-behind-author`, `side-missing-named-timestamp`, `over-row-cap`), announced once per pass by the gate's
+single `storeLog.warn`. `timedExecutionMs` is never served from the fallback: it sums the whole History and
+reads no timestamp, so a horizon-bounded fetch can only undercount a figure both authors store exactly.
+Contract prose: docs/storage.md → "Derived task-log projection columns".
 */
 
 import type { TaskLogEntry } from "../types.js";
@@ -42,7 +65,23 @@ import {
   type StalledReviewSignal,
 } from "../tasks/stalled-review-detector.js";
 
-/** Envelope shape version. A reader that cannot recognise the version treats it as absent. */
+/**
+ * Envelope shape version. A reader that cannot recognise the version treats it as absent.
+ *
+ * FNXC:TaskLogProjections 2026-11-19-19:56 (RUFU-636):
+ * THE BUMP RULE. Raising this constant must make BOTH envelope authors refuse, and only one of them does it
+ * by comparison: `parseTaskLogRecent` (the legacy `tasks.log_recent` author) rejects a `v` it does not name,
+ * while `parseRollupEnvelope` (`task-log-entries.ts`, module-private, and not editable from this card)
+ * types ANY numeric `v` as an envelope because the rollup is written by the code that is always in step
+ * with itself. So after a bump the rollup lane is the ONLY one that can hand a reader arithmetic this
+ * module never authored, and the refusal that protects readers lives in {@link taskLogEnvelopeProves}
+ * alone, reported as `unknown-envelope-version`. Duplicating the comparison into a parser would put the
+ * rule in two places again, which is the defect RUFU-636 exists to remove.
+ *
+ * Consequence to keep honest until a bump actually lands: while this stays 1 only a hand-authored or
+ * future-shaped rollup can trip the refusal, so the branch is exercised by unit fixtures rather than by
+ * production rows — and a reader must still refuse rather than derive, never "assume it is close enough".
+ */
 export const LOG_RECENT_SCHEMA_VERSION = 1;
 
 /**
@@ -58,12 +97,18 @@ export const LOG_RECENT_INLINE_BYTE_BUDGET = 2_040;
  * companion `…NewestDroppedAt` marker: a reader whose window starts before that boundary CANNOT prove
  * its answer from the envelope, and the resolver says so through `provablyComplete`.
  *
- * FNXC:TaskLogProjections 2026-10-10-23:07 (RUFU-636): as shipped, no reader consumes that flag. The
- * board feed selects `log` or it does not BEFORE the rows arrive, so it has no per-row fallback to make;
- * an unprovable envelope therefore answers from what it holds (a `stalledReview` matchCount can be
- * understated, never invented upward past the stored array). RUFU-636 either makes the read refuse — a
- * board-level sufficiency gate over `log_recent`, which never touches `log` — or documents the flag as
- * informational. Do not re-add the words "keeps the `log` column" here unless the reader really does.
+ * FNXC:TaskLogProjections 2026-11-21-00:55 (RUFU-636): the flag this cap earns finally has a reader, and it
+ * is not the one RUFU-615's docstring described. A log-free board read cannot "keep the `log` column" — it
+ * decided its SELECT before the rows arrived — so a drop whose newest marker still sits inside the served
+ * window routes the card through the sufficiency gate in `reads.ts`: ONE horizon-bounded read of
+ * `project.task_log_entries`, which answers only when its four ground-truth proofs hold and otherwise keeps
+ * the answer produced below. For this module's callers the flag stays informational — a resolver still
+ * returns the stored (possibly understated) count and says so through `provablyComplete`, and suppressing it
+ * here would turn a conservative badge into a missing one. For the gate the same verdict is load-bearing,
+ * which is exactly why both ask {@link taskLogEnvelopeProves} rather than restating it. What never changed is
+ * the direction of the error: a `stalledReview` `matchCount` is understated, never invented upward past the
+ * stored array. Do not re-add "keeps the `log` column" here unless a reader really can — the fallback is the
+ * side table, never `log`.
  * Both thresholds these signals feed are 3 and 2, so a cap of 16 covers any reportable episode with headroom.
  */
 export const LOG_RECENT_MATCH_ARRAY_CAP = 16;
@@ -418,11 +463,419 @@ export function withTaskLogProjections<T extends Record<string, unknown>>(update
 }
 
 /* ------------------------------------------------------------------ *
+ * THE ONE SUFFICIENCY DECISION (RUFU-636).
+ *
+ * FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636):
+ * RUFU-615 shipped four resolvers that each computed their own `provablyComplete` and ONE reader that
+ * consulted none of them: `grep provablyComplete packages` resolved inside this file alone, so the
+ * docstring promise "a reader whose window cannot be proved keeps the `log` column instead" described a
+ * reader that does not exist, and a log-free board read answered not-stalled / 0 ms / an undercounted
+ * `matchCount` from an envelope it never proved. The defect of THAT shape was not the answer, it was the
+ * number of answers: four resolvers plus a gate deciding the same question in six places is how a badge
+ * and a gate start disagreeing about one card. So the judgement is one function, called
+ * {@link taskLogEnvelopeProves}, and every consumer — all four resolvers AND the read gate in
+ * `reads.ts` — asks IT. A second sufficiency expression anywhere (in a resolver, in `reads.ts`, or in the
+ * census) is the bug class this card exists to remove.
+ *
+ * What the verdict is NOT is a licence to answer. It says only what the ENVELOPE can prove. Whether a
+ * log-free row may answer at all additionally requires the four ground-truth proofs over the side table
+ * (see the gate's docblock in `reads.ts`), because the envelope has two authors and the rollup author
+ * derives over the MERGED legacy+side view while storing a SIDE-row count — so the envelope can name
+ * History lines `project.task_log_entries` never received.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The closed vocabulary of ways an envelope fails to prove what a full-History read would have answered.
+ * Fixed strings: the census groups by them, and the gate names them in its one operator-visible warning,
+ * so a new member must be added here first and never invented at a call site.
+ */
+export type TaskLogEnvelopeInsufficiency =
+  /** Neither author authored anything: no rollup row and no legacy `log_recent` pair. */
+  | "no-envelope"
+  /** A `v` this module cannot name. Reachable ONLY through the rollup author — see the version rule below. */
+  | "unknown-envelope-version"
+  /** `unparseableCount > 0`: entries the shared parse rule rejected are invisible to every stored signal. */
+  | "unparseable-entries"
+  /** A match array was capped and the newest dropped match sits inside the window being asked about. */
+  | "dropped-match-in-window"
+  /** A stored MAX stamp (`latestAt` / `stallSurfacedAt`) fails the shared parse rule. */
+  | "unparseable-latest";
+
+export interface TaskLogEnvelopeSufficiency {
+  /** True when NOTHING about this envelope is unprovable *for the question that was asked*. */
+  proves: boolean;
+  /** The headline reason in the fixed order below; `null` exactly when `proves`. */
+  reason: TaskLogEnvelopeInsufficiency | null;
+  /** Every applicable reason, in that same fixed order. What a narrower question is scoped against. */
+  reasons: readonly TaskLogEnvelopeInsufficiency[];
+}
+
+/** Reasons that mean "derive NOTHING from this envelope", whatever is being derived. */
+export const TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING: readonly TaskLogEnvelopeInsufficiency[] = [
+  "no-envelope",
+  "unknown-envelope-version",
+  "unparseable-entries",
+];
+
+/** What {@link stalledReviewFromProjection} may not answer through: the windowed match arithmetic. */
+export const TASK_LOG_ENVELOPE_SCOPE_WINDOW_MATCH: readonly TaskLogEnvelopeInsufficiency[] = [
+  ...TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING,
+  "dropped-match-in-window",
+];
+
+/** What the two MAX-stamp resolvers may not answer through. */
+export const TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS: readonly TaskLogEnvelopeInsufficiency[] = [
+  ...TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING,
+  "unparseable-latest",
+];
+
+/**
+ * What {@link countIdenticalStallFromProjection} may not answer through. The trailing run's own facts
+ * (`tailTruncated`, `tailReasonTruncated`, `tailCount`) are NOT here: they are properties of one stored
+ * run rather than of the envelope's arithmetic, and the resolver combines them with this scope so the
+ * version rule cannot be re-implemented beside them.
+ */
+export const TASK_LOG_ENVELOPE_SCOPE_TAIL_RUN: readonly TaskLogEnvelopeInsufficiency[] = TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING;
+
+/**
+ * The version rule, in exactly one place, on purpose. `parseTaskLogRecent` (the LEGACY author) refuses an
+ * unknown `v` by comparison, so a legacy envelope reaching a reader always carries `v === 1`;
+ * `parseRollupEnvelope` (`task-log-entries.ts`, module-private) types ANY numeric `v` as an envelope, so
+ * the rollup author is the only lane that can hand a reader arithmetic this module never authored. That
+ * asymmetry is why the refusal lives here and in neither parser: `task-log-entries.ts` is not edited by
+ * this card, and a reader-side rule duplicated into a parser would be two rules again.
+ *
+ * Consequence to keep honest: while `LOG_RECENT_SCHEMA_VERSION` stays 1, only a hand-authored or
+ * future-shaped rollup can trip this. When the version IS bumped, `parseRollupEnvelope` still accepts it,
+ * so this helper — not the parser — is what makes every reader refuse the envelope instead of deriving
+ * from arithmetic it cannot name.
+ */
+export function taskLogEnvelopeProves(
+  envelope: TaskLogRecentEnvelope | null | undefined,
+  options: { windowStartMs: number | null },
+): TaskLogEnvelopeSufficiency {
+  const reasons: TaskLogEnvelopeInsufficiency[] = [];
+  if (!envelope) {
+    reasons.push("no-envelope");
+  } else {
+    if (envelope.v !== LOG_RECENT_SCHEMA_VERSION) reasons.push("unknown-envelope-version");
+    if (envelope.unparseableCount > 0) reasons.push("unparseable-entries");
+    /*
+    * A cap is only a proven gap when the cut edge is inside the window being asked about: the markers name
+    * the NEWEST dropped candidate, and every other dropped one is older, so a marker older than the window
+    * start proves nothing in the window was lost. `windowStartMs: null` means the caller asks no windowed
+    * question at all (the MAX-stamp and trailing-run resolvers) — and then a marker's coverage is UNKNOWN,
+    * so it is still recorded as a fact while staying out of the headline: `sufficiencyProves` is what turns
+    * "this verdict never asked about windows" into "the window question is NOT proven", which is the only
+    * reading under which a resolver that skipped the window can neither be lied to nor silently ignored.
+    */
+    const windowStartMs = options.windowStartMs;
+    const droppedMarkers = [envelope.reenqueueNewestDroppedAt, envelope.invalidTransitionNewestDroppedAt]
+      .filter((ms): ms is number => typeof ms === "number");
+    if (windowStartMs === null ? droppedMarkers.length > 0 : droppedMarkers.some((ms) => ms >= windowStartMs)) {
+      reasons.push("dropped-match-in-window");
+    }
+    const stampUnparseable = (raw: string | null): boolean =>
+      typeof raw === "string" && parseProjectionTimestamp(raw) === null;
+    if (stampUnparseable(envelope.latestAt) || stampUnparseable(envelope.stallSurfacedAt)) {
+      reasons.push("unparseable-latest");
+    }
+  }
+  const asked = (reason: TaskLogEnvelopeInsufficiency): boolean =>
+    options.windowStartMs !== null || reason !== "dropped-match-in-window";
+  const headline = reasons.find(asked) ?? null;
+  return { proves: headline === null, reason: headline, reasons };
+}
+
+/** Does this verdict leave `question`'s reasons untripped? The only legal way to consume a verdict. */
+export function sufficiencyProves(
+  verdict: TaskLogEnvelopeSufficiency,
+  question: readonly TaskLogEnvelopeInsufficiency[],
+): boolean {
+  return !verdict.reasons.some((reason) => question.includes(reason));
+}
+
+/** True when the verdict carries `reason`. Used where one reason alone already means "answer nothing". */
+export function sufficiencyHas(
+  verdict: TaskLogEnvelopeSufficiency,
+  reason: TaskLogEnvelopeInsufficiency,
+): boolean {
+  return verdict.reasons.includes(reason);
+}
+
+/* ------------------------------------------------------------------ *
+ * THE FALLBACK'S OWN GROUND TRUTH (RUFU-636).
+ *
+ * FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636):
+ * An envelope that cannot prove its answer sends the read to `project.task_log_entries`, because that is
+ * the table that holds History today. The side table is NOT automatically the truth though, and the reason
+ * is RUFU-312's authoring split: `appendTaskLogEntries` derives the rollup over the MERGED legacy+side view
+ * (`merged: mergeTaskLogViews(legacy ?? [], side, cap)`) while storing `entryCount: sideCount`, and
+ * `catchUpLegacyTaskLogEntries` copies legacy lines only when stamped `>= backfilledAt`, for
+ * `TASK_LOG_CATCH_UP_TASK_LIMIT = 200` tasks per pass. So an envelope can name an in-window History line
+ * the side table never received. Reading such a window and ANSWERING produces a `matchCount` LOWER than today's envelope
+ * answer — a repair that is worse than the defect. Hence four proofs, in this fixed order, every one of
+ * them computed from data the read pass already holds (no extra statement), and every failure keeps today's
+ * answer while naming its fixed reason in the site's single warning.
+ *
+ * These are pure so both the read gate in `reads.ts` and `scripts/census-log-recent-sufficiency.mjs` ask
+ * the identical question against a real database.
+ * ------------------------------------------------------------------ */
+
+/** How many gated rows one board-read pass may re-fetch, whatever the page size. */
+export const LOG_RECENT_SUFFICIENCY_GATE_ROW_CAP = 16;
+
+/**
+ * How many side rows a single gated row may transfer. Strictly below `getTaskActivityLogEntryLimit()`
+ * (1 000) on purpose: the horizon bound is what should make this unreachable, so a row that reaches it is
+ * a card whose History is denser than the bound assumes, and the honest answer to "what is in your window"
+ * from a window we ran out of room to read is "unknown", not a truncated count.
+ */
+export const LOG_RECENT_SUFFICIENCY_READ_ROW_CAP = 256;
+
+/** Why a gated row's fallback was refused. Fixed vocabulary: the warning and the census group by it. */
+export type TaskLogSufficiencyWithholdReason =
+  | "side-history-absent"
+  | "side-window-truncated"
+  | "side-behind-author"
+  | "side-missing-named-timestamp"
+  | "over-row-cap";
+
+/** Anything carrying a raw stamp. The proofs read the timestamp and NOTHING else. */
+export interface TaskLogHistoryStamp {
+  readonly timestamp?: string | null;
+}
+
+/** Either shape a History line arrives in: the stored entry object, or its bare stamp. */
+export type TaskLogHistoryStamps = readonly (string | TaskLogHistoryStamp | null | undefined)[];
+
+/** The raw stamps of a returned History window, in whatever shape the caller holds them in. */
+export function rawTaskLogHistoryStamps(entries: TaskLogHistoryStamps): Set<string> {
+  const present = new Set<string>();
+  for (const entry of entries) {
+    if (typeof entry === "string") present.add(entry);
+    else if (typeof entry?.timestamp === "string") present.add(entry.timestamp);
+  }
+  return present;
+}
+
+/** The per-field vocabulary {@link withheldReasonsFor} reports, beside the envelope-level reasons. */
+export type TaskLogSufficiencyFieldReason =
+  | "stale-matches-reenqueueAt"
+  | "stale-matches-invalidTransitionAt"
+  | "stale-trailing-run-tailAt"
+  | "stale-latest-surfaced-at";
+
+/**
+ * The instant a horizon-bounded History read must reach, as a DURATION, computed in ONE place from the
+ * windows the served badges actually consult: the churn detector's `STALLED_REVIEW_WINDOW_MS` and the
+ * operator-resolved `inReviewStalledThresholdMs`. A future derivation with a longer lookback has to
+ * register here or it must not be served by the fallback — an unregistered longer window would silently
+ * read a bound too short and undercount.
+ *
+ * FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636): a non-finite or absent threshold is not "no
+ * threshold": it means the caller resolved nothing, and the churn window alone still has to be covered.
+ */
+export function horizonFromServedWindows(inReviewStalledThresholdMs?: number | null): number {
+  const resolved = typeof inReviewStalledThresholdMs === "number" && Number.isFinite(inReviewStalledThresholdMs)
+    ? Math.max(0, inReviewStalledThresholdMs)
+    : 0;
+  return Math.max(STALLED_REVIEW_WINDOW_MS, resolved);
+}
+
+/**
+ * The bound text for one gated row. `task_log_entries.timestamp` is `text`, so the table's ordering — and
+ * `readTaskLogEntriesBatch`'s `>=` comparison — are lexicographic; the bound is therefore built in the
+ * ISO shape the writer and migration 0093 use, never as an epoch number.
+ */
+export function taskLogHistoryReadBound(nowMs: number, horizonDurationMs: number): string {
+  return new Date(nowMs - horizonDurationMs).toISOString();
+}
+
+/**
+ * Proof 4 — `sideHoldsNamedTimestamps`. The returned window must contain EVERY timestamp the envelope
+ * itself names for that row and that is still in play: all of `reenqueueAt`, `invalidTransitionAt` and
+ * `tailAt`, plus `stallSurfacedAt` and `latestAt`. Membership is exact on RAW strings, which is sound
+ * because the envelope stores stamps verbatim (see {@link TaskLogRecentEnvelope}) — parsing or reformatting
+ * here would compare two different renderings of one stamp and prove nothing.
+ *
+ * A named stamp is required UNLESS it is provably older than both gates that would let it answer: it
+ * PARSES before the horizon AND its raw text sorts below the bound the read used. The conjunction is what
+ * makes the exemption honest, and its two halves are different measurements because the two gates disagree
+ * about legacy rows — the horizon is a `parseProjectionTimestamp` (strict ISO) comparison while the SQL
+ * bound is a text comparison, so a legacy non-ISO stamp that `Date.parse` still reads can sit inside the
+ * window yet sort below the bound, and a bound that could never return a line the derivation would have
+ * counted is exactly the silent undercount this proof exists to refuse.
+ *
+ * FNXC:TaskLogProjections 2026-11-20-16:55 (RUFU-636): the requirement was first written as the union
+ * ("require when it parses in-horizon OR it sorts with the bound"), which is the same set except for one
+ * shape, and that shape is a legacy row's: a stamp `parseProjectionTimestamp` refuses AND that sorts below
+ * the bound is neither provably in play nor provably returned, so an OR read "nothing is required" and the
+ * gate repaired a card whose History it had no way to reproduce — the undercount, wearing a green badge. A
+ * stamp whose age cannot be established is not a stamp that cannot matter, so the exemption is a
+ * conjunction and an unparseable named stamp always withholds.
+ *
+ * `tailAt` is required although no badge served at the gated sites reads it. Stated conservative bias: a
+ * History that is missing a line its own author named is not a proved History, whatever is served today.
+ */
+export function sideHoldsNamedTimestamps(
+  envelope: TaskLogRecentEnvelope | null | undefined,
+  returned: TaskLogHistoryStamps,
+  options: { bound: string | null; horizonMs: number },
+): boolean {
+  if (!envelope) return true;
+  const present = rawTaskLogHistoryStamps(returned);
+  const named: string[] = [
+    ...envelope.reenqueueAt,
+    ...envelope.invalidTransitionAt,
+    ...envelope.tailAt,
+  ];
+  for (const single of [envelope.stallSurfacedAt, envelope.latestAt]) {
+    if (typeof single === "string") named.push(single);
+  }
+  for (const stamp of named) {
+    if (namedStampProvablyOutreach(stamp, options)) continue;
+    if (!present.has(stamp)) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a named stamp is provably beyond the reach of BOTH the horizon (so no served badge can consult
+ * it) and the text-ordered read bound (so the read could not have returned it). Only a stamp that PARSES
+ * can be proved old; see {@link sideHoldsNamedTimestamps} for why an unparseable one never is.
+ */
+function namedStampProvablyOutreach(
+  stamp: string,
+  options: { bound: string | null; horizonMs: number },
+): boolean {
+  const parsed = parseProjectionTimestamp(stamp);
+  if (parsed === null) return false;
+  if (parsed >= options.horizonMs) return false;
+  return options.bound === null || stamp < options.bound;
+}
+
+/**
+ * The four ground-truth proofs for one gated row, in their fixed order, returning the reason to withhold
+ * or `null` when the row may answer from the returned History.
+ *
+ * Proof 3 is a newest-only comparison and is NOT sufficient on its own — that gap is why proof 4 exists
+ * (see the section header above). Proof 3 compares raw text for the same reason the bound does; an
+ * unparseable `latestAt` never reaches here as a doubt because `unparseable-latest` gates the row first,
+ * and it is refused rather than trusted if it somehow does.
+ */
+export function withholdReasonForGatedRow(input: {
+  envelope: TaskLogRecentEnvelope | null | undefined;
+  entries: readonly TaskLogHistoryStamp[];
+  readCap: number;
+  bound: string;
+  horizonMs: number;
+}): TaskLogSufficiencyWithholdReason | null {
+  const { envelope, entries, readCap, bound, horizonMs } = input;
+  if (entries.length === 0) return "side-history-absent";
+  if (entries.length >= readCap) return "side-window-truncated";
+  if (typeof envelope?.latestAt === "string") {
+    let newest: string | null = null;
+    for (const entry of entries) {
+      const raw = entry.timestamp;
+      if (typeof raw !== "string") continue;
+      if (newest === null || raw > newest) newest = raw;
+    }
+    if (newest === null || newest < envelope.latestAt) return "side-behind-author";
+  }
+  if (!sideHoldsNamedTimestamps(envelope, entries, { bound, horizonMs })) return "side-missing-named-timestamp";
+  return null;
+}
+
+/**
+ * What an envelope is reaching for that a fallback could not prove: the five envelope-level reasons from
+ * the one sufficiency decision, followed per field by the named in-horizon lines the envelope carries.
+ *
+ * The defaults are deliberately conservative — window start 0, horizon 0, nothing proved present — which
+ * reads as "every line this envelope names is at risk". That is the census's field test: it has to answer
+ * which rows the fallback COULD repair before any read has run. A caller that has read the side table
+ * passes `present` (the raw stamps that came back) and the same horizon/bound it read with, and the
+ * per-field half then names only the lines actually proved absent, which is the same arithmetic as proof 4.
+ *
+ * There is no `stale-latest-at`: `latestAt`'s presence is what proof 3 already refuses a window over, so a
+ * separate code for it would be two names for one fact. It is still *required* by proof 4.
+ */
+export function withheldReasonsFor(
+  envelope: TaskLogRecentEnvelope | null | undefined,
+  options: {
+    windowStartMs?: number | null;
+    horizonMs?: number;
+    bound?: string | null;
+    present?: ReadonlySet<string>;
+  } = {},
+): Array<TaskLogEnvelopeInsufficiency | TaskLogSufficiencyFieldReason> {
+  const windowStartMs = options.windowStartMs ?? 0;
+  const horizonMs = options.horizonMs ?? 0;
+  const bound = options.bound ?? null;
+  const present = options.present ?? new Set<string>();
+  const verdict = taskLogEnvelopeProves(envelope, { windowStartMs });
+  const reasons: Array<TaskLogEnvelopeInsufficiency | TaskLogSufficiencyFieldReason> = [...verdict.reasons];
+  if (!envelope) return reasons;
+  const atRisk = (stamp: string): boolean =>
+    !namedStampProvablyOutreach(stamp, { bound, horizonMs }) && !present.has(stamp);
+  const fieldReasons: Array<[readonly string[], TaskLogSufficiencyFieldReason]> = [
+    [envelope.reenqueueAt, "stale-matches-reenqueueAt"],
+    [envelope.invalidTransitionAt, "stale-matches-invalidTransitionAt"],
+    [envelope.tailAt, "stale-trailing-run-tailAt"],
+  ];
+  for (const [stamps, reason] of fieldReasons) {
+    if (stamps.some(atRisk) && !reasons.includes(reason)) reasons.push(reason);
+  }
+  if (typeof envelope.stallSurfacedAt === "string" && atRisk(envelope.stallSurfacedAt)) {
+    reasons.push("stale-latest-surfaced-at");
+  }
+  return reasons;
+}
+
+/**
+ * Spend this pass's budget. Rows the envelope was authored for come first, because a row with no envelope
+ * at all has no named lines to repair against and is the population the side table is LEAST likely to be
+ * able to answer; within each class the page order is preserved so the choice never depends on a hash.
+ * The over-cap remainder keeps today's answer — it is not a failure, it is the population the single
+ * warning must name.
+ *
+ * FNXC:TaskLogProjections 2026-11-20-21:33 (RUFU-636): the budget is deliberately PER PASS and holds no
+ * memory of a previous refusal. A standing withhold would be a 15-minute delay on the exact card the next
+ * pass could repair — `catchUpLegacyTaskLogEntries` runs periodically and delivers the line a proof named
+ * missing — while `LOG_RECENT_SUFFICIENCY_GATE_ROW_CAP` already bounds what a sustained refusal can cost.
+ * A rule the shipped pass does not apply is worse than no rule, so no cooldown state exists here.
+ */
+export function pickSufficiencyGateRows(input: {
+  candidates: readonly string[];
+  hasEnvelope: ReadonlyMap<string, boolean>;
+  cap?: number;
+}): { selected: string[]; overCap: string[] } {
+  const cap = input.cap ?? LOG_RECENT_SUFFICIENCY_GATE_ROW_CAP;
+  const selected: string[] = [];
+  const overCap: string[] = [];
+  const ordered = [...input.candidates].sort((a, b) => {
+    const left = input.hasEnvelope.get(a) ? 0 : 1;
+    const right = input.hasEnvelope.get(b) ? 0 : 1;
+    return left - right;
+  });
+  for (const id of ordered) {
+    if (selected.length >= cap) {
+      overCap.push(id);
+      continue;
+    }
+    selected.push(id);
+  }
+  return { selected, overCap };
+}
+
+/* ------------------------------------------------------------------ *
  * Reader-side resolvers. Each one answers "can this envelope PROVE the answer a full-log read would
- * have produced?" through `provablyComplete`. The answer to "what does a caller do with it" is, today,
- * nothing: every production reader ignores the flag (RUFU-636). What a caller CANNOT do is re-read the
- * `log` column per row, because a log-free caller did not select it — the only honest fallback is
- * board-level and precedes the SELECT. Treat the flag as derivation metadata until RUFU-636 lands.
+ * have produced?" through `provablyComplete`, scoped out of the ONE verdict above (RUFU-636). What a
+ * caller CANNOT do is re-read the `log` column per row, because a log-free caller did not select it:
+ * the fallback is ONE horizon-bounded batch read of `project.task_log_entries` taken at the two
+ * log-free derivation sites in `reads.ts`, and it answers only when its own four ground-truth proofs
+ * hold. Where the flag is false and a fallback is impossible, the reader keeps the answer below and
+ * says so through that site's single warning — it never answers "no History" from an unproved window.
  * ------------------------------------------------------------------ */
 
 /** What the envelope may stand in for. `logLoaded` stays the caller's authority, defaulting to true. */
@@ -440,7 +893,12 @@ export function projectionOverride(input: TaskLogProjectionInput | undefined): T
 
 export interface StalledReviewProjectionResult {
   signal: Omit<StalledReviewSignal, "reason"> | undefined;
-  /** False when the envelope cannot prove the window's contents — only a loaded `log` may answer. */
+  /**
+   * False when the envelope cannot prove the window's contents. That is a statement about the ENVELOPE, and
+   * it licenses an answer from a proved History only: the row's own loaded `log`, or a fallback window whose
+   * four ground-truth proofs held (RUFU-636). Where neither exists the caller keeps the signal below and
+   * says so through its one warning — it never answers "no History" from an unproved window.
+   */
   provablyComplete: boolean;
 }
 
@@ -453,10 +911,21 @@ export function stalledReviewFromProjection(
   envelope: TaskLogRecentEnvelope,
   options: { now?: number; windowMs?: number },
 ): StalledReviewProjectionResult {
-  if (envelope.unparseableCount > 0) return { signal: undefined, provablyComplete: false };
   const now = options.now ?? Date.now();
   const windowMs = options.windowMs ?? STALLED_REVIEW_WINDOW_MS;
   const windowStart = now - windowMs;
+  /*
+  FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636): the window arithmetic is unchanged; what changed is
+  WHO decides sufficiency. An envelope whose version cannot be named is now refused exactly like one with
+  unparseable entries (it was derived by arithmetic this module never authored), while a cap-drop marker
+  still answers with the stored matches and says `provablyComplete: false` — that undercount is precisely
+  the answer the read gate falls back to when its own four proofs fail, so suppressing it here would turn
+  a conservative badge into a missing one.
+  */
+  const verdict = taskLogEnvelopeProves(envelope, { windowStartMs: windowStart });
+  if (!sufficiencyProves(verdict, TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING)) {
+    return { signal: undefined, provablyComplete: false };
+  }
   const indicesInWindow = (list: string[]): number[] => {
     const out: number[] = [];
     for (let i = 0; i < list.length; i += 1) {
@@ -467,9 +936,7 @@ export function stalledReviewFromProjection(
   };
   const reenqueueHits = indicesInWindow(envelope.reenqueueAt);
   const invalidHits = indicesInWindow(envelope.invalidTransitionAt);
-  const provablyComplete =
-    (envelope.reenqueueNewestDroppedAt === null || envelope.reenqueueNewestDroppedAt < windowStart)
-    && (envelope.invalidTransitionNewestDroppedAt === null || envelope.invalidTransitionNewestDroppedAt < windowStart);
+  const provablyComplete = sufficiencyProves(verdict, TASK_LOG_ENVELOPE_SCOPE_WINDOW_MATCH);
 
   if (reenqueueHits.length >= STALLED_REVIEW_REENQUEUE_THRESHOLD) {
     return {
@@ -498,18 +965,27 @@ export function stalledReviewFromProjection(
 
 /** MAX-over-whole-log timestamp; `-Infinity` mirrors the log-based helper's "no candidate" answer. */
 export function latestLogTimestampFromProjection(envelope: TaskLogRecentEnvelope): { ms: number; provablyComplete: boolean } {
-  if (envelope.unparseableCount > 0) return { ms: Number.NEGATIVE_INFINITY, provablyComplete: false };
+  // FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636): one verdict, scoped to THIS question; the
+  // returned `-Infinity` answers are byte-identical to RUFU-615's, only their authority moved.
+  const verdict = taskLogEnvelopeProves(envelope, { windowStartMs: null });
+  if (!sufficiencyProves(verdict, TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING)) {
+    return { ms: Number.NEGATIVE_INFINITY, provablyComplete: false };
+  }
   if (envelope.latestAt === null) return { ms: Number.NEGATIVE_INFINITY, provablyComplete: true };
   const ms = parseProjectionTimestamp(envelope.latestAt);
-  return { ms: ms ?? Number.NEGATIVE_INFINITY, provablyComplete: ms !== null };
+  return { ms: ms ?? Number.NEGATIVE_INFINITY, provablyComplete: sufficiencyProves(verdict, TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS) };
 }
 
 /** MAX ts over the stall prefix; the caller applies the LIVE threshold — a setting is never baked into the column. */
 export function stallSurfacedAtFromProjection(envelope: TaskLogRecentEnvelope): { ms: number | null; provablyComplete: boolean } {
-  if (envelope.unparseableCount > 0) return { ms: null, provablyComplete: false };
+  // FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636): see `latestLogTimestampFromProjection`.
+  const verdict = taskLogEnvelopeProves(envelope, { windowStartMs: null });
+  if (!sufficiencyProves(verdict, TASK_LOG_ENVELOPE_ANSWER_SUPPRESSING)) {
+    return { ms: null, provablyComplete: false };
+  }
   if (envelope.stallSurfacedAt === null) return { ms: null, provablyComplete: true };
   const ms = parseProjectionTimestamp(envelope.stallSurfacedAt);
-  return { ms, provablyComplete: ms !== null };
+  return { ms, provablyComplete: sufficiencyProves(verdict, TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS) };
 }
 
 export interface IdenticalStallProjectionResult {
@@ -528,6 +1004,10 @@ export function countIdenticalStallFromProjection(
   progressAt?: number,
 ): IdenticalStallProjectionResult {
   const trimmedReason = signal.reason.trim();
+  // FNXC:TaskLogProjections 2026-11-19-19:48 (RUFU-636): the trailing run is not a windowed question, so
+  // no cap marker is asked about; the envelope-level refusal is the tail-run scope, and the run's own
+  // facts stay in the return below, where RUFU-615 put them.
+  const verdict = taskLogEnvelopeProves(envelope, { windowStartMs: null });
   if (envelope.tailCode === null || envelope.tailCount === 0) return { count: 0, provablyComplete: true };
   if (envelope.tailCode !== signal.code) return { count: 0, provablyComplete: true };
   if (envelope.tailReasonTruncated) {
@@ -544,7 +1024,9 @@ export function countIdenticalStallFromProjection(
   }
   return {
     count,
-    provablyComplete: !envelope.tailTruncated && envelope.unparseableCount === 0 && count === envelope.tailCount,
+    provablyComplete: !envelope.tailTruncated
+      && count === envelope.tailCount
+      && sufficiencyProves(verdict, TASK_LOG_ENVELOPE_SCOPE_TAIL_RUN),
   };
 }
 

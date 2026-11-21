@@ -1528,6 +1528,40 @@ export type { TaskLifecycleState } from "./task-store/lifecycle-projection.js";
    owned by the projection site, and a type that is not exported cannot be named by a caller that wants a
    shared constant array, only written inline. Exported from BOTH barrels so they stay in parity. */
 export type { TaskListReadField, TaskPresenceRow } from "./task-store/async/async-persistence.js";
+/*
+FNXC:TaskLogProjections 2026-11-20-22:05 (RUFU-636):
+`scripts/census-log-recent-sufficiency.mjs` reaches the shipped sufficiency decision and the side-table
+read seam through core's barrel, because that barrel is the only entry point a repo-root script has
+(`@fusion/core` is not resolvable from `scripts/` — see `scripts/lib/backend-db.mjs`). A census that
+re-spelled the envelope pick, the version rule, or the four ground-truth proofs beside the shipped ones
+would be a second authority over the same rows, which is the drift this card exists to remove. Neither
+module adds weight to either barrel's import closure: both are already reached through `reads.ts`.
+*/
+export {
+  parseTaskLogRecent,
+  taskLogEnvelopeProves,
+  withheldReasonsFor,
+  withholdReasonForGatedRow,
+  horizonFromServedWindows,
+  taskLogHistoryReadBound,
+  rawTaskLogHistoryStamps,
+  LOG_RECENT_SCHEMA_VERSION,
+  LOG_RECENT_SUFFICIENCY_READ_ROW_CAP,
+} from "./task-store/task-log-projections.js";
+export type {
+  TaskLogRecentEnvelope,
+  TaskLogEnvelopeInsufficiency,
+  TaskLogEnvelopeSufficiency,
+  TaskLogSufficiencyWithholdReason,
+  TaskLogSufficiencyFieldReason,
+} from "./task-store/task-log-projections.js";
+export {
+  pickTaskLogEnvelope,
+  readTaskLogEntriesBatch,
+  readTaskLogRollups,
+  taskLogProjectId,
+} from "./task-store/task-log-entries.js";
+export type { TaskLogRollupRow } from "./task-store/task-log-entries.js";
 export {
   findSameAgentDuplicates,
   computeParentIntentClaimId,

@@ -22,7 +22,7 @@ import "../builtin-traits.js";
 import {allowsAutoMergeProcessing} from "../merge/task-merge.js";
 import {getInReviewStallReason, DEFAULT_STALE_MERGING_MIN_AGE_MS, type InReviewStallContext} from "../tasks/in-review-stall.js";
 import {getAgentLogFilePath} from "../agents/agent-log-file-store.js";
-import {getInReviewStalledSignal, type InReviewStalledContext} from "../tasks/in-review-stalled.js";
+import {DEFAULT_IN_REVIEW_STALLED_THRESHOLD_MS, getInReviewStalledSignal, type InReviewStalledContext} from "../tasks/in-review-stalled.js";
 import {getStalePausedReviewSignal, type StalePausedReviewContext} from "../tasks/stale-paused-review.js";
 import {getStalePausedTodoSignal} from "../tasks/stale-paused-todo.js";
 import {columnsWithFlag, resolveLifecycleColumns, resolveReviewColumns, type LifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
@@ -31,9 +31,30 @@ import type {WorkflowIr} from "../workflows/workflow-ir-types.js";
 
 import {getTaskAgeStalenessSignal, type TaskAgeStalenessThresholds} from "../tasks/task-age-staleness.js";
 import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
-import {detectStalledReview} from "../tasks/stalled-review-detector.js";
+import {detectStalledReview, STALLED_REVIEW_WINDOW_MS} from "../tasks/stalled-review-detector.js";
 /* FNXC:TaskLogProjections 2026-10-10-19:13 (RUFU-615): defensive read of the `log_recent` envelope for rows read without `log`. */
-import { parseTaskLogRecent } from "./task-log-projections.js";
+/*
+FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+The sufficiency decision itself. `taskLogEnvelopeProves` is the ONE answer to "can this envelope prove
+what a full-History read would have answered?" — the four resolvers compute their `provablyComplete`
+through it and the gate below asks it the same two scoped questions, so a badge and the gate cannot
+start disagreeing about one card. The rest of these imports are the gate's own arithmetic: the horizon
+rule, the four ground-truth proofs, and the per-pass row budget.
+*/
+import {
+  horizonFromServedWindows,
+  parseTaskLogRecent,
+  LOG_RECENT_SUFFICIENCY_READ_ROW_CAP,
+  pickSufficiencyGateRows,
+  sufficiencyProves,
+  TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS,
+  TASK_LOG_ENVELOPE_SCOPE_WINDOW_MATCH,
+  taskLogEnvelopeProves,
+  taskLogHistoryReadBound,
+  withholdReasonForGatedRow,
+  type TaskLogRecentEnvelope,
+  type TaskLogSufficiencyWithholdReason,
+} from "./task-log-projections.js";
 /*
 FNXC:TaskLogSideTable 2026-11-01-18:22 (RUFU-312):
 The read half of the log cutover. `pickTaskLogEnvelope` is what lets a projection that never transfers the
@@ -1079,6 +1100,163 @@ so a promise keyed by it would serve one page's rows to a caller that asked for 
 (`afterCreatedAt`/`afterId`/`afterQueueKey`/`afterIntakeKey`) are the same hazard in a different shape
 and are excluded for the same reason — not by becoming key dimensions.
 */
+/*
+FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+THE LOG-FREE SUFFICIENCY GATE.
+
+RUFU-615 shipped an envelope sufficiency proof and no reader for it; RUFU-312 then made EVERY list read
+log-free while still deriving the stall badges. So since that cutover every board refresh answers the
+churn badge and the in-review-quiet badge from an envelope nobody proved, and an envelope that cannot
+prove its window silently answers "not stalled", `0 ms`, or an undercounted `matchCount` — a number that
+is embedded in the operator-visible stall-reason sentence and therefore may not be approximate.
+
+This pass is the reader that was promised. It asks the ONE sufficiency decision the same two questions the
+served derivations ask it — the windowed churn arithmetic scoped to `TASK_LOG_ENVELOPE_SCOPE_WINDOW_MATCH`
+at `now - STALLED_REVIEW_WINDOW_MS`, and the two MAX stamps scoped to `TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS`
+with no window at all — and takes the rows whose envelope cannot answer EITHER. Those rows get their
+recent History back through ONE `readTaskLogEntriesBatch` statement bounded per row to the horizon the
+served badges consult, never to the retention limit: a full-retention transfer would re-import exactly the
+byte cost the log-free read exists to remove.
+
+FOUR ground-truth proofs decide whether the fetched window may ANSWER (`withholdReasonForGatedRow`), and
+they exist because the side table is not automatically the truth: `appendTaskLogEntries` authors the rollup
+over the MERGED legacy+side view while `entry_count` stores the SIDE-row count, and
+`catchUpLegacyTaskLogEntries` copies legacy lines only when stamped `>= backfilledAt` for 200 tasks per
+pass. So an envelope can name an in-window History line `project.task_log_entries` never received, and
+`TaskLogRollupRow.entryCount` is no completeness witness for it (a count of side rows cannot prove the
+contents of a view that was never the side rows). A newest-only freshness comparison CANNOT see that gap:
+the window can hold a line newer than anything the author saw while missing the older in-window line the
+author counted, and deriving from it yields a `matchCount` LOWER than today's. That is why proof 4 requires
+the returned window to contain every timestamp the picked envelope itself names inside the horizon. A rule
+that cannot prove ground truth is not a weaker repair, it is a WORSE answer than the card already had, so
+every failed proof keeps today's envelope-derived answer verbatim and tallies its fixed reason.
+
+What the pass may not do, each because it was the defect this card found:
+- merge a hydrated-empty `row.log` with the fetched entries. On a log-free row that array is the `[]`
+  `pgRowToTaskRow` itself calls "indistinguishable from an empty history", so the merge would turn an
+  undercounted badge into no badge at all. `mergeTaskLogViews` stays exactly where it runs today: the
+  log-LOADED leg. The fetched entries are a derivation input ONLY — the served row keeps `log: []`.
+- serve `timedExecutionMs`. `computeTimedExecutionMs` sums `N ms` figures off `[timing]` entry text and
+  reads no timestamp, so a horizon-bounded read would UNDERCOUNT the whole-History sum both authors
+  already store exactly. Leaving it on `timingTotalMs` is cheaper AND more accurate.
+- widen the payload or re-read the world. Sufficient rows are byte-identical and cost zero statements;
+  at most one statement runs per pass however many rows needed it; gated rows are capped by
+  `LOG_RECENT_SUFFICIENCY_GATE_ROW_CAP`; the over-cap population and every withheld reason are reported
+  through ONE `storeLog.warn`, never by a new payload field — an `unknown` field would change every
+  consumer's read shape to describe a population the census expects to be near zero, and the honest
+  `unknown` is RUFU-635's `settled` activity marker, not this card's invention.
+- carry a withhold across passes. No episode survives this call on purpose: a card whose catch-up has
+  since copied the missing line is exactly the card the next pass must repair, and a standing withhold
+  would delay that repair while the per-pass row cap already bounds what it costs.
+*/
+interface LogFreeSufficiencyGate {
+  /** Rows whose four proofs held: derive their badges from these entries instead of from the envelope. */
+  repaired: ReadonlyMap<string, TaskLogEntry[]>;
+  /** Rows whose fallback was refused, with the fixed reason. Today's answer stands for each of them. */
+  withheld: ReadonlyMap<string, TaskLogSufficiencyWithholdReason>;
+}
+
+const LOG_FREE_GATE_NOTHING: LogFreeSufficiencyGate = { repaired: new Map(), withheld: new Map() };
+
+/** The envelope pair exactly as {@link pickTaskLogEnvelope} returns it — the row's newest author already won. */
+interface PickedTaskLogEnvelope {
+  readonly timingTotalMs: number | null;
+  readonly logRecent: TaskLogRecentEnvelope | null;
+}
+
+/**
+ * One gate pass over a page's log-free rows. `picksByRowId` must already hold each candidate row's PICKED
+ * envelope (the caller picked it for `pickTaskLogEnvelope` anyway; picking twice per row is how two
+ * answers to one question are born). Returns empty maps — no statement, no warning — when no row needs it.
+ */
+async function gateLogFreeEnvelopeRows(
+  store: TaskStore,
+  nowMs: number,
+  inReviewStalledThresholdMs: number | undefined,
+  picksByRowId: ReadonlyMap<string, PickedTaskLogEnvelope>,
+): Promise<LogFreeSufficiencyGate> {
+  if (picksByRowId.size === 0) return LOG_FREE_GATE_NOTHING;
+  const churnWindowStartMs = nowMs - STALLED_REVIEW_WINDOW_MS;
+  const candidates: string[] = [];
+  const hasEnvelope = new Map<string, boolean>();
+  for (const [rowId, pick] of picksByRowId) {
+    const envelope = pick.logRecent;
+    const windowed = taskLogEnvelopeProves(envelope, { windowStartMs: churnWindowStartMs });
+    const unstamped = taskLogEnvelopeProves(envelope, { windowStartMs: null });
+    hasEnvelope.set(rowId, envelope !== null);
+    if (
+      !sufficiencyProves(windowed, TASK_LOG_ENVELOPE_SCOPE_WINDOW_MATCH)
+      || !sufficiencyProves(unstamped, TASK_LOG_ENVELOPE_SCOPE_MAX_STAMPS)
+    ) candidates.push(rowId);
+  }
+  if (candidates.length === 0) return LOG_FREE_GATE_NOTHING;
+
+  const repaired = new Map<string, TaskLogEntry[]>();
+  const withheld = new Map<string, TaskLogSufficiencyWithholdReason>();
+  const { selected, overCap } = pickSufficiencyGateRows({ candidates, hasEnvelope });
+  for (const rowId of overCap) withheld.set(rowId, "over-row-cap");
+  if (selected.length === 0) {
+    announceWithheldHistory(withheld);
+    return { repaired, withheld };
+  }
+
+  /*
+  The bound is the horizon instant in the ISO shape the writer and migration 0093 use, because
+  `task_log_entries.timestamp` is `text` and its ordering — like the `>=` inside
+  `readTaskLogEntriesBatch` — is lexicographic. EVERY gated row carries it: an absent or `null` bound is
+  the UNBOUNDED arm, which is the lossless default for the log-loaded merge and a full-retention transfer
+  here. The horizon duration itself comes from `horizonFromServedWindows`, the one place that knows which
+  windows the served badges read.
+  */
+  /*
+  The horizon is resolved against the SAME default the badge resolves against. `settings.inReviewStalledThresholdMs`
+  is unset on most projects, and `getInReviewStalledSignal` answers that case with
+  `DEFAULT_IN_REVIEW_STALLED_THRESHOLD_MS` (24 h). Passing the raw `undefined` here would have
+  `horizonFromServedWindows` fall back to the churn window alone (1 h) — a horizon SHORTER than the window
+  the served badge consults, which is the undercount-by-bound this card exists to remove, in a new shape.
+  */
+  const horizonDurationMs = horizonFromServedWindows(inReviewStalledThresholdMs ?? DEFAULT_IN_REVIEW_STALLED_THRESHOLD_MS);
+  const horizonMs = nowMs - horizonDurationMs;
+  const bound = taskLogHistoryReadBound(nowMs, horizonDurationMs);
+  const layer = store.asyncLayer;
+  if (!layer) return LOG_FREE_GATE_NOTHING;
+  const bounds = new Map<string, string>();
+  for (const rowId of selected) bounds.set(rowId, bound);
+  const fetched = await readTaskLogEntriesBatch(layer.db, taskLogProjectId(layer), selected, {
+    cap: LOG_RECENT_SUFFICIENCY_READ_ROW_CAP,
+    bounds,
+  });
+  for (const rowId of selected) {
+    const entries = fetched.get(rowId) ?? [];
+    const reason = withholdReasonForGatedRow({
+      envelope: picksByRowId.get(rowId)?.logRecent ?? null,
+      entries,
+      readCap: LOG_RECENT_SUFFICIENCY_READ_ROW_CAP,
+      bound,
+      horizonMs,
+    });
+    if (reason === null) repaired.set(rowId, entries);
+    else withheld.set(rowId, reason);
+  }
+  announceWithheldHistory(withheld);
+  return { repaired, withheld };
+}
+
+/**
+ * The gate's single voice. One line per pass naming how many cards kept today's answer and every fixed
+ * reason — never one line per card, and never a payload field. The reason vocabulary is fixed in
+ * `task-log-projections.ts`, so this line is groupable without parsing prose.
+ */
+function announceWithheldHistory(withheld: ReadonlyMap<string, TaskLogSufficiencyWithholdReason>): void {
+  if (withheld.size === 0) return;
+  const tally = new Map<string, number>();
+  for (const reason of withheld.values()) tally.set(reason, (tally.get(reason) ?? 0) + 1);
+  const reasons = [...tally.entries()].map(([reason, count]) => `${reason}=${count}`).sort().join(", ");
+  storeLog.warn(
+    `[log-recent-sufficiency] ${withheld.size} card(s) kept their envelope-derived stall badge because a bounded History re-read could not prove it holds their History: ${reasons}`,
+  );
+}
+
 function isCoalescableListRead(options?: ListTasksOptions): boolean {
   return (options?.coalesce ?? true)
     && options?.limit === undefined
@@ -1348,6 +1526,35 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       ? await readTaskLogRollups(store.asyncLayer!.db, taskLogProjectId(store.asyncLayer!), logFreeRowIds)
       : null;
     /*
+    FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+    One envelope pick per log-free row, decided BEFORE any card is derived from it. The pick used to live
+    inside the per-row map, and that placement is exactly why the sufficiency proof RUFU-615 shipped had no
+    reader: the gate must see the whole page's answer situation before it can spend its one statement, and a
+    row whose envelope is picked twice is a row that can be gated one way and served another. The per-row
+    block below reads from this map instead of picking again.
+    */
+    const logFreeEnvelopePicks = new Map<string, PickedTaskLogEnvelope>();
+    for (const row of filteredRows) {
+      if (row.log !== undefined) continue;
+      logFreeEnvelopePicks.set(String(row.id), pickTaskLogEnvelope({
+        rollup: logRollups?.get(String(row.id)),
+        legacyProjectionAt: row.logProjectionAt as string | null | undefined,
+        legacyTimingTotalMs: typeof row.timingTotalMs === "number" ? row.timingTotalMs : null,
+        legacyLogRecent: parseTaskLogRecent(row.logRecent),
+      }));
+    }
+    /*
+    FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+    THE SUFFICIENCY GATE, consulted where `logLoaded` is decided — the place that today silently loses
+    History to a 2 KB window. It costs zero statements when every log-free row's envelope proves its
+    window and ONE horizon-bounded `task_log_entries` statement when some do not. Behind the derive gate it
+    runs only because a row that derives no badge has no badge to repair, so the derive:false contract (zero
+    derivations, and no extra read either) is unchanged.
+    */
+    const logFreeHistory = deriveFeed === null
+      ? LOG_FREE_GATE_NOTHING
+      : await gateLogFreeEnvelopeRows(store, now, deriveFeed.settings.inReviewStalledThresholdMs, logFreeEnvelopePicks);
+    /*
     FNXC:TaskLogSideTable 2026-11-01-19:45 (RUFU-312):
     A page that DID load the `log` column gets the merged view too, because a reader cannot tell which half of
     a card's History it is missing.
@@ -1403,13 +1610,8 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       the choice is made from the two stamps, exactly as RUFU-615's rule prefers data over its cache when the
       data is present.
       */
-      const envelope = logLoaded ? null : pickTaskLogEnvelope({
-        rollup: logRollups?.get(String(pgRow.id)),
-        legacyProjectionAt: pgRow.logProjectionAt as string | null | undefined,
-        legacyTimingTotalMs: typeof pgRow.timingTotalMs === "number" ? pgRow.timingTotalMs : null,
-        legacyLogRecent: parseTaskLogRecent(pgRow.logRecent),
-      });
-      const logProjections = logLoaded ? null : envelope!.logRecent;
+      const envelope = logLoaded ? null : logFreeEnvelopePicks.get(String(pgRow.id)) ?? null;
+      const logProjections = logLoaded ? null : envelope?.logRecent ?? null;
       const timingTotalMs = logLoaded || !envelope
         ? (typeof pgRow.timingTotalMs === "number" ? pgRow.timingTotalMs : 0)
         : (envelope.timingTotalMs ?? 0);
@@ -1432,6 +1634,23 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         staleThresholds,
       } = deriveFeed;
       const isMergeQueued = mergeQueuedTaskIds.has(task.id);
+      /*
+      FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+      THE GATE'S CONSUMER. A log-free row whose bounded re-read passed all four ground-truth proofs is
+      derived from THAT History, through the same log-based arithmetic a log-loaded read runs — so a repaired
+      card answers the way the data answers rather than the way a cache guesses, and the acceptance test can
+      therefore compare a repaired card against a log-loaded read of the same card instead of against an
+      expectation invented here. `logLoaded` above still names the raw-row fact (did the SELECT carry the
+      column) and is never overwritten by this outcome; what changes per row is which log the BADGES may
+      read. The served row is never widened: `task.log` keeps the hydrated `[]` the payload always carried
+      and the fetched entries live only in this derivation-only view, so no read shape, byte budget, or
+      `timedExecutionMs` figure moves. The view is a shallow copy for exactly that reason and is stored
+      nowhere.
+      */
+      const repairedHistory = logFreeHistory.repaired.get(String(pgRow.id));
+      const badgeSourceTask = repairedHistory ? { ...task, log: repairedHistory } : task;
+      const badgeLogLoaded = repairedHistory !== undefined || logLoaded;
+      const badgeProjections = repairedHistory ? null : logProjections;
       /*
       FNXC:WorkflowLifecycle 2026-07-05-15:40:
       In-review merge/review agents stream progress to agent-log JSONL without
@@ -1463,7 +1682,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       } satisfies StalePausedReviewContext);
-      task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
+      task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(badgeSourceTask, {
         now,
         executingTaskIds,
         reviewColumns: reviewColumnsForRow,
@@ -1471,8 +1690,8 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
-        logLoaded,
-        projection: logProjections,
+        logLoaded: badgeLogLoaded,
+        projection: badgeProjections,
       } satisfies InReviewStalledContext);
       task.stalePausedTodo = getStalePausedTodoSignal(task, {
         now,
@@ -1509,7 +1728,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         if (!(err instanceof RangeError)) throw err;
         task.ageStaleness = undefined;
       }
-      task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, { now, reviewColumns: reviewColumnsForRow, logLoaded, projection: logProjections });
+      task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(badgeSourceTask, { now, reviewColumns: reviewColumnsForRow, logLoaded: badgeLogLoaded, projection: badgeProjections });
       task.retrySummary = computeRetrySummary(task);
       /* FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174): parity with getTaskImpl above — same
          helper, same inputs, same suppression rule (merge-queued OR fresh agent-log activity),
@@ -2498,6 +2717,32 @@ const searchLayer = store.asyncLayer;
 const searchRollups = logFreeRowIds.length > 0 && searchLayer
 ? await readTaskLogRollups(searchLayer.db, taskLogProjectId(searchLayer), logFreeRowIds)
 : null;
+/*
+FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+The searched page is the SECOND log-free derivation site, and until this card it was the site that could not
+disagree with the board only because it read less: its `getInReviewStalledSignal` call passed neither
+`logLoaded` nor `projection`, so a searched card answered the in-review-quiet question from a hydrated-empty
+`log` while the same card on the board answered it from its envelope — two surfaces, one card, two answers.
+Both surfaces now pick their envelopes the same way (before deriving anything from them), ask the ONE
+sufficiency decision, and fall back through the same gate, so parity is a shared code path and not a tested
+coincidence.
+*/
+const logFreeEnvelopePicks = new Map<string, PickedTaskLogEnvelope>();
+for (const row of pgRows) {
+  if (row.log !== undefined) continue;
+  logFreeEnvelopePicks.set(String(row.id), pickTaskLogEnvelope({
+    rollup: searchRollups?.get(String(row.id)),
+    legacyProjectionAt: row.logProjectionAt as string | null | undefined,
+    legacyTimingTotalMs: typeof row.timingTotalMs === "number" ? row.timingTotalMs : null,
+    legacyLogRecent: parseTaskLogRecent(row.logRecent),
+  }));
+}
+const logFreeHistory = await gateLogFreeEnvelopeRows(
+  store,
+  now,
+  settings.inReviewStalledThresholdMs,
+  logFreeEnvelopePicks,
+);
   return Promise.all(pgRows.map(async (pgRow) => {
   const task = store.rowToTask(store.pgRowToTaskRow(pgRow));
   /*
@@ -2507,12 +2752,19 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
   row because `pgRowToTaskRow` cannot tell an absent column from an empty history.
   */
   const logLoaded = pgRow.log !== undefined;
-  const envelope = logLoaded ? null : pickTaskLogEnvelope({
-    rollup: searchRollups?.get(String(pgRow.id)),
-    legacyProjectionAt: pgRow.logProjectionAt as string | null | undefined,
-    legacyTimingTotalMs: typeof pgRow.timingTotalMs === "number" ? pgRow.timingTotalMs : null,
-    legacyLogRecent: parseTaskLogRecent(pgRow.logRecent),
-  });
+  const envelope = logLoaded ? null : logFreeEnvelopePicks.get(String(pgRow.id)) ?? null;
+  const logProjections = logLoaded ? null : envelope?.logRecent ?? null;
+  /*
+  FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636):
+  The gate's consumer on this surface, identical in meaning to the one in `listTasksImpl`: a row whose
+  bounded re-read passed all four proofs derives its badges from THAT History through the log-loaded
+  arithmetic, and every other row keeps the envelope answer. Derivation input ONLY — the served row keeps
+  its hydrated `log`, so the payload and the whole-History `timedExecutionMs` figure are untouched.
+  */
+  const repairedHistory = logFreeHistory.repaired.get(String(pgRow.id));
+  const badgeSourceTask = repairedHistory ? { ...task, log: repairedHistory } : task;
+  const badgeLogLoaded = repairedHistory !== undefined || logLoaded;
+  const badgeProjections = repairedHistory ? null : logProjections;
   const isMergeQueued = mergeQueuedTaskIds.has(task.id);
   /*
   FNXC:WorkflowLifecycle 2026-07-05-15:40:
@@ -2537,7 +2789,7 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
     engineActiveSinceMs: settings.engineActiveSinceMs,
     engineActivationGraceMs: settings.engineActivationGraceMs,
   });
-  task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(task, {
+  task.inReviewStalled = isMergeQueued ? undefined : getInReviewStalledSignal(badgeSourceTask, {
     now,
     executingTaskIds,
     reviewColumns: reviewColumnsForRow,
@@ -2545,12 +2797,21 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
     autoMerge: allowsAutoMergeProcessing(task, settings),
     engineActiveSinceMs: settings.engineActiveSinceMs,
     engineActivationGraceMs: settings.engineActivationGraceMs,
+    /*
+    FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636): THE PARITY GAP, closed. This call passed neither
+    `logLoaded` nor `projection`, so `projectionOverride` fell through to the log arithmetic over a
+    hydrated-empty `log` — the one read site where "no History" was answered from an array the projection
+    itself calls "indistinguishable from an empty history", and the reason a searched card and the same card
+    on the board could disagree about whether it is quiet.
+    */
+    logLoaded: badgeLogLoaded,
+    projection: badgeProjections,
   } satisfies InReviewStalledContext);
-  task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(task, {
+  task.stalledReview = isMergeQueued || hasFreshAgentLogActivity ? undefined : detectStalledReview(badgeSourceTask, {
     now,
     reviewColumns: reviewColumnsForRow,
-    logLoaded,
-    projection: logLoaded ? null : envelope!.logRecent,
+    logLoaded: badgeLogLoaded,
+    projection: badgeProjections,
   });
   task.retrySummary = computeRetrySummary(task);
   if (slim) {
@@ -2558,7 +2819,15 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
     FNXC:TaskLogSideTable 2026-11-01-21:58 (RUFU-312): one figure, two authors — recomputed from the column
     when the page loaded it, read from the envelope when it did not.
     */
-    task.timedExecutionMs = logLoaded ? store.computeTimedExecutionMs(task.log) : (envelope?.timingTotalMs ?? 0);
+    /*
+    FNXC:TaskLogProjections 2026-11-20-16:41 (RUFU-636): the board lane falls back to the row's OWN stored
+    sum when the winning author carries none, so this surface does too. Before this, a searched card with no
+    envelope author answered `0 ms` where the board answered the stored figure — one field, two answers, and
+    the parity this gate exists to hold.
+    */
+    task.timedExecutionMs = logLoaded
+      ? store.computeTimedExecutionMs(task.log)
+      : (envelope?.timingTotalMs ?? (typeof pgRow.timingTotalMs === "number" ? pgRow.timingTotalMs : 0));
     task.log = [];
   }
   // FNXC:BoardFeedCompaction 2026-09-17-14:49: same post-derivation drop as the board lane path.
