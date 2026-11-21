@@ -4833,6 +4833,13 @@
       "headline": "Waiting to be picked up",
       "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
     },
+    "release-sweep-budget-starved": {
+      "badgeLabel": "等待释放扫描",
+      "headline": "调度器的释放扫描在轮到这张卡片前就用完了预算（{{waited}}）",
+      "headlineUnspecified": "调度器的释放扫描在轮到这张卡片前就用完了预算",
+      "description": "这张卡片已完成规划，其计划评审也已排队，但负责释放卡片的扫描每次都先把其他卡片检查到单次上限，尚未轮到这张卡片。没有任何门禁拒绝过它。",
+      "suggestedAction": "这张卡片无需修复：该扫描每个周期都会重试，因此请缩短它正在竞争的规划泳道（完成或归档其中的卡片），让它更早轮到这张卡片。"
+    },
     "wip-admission-throttled": {
       "badgeLabel": "等待进行中槽位",
       "headline": "等待进行中的槽位（{{waited}}）",

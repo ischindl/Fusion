@@ -146,6 +146,20 @@ export type RunAuditMutationType =
   | "task:planning-admission-stalled"
   | "task:planning-admission-stalled-no-action"
   /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-05:45 (RUFU-807 Step 3):
+  One row per pass that left an armed card unevaluated when the hold/release sweep hit its deadline. The
+  release sweep already logged `budget-truncated unevaluated=700` on every pass for 14 hours, and that line
+  was the ONLY record: the central count was answerable but no query could name which cards, and no card
+  could say it. This row is the per-card half — it is written when the card's own `holdReleaseStarvation`
+  episode is accepted, so the refresh floor inside the write decider is what bounds the row rate (at most 4
+  per card per hour, RUFU-273/RUFU-393's rule) rather than one row per pass per deferred card forever.
+  Metadata is ids/counts/fixed enums only: `taskId`, `column`, `code`, `stallCount`, `unevaluatedCount`,
+  `oldestDeferredAgeMs`, and nothing else — no `armedAheadCount`, because which OTHER cards were deferred is
+  a count here, never a list, and a card-by-card rendering of a 700-card tail is unrepresentable by design.
+  Prompt text, blocker sentences, and error prose never enter the row.
+  */
+  | "task:hold-release-starved"
+  /*
   FNXC:CommentDelivery 2026-09-27-17:36 (RUFU-259):
   `task:comment-delivery` records one comment's routing attempt and `task:comment-delivery-unowned` the
   one case where no agent could be resolved at all. Before these rows existed a comment could be dropped

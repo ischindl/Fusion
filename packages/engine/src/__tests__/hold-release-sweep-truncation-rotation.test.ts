@@ -129,7 +129,7 @@ function capacityIr(): WorkflowIr {
 function storeWith(
   tasks: Task[],
   clock: { t: number },
-  opts: { blowDeadline?: boolean; ir?: WorkflowIr } = {},
+  opts: { blowDeadline?: boolean; ir?: WorkflowIr; armed?: string[]; armedReads?: { n: number } } = {},
 ): TaskStore {
   const selection = { workflowId: WF, stepIds: [] };
   let reads = 0;
@@ -152,6 +152,20 @@ function storeWith(
     getTaskWorkflowSelection: vi.fn(() => selection),
     getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
     getWorkflowDefinition: vi.fn(async () => ({ ir: opts.ir ?? dependencyHoldIr() })),
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-04:28 (RUFU-807 Step 2):
+    The armed-continuation seam, opt-in per fixture. Boards that do not pass `armed` get NO method at all,
+    which is the pre-RUFU-807 store shape the existing RUFU-698 assertions must keep passing against — the
+    duck-typed guard, not an empty set, is what leaves those orders byte-identical.
+    */
+    ...(opts.armed
+      ? {
+        listActiveTaskContinuationTaskIds: vi.fn(async () => {
+          if (opts.armedReads) opts.armedReads.n += 1;
+          return new Set(opts.armed);
+        }),
+      }
+      : {}),
   } as unknown as TaskStore;
 }
 
@@ -264,5 +278,138 @@ describe("hold-release sweep truncation rotation (RUFU-698)", () => {
     // The stale id is ignored silently — no error, and the surviving deferred card still leads.
     expect(second.rotatedDeferredCount).toBe(1);
     expect(heldOrder(second)).toEqual(["S-C", "S-A"]);
+  });
+
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-04:38 (RUFU-807 Step 2):
+  ORIGINAL SYMPTOM (field): a card whose Plan Review APPROVED sits in `todo` holding a live continuation
+  while every pass prints `Hold-release sweep … budget-truncated unevaluated=700, scanned=873` and every
+  release surface keeps answering "Plan Review is now queued for this card and will run". WIP slots were
+  mostly free, so the sweep's own budget was the gate, and the armed card always landed in the tail.
+
+  EXACT REPRODUCTION here, in the real sequence: pass 1 truncates with the card NOT yet armed, leaving it
+  in the deferred tail; Plan Review then approves and the card owns a continuation. Under RUFU-698's single
+  rotation window the NEXT pass serves the non-armed deferred card first, spends its one evaluation on it,
+  and refuses the armed card again.
+
+  ASSERTION IT IS GONE: the pass after the arming evaluates the ARMED card first — ahead of the deferred
+  non-armed tail — and a later full pass proves the partitions are disjoint (every card exactly once).
+  */
+  it("evaluates an armed card inside the next pass's budget, ahead of the deferred non-armed tail", async () => {
+    const warn = vi.spyOn(schedulerLog, "warn").mockImplementation(() => {});
+    // Queue order (equal createdAt) falls through to id: A-PLAIN-1 < A-PLAIN-2 < ARMED-1 < D-BLOCK.
+    const tasks = [blockerTask(), dependentTask("A-PLAIN-1"), dependentTask("A-PLAIN-2"), dependentTask("ARMED-1")];
+    const armed = ["ARMED-1"];
+    const clock = { t: 1_000 };
+    const deps = { now: () => clock.t, budgetMs: 10 };
+
+    /*
+    Pass 1, PRE-arming: the store exposes no armed seam at all, which is both the pre-RUFU-807 shape and
+    the real sequence — a card is only armed once Plan Review's approval releases its continuation. Plain
+    queue order evaluates A-PLAIN-1, its arm blows the deadline, and three entries defer, ARMED-1 among
+    them (D-BLOCK sorts last and is skipped by the loop but still occupies an index).
+    */
+    const first = await runHoldReleaseSweep(storeWith(tasks, clock, { blowDeadline: true }), deps);
+    expect(first.budgetTruncated).toBe(true);
+    expect(first.unevaluatedCount).toBe(3);
+    expect(heldOrder(first)).toEqual(["A-PLAIN-1"]);
+    expect(first.armedPriorityCount).toBeUndefined();
+
+    /*
+    Pass 2 is the whole defect: ARMED-1 has just been armed. Pre-RUFU-807 this order was
+    [A-PLAIN-2, ARMED-1, D-BLOCK, A-PLAIN-1] — the non-armed deferred card wins, the deadline dies in ITS
+    arm, and ARMED-1 is refused for a second pass running. Post-fix the armed partition wins and ARMED-1 is
+    the one evaluation this pass gets.
+    */
+    const second = await runHoldReleaseSweep(storeWith(tasks, clock, { blowDeadline: true, armed }), deps);
+    expect(second.budgetTruncated).toBe(true);
+    expect(heldOrder(second)).toEqual(["ARMED-1"]);
+    expect(second.armedPriorityCount).toBe(1);
+    // RUFU-698's window is intact: the non-armed deferred cards still rotate, just BEHIND the armed one.
+    expect(second.rotatedDeferredCount).toBe(2);
+
+    /*
+    Pass 3 runs the whole board inside its budget: armed partition, then the deferred non-armed tail, then
+    the queue head. Exactly three entries, each once, proves no card sits in two partitions and that
+    RUFU-698's tail still gets its turn — the armed partition is a priority, not a replacement for the
+    fairness fix. Within the deferred partition the cards keep QUEUE order (RUFU-698's own rule), which is
+    why A-PLAIN-1 precedes A-PLAIN-2 here even though A-PLAIN-2 was deferred one pass earlier.
+    */
+    const third = await runHoldReleaseSweep(storeWith(tasks, clock, { armed }), deps);
+    expect(third.budgetTruncated).toBeUndefined();
+    expect(heldOrder(third)).toEqual(["ARMED-1", "A-PLAIN-1", "A-PLAIN-2"]);
+    expect(new Set(heldOrder(third)).size).toBe(3);
+    // All three deferred entries from pass 2 rotate, D-BLOCK included — it is rotated and then skipped by
+    // its own column check, which is why it never appears in `held`.
+    expect(third.rotatedDeferredCount).toBe(3);
+
+    const line = [...warn.mock.calls].map((call) => String(call[0])).find((l) => l.includes("armed-first="));
+    expect(line).toContain("armed-first=1");
+  });
+
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-04:28 (RUFU-807 Step 2):
+  An armed POPULATION — the shape RUFU-698 was written for, now with continuations on every card. The
+  armed partition rotates under the same one-pass-bounded inversion and stays BOUNDED by
+  MAX_ARMED_PRIORITY_IDS (200), so a 400-card armed wave cannot permanently starve the queue head: the
+  cards past the cap are still evaluated, in queue order, in the third partition.
+  */
+  it("rotates inside the armed partition and bounds it at the armed-priority cap", async () => {
+    const armedIds = Array.from({ length: 400 }, (_unused, index) => `ARM-${String(index).padStart(3, "0")}`);
+    const tasks = [blockerTask(), ...armedIds.map((id) => dependentTask(id))];
+    const clock = { t: 1_000 };
+    const deps = { now: () => clock.t, budgetMs: 10 };
+
+    /*
+    Pass 1: the armed front holds exactly the cap (ARM-000…ARM-199) and ARM-200…ARM-399 fall to the third
+    partition in queue order. ARM-000's arm blows the deadline, so 400 of the 401 entries defer.
+    */
+    const first = await runHoldReleaseSweep(storeWith(tasks, clock, { blowDeadline: true, armed: armedIds }), deps);
+    expect(first.armedPriorityCount).toBe(200);
+    expect(first.unevaluatedCount).toBe(400);
+    expect(heldOrder(first)).toEqual(["ARM-000"]);
+
+    /*
+    Pass 2: 399 armed cards deferred, so the recorded armed tail is the CAP (ARM-001…ARM-200) and not the
+    399 — the bound is what holds — while the remainder rotates behind it under RUFU-698's window.
+    */
+    const second = await runHoldReleaseSweep(storeWith(tasks, clock, { blowDeadline: true, armed: armedIds }), deps);
+    expect(second.armedPriorityCount).toBe(200);
+    expect(second.rotatedDeferredCount).toBeGreaterThan(0);
+    expect(second.rotatedDeferredCount).toBeLessThan(201);
+    // The armed front is queue-ordered, and the deadline dies in the first one's arm.
+    expect(heldOrder(second)).toEqual(["ARM-001"]);
+
+    /*
+    A full pass evaluates every one of the 400 exactly once — the partitions never overlap. The head is
+    ARM-000 (deferred again by pass 2, and queue-first), while ARM-001 — the card pass 2 actually spent its
+    evaluation on — has LEFT the armed tail: the rotation advances by real progress, not by a fixed step.
+    */
+    const third = await runHoldReleaseSweep(storeWith(tasks, clock, { armed: armedIds }), deps);
+    expect(third.budgetTruncated).toBeUndefined();
+    expect(heldOrder(third)).toHaveLength(400);
+    expect(new Set(heldOrder(third)).size).toBe(400);
+    expect(heldOrder(third).slice(0, 2)).toEqual(["ARM-000", "ARM-002"]);
+  });
+
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-04:28 (RUFU-807 Step 2):
+  The armed read is a NEW database read in a sweep whose whole history (RUFU-201, RUFU-871) is spending
+  reads it did not need. An empty-candidate pass must issue none: a pass whose only card is skipped
+  before IR resolution evaluates nothing, so ordering nothing must not cost a query. Asserted as a number
+  because "the sweep got one cheap read" is exactly the regression nobody would notice in the field.
+  */
+  it("issues no armed read on a pass with no candidate to order", async () => {
+    const skipped = dependentTask("P-PAUSED");
+    skipped.dependencies = [];
+    skipped.paused = true;
+    const armedReads = { n: 0 };
+    const store = storeWith([skipped], { t: 1_000 }, { armed: ["P-PAUSED"], armedReads });
+
+    const result = await runHoldReleaseSweep(store, { now: () => Date.now(), budgetMs: 10 });
+
+    expect(result.budgetTruncated).toBeUndefined();
+    expect(armedReads.n).toBe(0);
+    expect(result.armedPriorityCount).toBeUndefined();
   });
 });

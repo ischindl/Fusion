@@ -18,6 +18,13 @@ import {
   PLAN_RECOVERY_BACKOFF_STALL_REASON,
   PLAN_SPEC_UNREADABLE_STALL_REASON,
   RECOVERABLE_WORK_STALL_REASON,
+  /* FNXC:HoldReleaseArmedPriority 2026-11-21-06:55 (RUFU-807 Step 3): the vocabulary of the third
+   * planning-lane episode, asserted through the same derivation the board reads. */
+  HOLD_RELEASE_STARVED_STALL_REASON,
+  HOLD_RELEASE_STARVATION_REFRESH_FLOOR_MS,
+  clearHoldReleaseStarvationPatch,
+  holdReleaseStarvationWrite,
+  readHoldReleaseStarvationEpisode,
   type TaskStallReasonContext,
 } from "../tasks/task-stall-reason.js";
 import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, STALE_CONTENT_APPROVAL_BLOCKER } from "../merge/task-merge.js";
@@ -403,6 +410,24 @@ function episode(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-06:55 (RUFU-807 Step 3):
+The starvation fixture, in the same shape as `episode()` above. Its defaults are the NOMINATING shape — a
+streak long enough to badge without relying on the clock — so a precedence test that never touches
+`stallCount` is testing precedence and not a threshold.
+*/
+function starvationEpisode(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    holdReleaseStarvation: {
+      code: "release-sweep-budget-starved",
+      lastAt: new Date(NOW - 60_000).toISOString(),
+      firstAt: new Date(NOW - 40 * 60_000).toISOString(),
+      stallCount: 4,
+      ...overrides,
+    },
+  };
+}
+
 const EPISODE_SENTENCES = {
   "plan-admission-throttled": PLAN_ADMISSION_THROTTLED_STALL_REASON,
   "plan-lane-ineligible": PLAN_LANE_INELIGIBLE_STALL_REASON,
@@ -564,5 +589,140 @@ describe("deriveTaskStallReason — planning admission lane", () => {
   it("readPlanAdmissionStallEpisode reads no episode from absent or unrelated metadata", () => {
     expect(readPlanAdmissionStallEpisode(undefined)).toBeUndefined();
     expect(readPlanAdmissionStallEpisode({ duplicateOfTaskIds: ["A-1"] })).toBeUndefined();
+  });
+
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-06:55 (RUFU-807 Step 3):
+  The precedence contract for the third episode that can live in this lane. Each case names one pair that
+  could otherwise be reported interchangeably, because the three claims mean different remedies: a premise
+  episode names a contract the card must fix, a planning-admission episode names a planner that is busy, a
+  WIP-admission episode names a column at its limit, and this one names a sweep whose budget died before it
+  reached the card. Collapse any pair and the operator is sent to a knob that is not stuck — the RUFU-393
+  defect class, which was created exactly by labelling a WIP refusal as a planning stall.
+  */
+  describe("hold-release starvation episode", () => {
+    it("names a card deferred past the streak threshold, well inside the hour floor", async () => {
+      const stall = await deriveTaskStallReason(
+        planningTask({ sourceMetadata: starvationEpisode({ stallCount: 3, firstAt: new Date(NOW - 5 * 60_000).toISOString() }) }),
+        planningCtx(),
+      );
+      expect(stall?.code).toBe("release-sweep-budget-starved");
+      expect(stall?.reason).toBe(HOLD_RELEASE_STARVED_STALL_REASON);
+      // The wait reported is the real elapsed time, not the threshold that tripped the badge.
+      expect(stall?.waitedMs).toBe(5 * 60_000);
+    });
+
+    it("stays silent on a single deferral — one truncated pass is ordinary scheduling", async () => {
+      await expect(
+        deriveTaskStallReason(
+          planningTask({ sourceMetadata: starvationEpisode({ stallCount: 1, firstAt: new Date(NOW - 5 * 60_000).toISOString() }) }),
+          planningCtx(),
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it("names a card past the hour floor even on its first recorded deferral", async () => {
+      const stall = await deriveTaskStallReason(
+        planningTask({ sourceMetadata: starvationEpisode({ stallCount: 1, firstAt: new Date(NOW - 61 * 60_000).toISOString() }) }),
+        planningCtx(),
+      );
+      expect(stall?.code).toBe("release-sweep-budget-starved");
+      expect(stall?.waitedMs).toBe(61 * 60_000);
+    });
+
+    it("an admission episode does not mask starvation", async () => {
+      // The card was PLANNED (that is how it got a continuation), so a leftover planning throttle
+      // describes a gate it is no longer behind.
+      const stall = await deriveTaskStallReason(
+        planningTask({ sourceMetadata: { ...episode({ code: "plan-admission-throttled" }), ...starvationEpisode() } }),
+        planningCtx(),
+      );
+      expect(stall?.code).toBe("release-sweep-budget-starved");
+    });
+
+    it("a premise episode still outranks it — a named contract violation names a fix", async () => {
+      const stall = await deriveTaskStallReason(
+        planningTask({
+          sourceMetadata: {
+            ...starvationEpisode(),
+            planPremiseRejection: { signature: "abc", refusalCount: 1 },
+          },
+        }),
+        planningCtx(),
+      );
+      expect(stall?.code).toBe("plan-premise-held");
+    });
+
+    it("a live WIP-admission episode outranks it — the outer arm keeps its precedence", async () => {
+      // The sweep REACHED this card and refused it for a pool reason: that is the truer statement, and
+      // the outer WIP-before-planning order is what guarantees it, not the inner order added here.
+      // Aged past the WIP arm's own escalation floor on purpose — an episode still inside that floor
+      // declines to speak at all, which would make this test prove nothing about precedence.
+      const stall = await deriveTaskStallReason(
+        planningTask({
+          sourceMetadata: {
+            ...starvationEpisode(),
+            wipAdmissionStall: {
+              code: "column-capacity",
+              nodeId: "wip",
+              signature: "s",
+              fromColumn: "hold",
+              toColumn: "in-progress",
+              lastAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+              firstAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+              stallCount: 2,
+            },
+          },
+        }),
+        planningCtx(),
+      );
+      expect(stall?.code).toBe("wip-admission-throttled");
+    });
+
+    it("a card that left the planning lane claims nothing, badge present or not", async () => {
+      await expect(
+        deriveTaskStallReason(makeTask({ column: "in-progress", sourceMetadata: starvationEpisode() }), ctx()),
+      ).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ["array", { holdReleaseStarvation: ["release-sweep-budget-starved"] }],
+      ["bare string", { holdReleaseStarvation: "release-sweep-budget-starved" }],
+      ["code outside the union", starvationEpisode({ code: "totally-made-up" })],
+      ["missing timestamps", { holdReleaseStarvation: { code: "release-sweep-budget-starved", stallCount: 3 } }],
+      ["non-numeric stallCount", starvationEpisode({ stallCount: "3" })],
+    ] as const)("a malformed stored starvation episode (%s) reads as no episode", async (_label, sourceMetadata) => {
+      await expect(deriveTaskStallReason(planningTask({ sourceMetadata }), planningCtx())).resolves.toBeUndefined();
+    });
+
+    it("reads a well-formed episode carrying its optional forensic fields, and nothing from unrelated metadata", () => {
+      const read = readHoldReleaseStarvationEpisode(
+        starvationEpisode({ unevaluatedCount: 700, oldestDeferredAgeMs: 7_186_192 }),
+      );
+      expect(read?.code).toBe("release-sweep-budget-starved");
+      expect(read?.oldestDeferredAgeMs).toBe(7_186_192);
+      expect(readHoldReleaseStarvationEpisode(undefined)).toBeUndefined();
+      expect(readHoldReleaseStarvationEpisode({ duplicateOfTaskIds: ["A-1"] })).toBeUndefined();
+    });
+
+    it("bounds a sustained episode to the refresh floor and resets the count on a different code", () => {
+      const first = holdReleaseStarvationWrite(undefined, { code: "release-sweep-budget-starved", unevaluatedCount: 10 }, NOW);
+      expect(first?.stallCount).toBe(1);
+      // Inside the floor of the same episode: no write, so one sustained starvation cannot stamp the row
+      // at the poll rate (RUFU-393's 16 536-row storm is the counterexample).
+      expect(holdReleaseStarvationWrite(first, { code: "release-sweep-budget-starved" }, NOW + 60_000)).toBeUndefined();
+      const refreshed = holdReleaseStarvationWrite(first, { code: "release-sweep-budget-starved" }, NOW + HOLD_RELEASE_STARVATION_REFRESH_FLOOR_MS + 1);
+      expect(refreshed?.stallCount).toBe(2);
+      // `firstAt` is preserved across a refresh so the operator sees how long the starvation has run,
+      // not when it was last seen (RUFU-273's rule, adopted verbatim).
+      expect(refreshed?.firstAt).toBe(first?.firstAt);
+      // A fresh observation with NO prior episode always writes: a sustained floor must never swallow the
+      // first naming of a newly starved card.
+      expect(holdReleaseStarvationWrite(undefined, { code: "release-sweep-budget-starved" }, NOW + 3_600_000)?.stallCount).toBe(1);
+    });
+
+    it("clears at the key level so every other provenance key on the carrier survives", () => {
+      expect(clearHoldReleaseStarvationPatch()).toEqual({ holdReleaseStarvation: null });
+    });
   });
 });

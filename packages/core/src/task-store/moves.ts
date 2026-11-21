@@ -19,6 +19,9 @@ The move seam owns the ONLY clear of the withheld-hold->WIP marker, because the 
 column-scoped and a real column change falsifies it whoever moved the card.
 */
 import { clearWipAdmissionStallPatch } from "../tasks/wip-admission-park.js";
+/* FNXC:HoldReleaseArmedPriority 2026-11-21-05:50 (RUFU-807 Step 3): the starvation marker clears at the
+same one site as the WIP marker, so its key-preserving patch is imported beside that one's. */
+import { clearHoldReleaseStarvationPatch } from "../tasks/task-stall-reason.js";
 /*
 FNXC:PostMergeEvidenceRefusalEpisode 2026-11-02-18:16 (RUFU-450): the bounded finalize-refusal episode is
 released by THIS rule, the column-change site, and by no releasing lane of its own.
@@ -27,7 +30,7 @@ import {
   POST_MERGE_EVIDENCE_REFUSAL_METADATA_KEY,
   clearPostMergeEvidenceRefusalPatch,
 } from "../merge/post-merge-evidence-refusal-episode.js";
-import { WIP_ADMISSION_STALL_METADATA_KEY } from "../types.js";
+import { WIP_ADMISSION_STALL_METADATA_KEY, HOLD_RELEASE_STARVATION_METADATA_KEY } from "../types.js";
 
 /** @internal A fenced terminal-failure apply lost ownership before its move transaction. */
 export class TerminalFailureApplyRejected extends Error {
@@ -1978,6 +1981,27 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         .catch((err: unknown) => {
           storeLog.warn("Failed to clear wip-admission park marker on move (degraded)", {
             phase: "moveTaskInternal:wip-admission-clear",
+            taskId: id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-05:50 (RUFU-807 Step 3):
+    Same rule, same site, one more key: a starvation badge describes a card the sweep has not REACHED, so it
+    stops being true the instant the card crosses a column — by release, by an operator drag, by any mover.
+    Cleared on ANY real column change rather than on a list of release lanes for the reason RUFU-393 gives
+    above (RUFU-258's incomplete-clearing-list bug), and key-preserving so the WIP marker, the planning
+    episode, and every provenance key beside it survive. Best-effort by contract: the badge carries its own
+    positional guard in `derivePlanningAdmissionStall` (it reads only inside the planning lane), so a dropped
+    clear ages out on the lane test instead of stranding a false claim.
+    */
+    if (fromColumn !== toColumn && task.sourceMetadata?.[HOLD_RELEASE_STARVATION_METADATA_KEY] != null) {
+      void store
+        .updateTask(id, { sourceMetadataPatch: clearHoldReleaseStarvationPatch() })
+        .catch((err: unknown) => {
+          storeLog.warn("Failed to clear hold-release starvation marker on move (degraded)", {
+            phase: "moveTaskInternal:hold-release-starvation-clear",
             taskId: id,
             error: err instanceof Error ? err.message : String(err),
           });

@@ -1096,6 +1096,83 @@ describe("stallReason — the withheld hold→WIP crossing", () => {
 });
 
 /*
+FNXC:HoldReleaseArmedPriority 2026-11-21-09:35 (RUFU-807 Step 5):
+A card whose own plan review is armed and queued, while the pass that would release it examines other cards
+past its per-pass budget every time, was indistinguishable on the board from a card waiting normally — and
+the surfaces that spoke both lied about it. RUFU-805 held that shape for five hours.
+
+These assertions pin the three things the chip has to get right:
+  - it renders the measured wait, in human units, from the authority's own `waitedMs`;
+  - it degrades to real copy when no age was reported rather than inventing one;
+  - it never promises a run, because the promise is the defect this card removes from the refusal path and a
+    chip that repeated it would restore the lie on the surface operators actually watch.
+*/
+describe("stallReason — the release sweep that never reaches the card", () => {
+  it("renders the elapsed deferral from the server's waitedMs through the shared humanizer", () => {
+    const { t } = makeT();
+    const fiveHours = 5 * 60 * 60_000;
+    const result = resolveStallReason(
+      subject({ column: "todo", stallReason: { ...serverStall("release-sweep-budget-starved"), waitedMs: fiveHours } as never }),
+      { t },
+    );
+
+    expect(result?.code).toBe("release-sweep-budget-starved");
+    expect(result?.headline).toContain("5 h");
+    expect(result?.headline).not.toContain("{{waited}}");
+    expect(result?.headline).not.toContain(String(fiveHours));
+  });
+
+  it("degrades to honest copy when no elapsed wait was reported", () => {
+    const { t } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "todo", stallReason: serverStall("release-sweep-budget-starved") }),
+      { t },
+    );
+
+    expect(result?.headline).toBeTruthy();
+    expect(result?.headline).not.toContain("{{waited}}");
+    // An invented age would be worse than none: the wait is the operator's whole cue to act.
+    expect(result?.headline).not.toMatch(/\d+\s*(m|h|d)\b/);
+  });
+
+  it("promises nothing the sweep has falsified", () => {
+    const { t } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "todo", stallReason: { ...serverStall("release-sweep-budget-starved"), waitedMs: 3 * 60 * 60_000 } as never }),
+      { t },
+    );
+    const all = `${result?.badgeLabel} ${result?.headline} ${result?.description} ${result?.suggestedAction}`;
+    // The removed promise, in every shape it arrived in.
+    expect(all).not.toMatch(/will run|releases itself/i);
+    // Nothing failed; sending the operator to the failure lane would be the wrong knob.
+    expect(all).not.toMatch(/\bfail(ed|ure)?\b/i);
+    // It must never read as a gate the operator can waive — that is the other wrong knob.
+    expect(all).not.toMatch(/approve|waive|bypass/i);
+  });
+
+  it("names the release sweep, not the planner, as the actor", () => {
+    const { t, calls } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "todo", stallReason: { ...serverStall("release-sweep-budget-starved"), waitedMs: 90 * 60_000 } as never }),
+      { t },
+    );
+    // A `plan-*` copy group would send an operator to planner capacity; that was the misdiagnosis.
+    expect(result?.description).toBeTruthy();
+    expect(calls.some((call) => call.key.startsWith("stall.plan-"))).toBe(false);
+    expect(calls.some((call) => call.key === "stall.release-sweep-budget-starved.description")).toBe(true);
+    // The authority's own English sentence is never passed through, so it stays translatable.
+    expect(result?.description).not.toContain("canonical blocker sentence");
+  });
+
+  it("outranks the client chain, which cannot know a sweep skipped the card", () => {
+    const { t } = makeT();
+    const withClientCause = subject({ column: "todo", blockedBy: "FN-9", stallReason: serverStall("release-sweep-budget-starved") });
+    expect(resolveStallReason(subject({ column: "todo", blockedBy: "FN-9" }), { t })?.code).toBe("dependency-block");
+    expect(resolveStallReason(withClientCause, { t })?.code).toBe("release-sweep-budget-starved");
+  });
+});
+
+/*
 FNXC:StallReason 2026-09-02-22:01 (RUFU-177):
 The face-visibility predicate is now the ONE arbiter behind four surfaces (card chip, desktop row, mobile
 card, detail banner), and it is what decides the two decisions this task turns on: which server-backed
@@ -1171,6 +1248,16 @@ const faceExpectations: Record<StallReasonCode, readonly [boolean, boolean, bool
   visible chip here means a real stall rather than ordinary lane noise.
   */
   "wip-admission-throttled": [true, true, true],
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-09:30 (RUFU-807 Step 5):
+  A card the release sweep keeps truncating past its budget shows on the card face, on the same reasoning as
+  the two families above and on RUFU-805's evidence: the card sat five hours reading as an ordinary queued
+  card, and "why hasn't this moved?" was answerable only from a production log. The exhaustive
+  `Record<StallReasonCode, …>` typing is what forces the decision — the code cannot be added to the client
+  union without stating its surface here — and core's nomination floor means a chip on the board already
+  means the deferral outlived one unlucky pass.
+  */
+  "release-sweep-budget-starved": [true, true, true],
   "plan-lane-ineligible": [true, true, true],
   "plan-premise-held": [true, true, true],
   "plan-spec-unreadable": [true, true, true],

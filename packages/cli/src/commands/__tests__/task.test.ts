@@ -1436,6 +1436,50 @@ describe("project-aware task command behavior", () => {
     expect(moveTask).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-08:45 (RUFU-807 Step 4):
+  `fn task move` is the surface an operator reaches for when a card will not move, so it is the surface
+  where a false "will run" promise cost the most: RUFU-805's operator read it from the terminal on every
+  attempt for five hours. The engine now prints a different sentence for a card the hold/release sweep is
+  observed to defer, and the CLI's job is to print it UNMODIFIED — no truncation to the first sentence,
+  no substitution of the wire code, no local rewording. This asserts the pass-through of the new copy
+  specifically, because the existing RUFU-718 case only proves the OLD sentence survives intact.
+  */
+  it("prints the budget-starved admission sentence verbatim, without restoring the false promise", async () => {
+    const starvedSentence = "Plan Review has not reported a passing verdict for this plan, so the card cannot enter execution. Plan Review is queued for this card, but the hold/release sweep has deferred it 4 times without reaching it (700 cards were left unevaluated behind its per-pass budget) — it has been waiting 3 hours. No gate has refused this card: the sweep never reached it to ask; the next actor is the hold/release sweep, which re-attempts every pass and has run out of budget before this card every time.";
+    const current = makeTask({ id: "RUFU-807-C", column: "planning" });
+    const moveTask = vi.fn();
+    const store = {
+      getTask: vi.fn().mockResolvedValue(current),
+      getTaskWorkflowSelection: vi.fn(() => undefined),
+      getWorkflowDefinition: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+      getRootDir: vi.fn(() => "/test"),
+      moveTask,
+    };
+    vi.mocked(resolveProject).mockResolvedValue({
+      projectId: "proj_test", projectPath: "/test", projectName: "demo-project", isRegistered: true,
+      store: store as unknown as TaskStore,
+    });
+    vi.mocked(isFirstPlanningToWipAdmission).mockReturnValue(true);
+    vi.mocked(admitTaskToWip).mockResolvedValue({
+      released: false,
+      rejection: "unplanned-for-execution",
+      reason: "plan-review-pending",
+      detail: starvedSentence,
+    } as never);
+
+    const failure = await runTaskMove(current.id, "in-progress", "demo-project").catch((err: unknown) => err);
+
+    const message = (failure as Error).message;
+    // Whole sentence, tail included: the tail is the part that names who moves the card.
+    expect(message).toContain(starvedSentence);
+    // The CLI must not re-add a promise the engine deliberately removed.
+    expect(message).not.toContain("and will run");
+    expect(message).not.toContain("unplanned-for-execution");
+    expect(moveTask).not.toHaveBeenCalled();
+  });
+
   it("runTaskMove passes the user source through to the task-move disposer seam (hard cancel)", async () => {
     /*
     FNXC:TaskMovement 2026-07-26-12:35:
@@ -3726,7 +3770,7 @@ describe("runTaskRetry", () => {
       This literal is a full-shape assertion, so every episode the shared builder nulls has to appear in it -
       a missing key here does not weaken the builder, it just makes the CLI's own contract red.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail.
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null, holdReleaseStarvation: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail. `unclaimedGraphWork` (RUFU-1050) was missing here for the same reason and is added back by RUFU-807; `holdReleaseStarvation` (RUFU-807) is the manual-retry exit for a card the hold/release sweep keeps truncating past its budget.
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
@@ -3839,7 +3883,7 @@ describe("runTaskRetry", () => {
       And the fourth, on this path for the same reason: the whole-patch assertion tracks the builder,
       so the deterministic-spec episode key has to appear here too.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail.
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null, holdReleaseStarvation: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail. `unclaimedGraphWork` (RUFU-1050) was missing here for the same reason and is added back by RUFU-807; `holdReleaseStarvation` (RUFU-807) is the manual-retry exit for a card the hold/release sweep keeps truncating past its budget.
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });

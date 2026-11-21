@@ -4833,6 +4833,13 @@
       "headline": "Waiting to be picked up",
       "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
     },
+    "release-sweep-budget-starved": {
+      "badgeLabel": "En attente d'une passe de libération",
+      "headline": "La passe de libération de l'ordonnanceur épuise son budget avant cette carte ({{waited}})",
+      "headlineUnspecified": "La passe de libération de l'ordonnanceur épuise son budget avant cette carte",
+      "description": "Cette carte est planifiée et sa revue de plan est en file, mais la passe qui libère les cartes examine d'autres cartes jusqu'à sa limite par passe à chaque tour et n'a pas atteint celle-ci. Aucune porte ne l'a refusée.",
+      "suggestedAction": "Rien sur cette carte n'a besoin d'être réparé : la passe se relance à chaque cycle, donc raccourcissez le couloir de planification avec lequel elle est en concurrence (terminez ou archivez des cartes) pour qu'elle atteigne celle-ci plus tôt."
+    },
     "wip-admission-throttled": {
       "badgeLabel": "En attente d'une place en cours",
       "headline": "En attente d'une place en cours de réalisation ({{waited}})",

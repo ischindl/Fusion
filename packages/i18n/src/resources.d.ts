@@ -4460,6 +4460,7 @@ export default interface Resources {
       "settingsNoteToast": "Open Settings → Memory to change backend type",
       "settingsSaved": "Memory settings saved",
       "sizeChars": "{{size}} chars",
+      "stashScopeDropped": "Excluded {{foreign}} line(s) from other Fusion projects and {{unidentified}} line(s) with no project identity.",
       "tabEngines": "Engines",
       "tabGraph": "Knowledge Graph",
       "tabInsights": "Insights",
@@ -9317,6 +9318,13 @@ export default interface Resources {
         "description": "Work exists on the branch this card claims that the card itself does not show.",
         "headline": "This card's branch holds commits that are not merged",
         "suggestedAction": "Open the branch to recover the commits, then retry or re-plan the card."
+      },
+      "release-sweep-budget-starved": {
+        "badgeLabel": "Awaiting a release pass",
+        "description": "This card is planned and its plan review is queued, but the pass that releases cards has examined other cards past its per-pass limit every time and has not reached this one. No gate has refused it.",
+        "headline": "The scheduler's release pass keeps running out of budget before this card ({{waited}})",
+        "headlineUnspecified": "The scheduler's release pass keeps running out of budget before this card",
+        "suggestedAction": "Nothing on this card needs fixing: the pass re-attempts every cycle, so shorten the planning lane it is competing with (finish or archive cards in it) to let it reach this one sooner."
       },
       "stalled-review": {
         "badgeLabel": "Stalled review",

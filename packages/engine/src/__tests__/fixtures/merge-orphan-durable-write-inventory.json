@@ -1957,6 +1957,11 @@
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
     {
+      "method": "listActiveTaskContinuationTaskIds",
+      "kind": "non-writer",
+      "reason": "reads which task ids own an active task-kind continuation, projected ids only, without mutation"
+    },
+    {
       "method": "listApprovedCliAutonomyAdapters",
       "kind": "non-writer",
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
@@ -4358,6 +4363,46 @@
       "executionProof": "none:out-of-frontier",
       "followUpTaskId": "none:out-of-frontier",
       "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to recordRetry; this imported module belongs to the legacy/independent subsystem closure."
+    },
+    {
+      "callSiteId": "packages/engine/src/execution/hold-release-starvation.ts::clearHoldReleaseStarvationBadges::store.updateTask::#1",
+      "callSiteFingerprint": "store.updateTask(taskId,{sourceMetadataPatch})",
+      "file": "packages/engine/src/execution/hold-release-starvation.ts",
+      "enclosingSymbolPath": "clearHoldReleaseStarvationBadges",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 172,
+      "owningEntryPoint": "none:out-of-frontier",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to clearHoldReleaseStarvationBadges; its only importer is packages/engine/src/execution/hold-release.ts (the scheduler's release sweep) and packages/engine/src/merge imports neither module.",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/execution/hold-release-starvation.ts::recordHoldReleaseStarvation::store.updateTask::#1",
+      "callSiteFingerprint": "store.updateTask(card.taskId,{sourceMetadataPatch})",
+      "file": "packages/engine/src/execution/hold-release-starvation.ts",
+      "enclosingSymbolPath": "recordHoldReleaseStarvation",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 110,
+      "owningEntryPoint": "none:out-of-frontier",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to recordHoldReleaseStarvation; its only importer is packages/engine/src/execution/hold-release.ts (the scheduler's release sweep) and packages/engine/src/merge imports neither module.",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
     },
     {
       "callSiteId": "packages/engine/src/execution/hold-release.ts::clearStalePlanningClaimIfSoleBlocker::store.logEntry::#1",

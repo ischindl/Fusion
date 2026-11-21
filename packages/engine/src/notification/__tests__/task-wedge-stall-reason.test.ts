@@ -133,6 +133,17 @@ describe("describeTaskWedgeFromStallReason", () => {
     "plan-recovery-backoff",
     "plan-no-admission",
     "recoverable-work",
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-07:45 (RUFU-807 Step 3):
+    RUFU-807's release-slane code joins the planning family in this list rather than the review family,
+    and it is added HERE (the tested contract) and not only in the table, so the next code that is
+    visible-but-not-alertable has to be listed against the assertion that proves silence. Two structural
+    reasons, both inherited from RUFU-273: no wedge discovery path reaches a planning-lane card that
+    writes no `status`/`error`/`pausedReason`, and the delivery path's own revalidation clears any wedge
+    whose card rests in a `hold`-trait lane — which is exactly where a starved card sits.
+    */
+    "release-sweep-budget-starved",
+    "wip-admission-throttled",
   ] as TaskStallReasonCode[])("stays silent for the planning-lane code %s: the card names the cause, the mailbox does not re-ask for a human", (code) => {
     expect(describeTaskWedgeFromStallReason(task({
       column: "hold",

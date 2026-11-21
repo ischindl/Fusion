@@ -58,6 +58,14 @@ import {
   resolveEffectiveAutoMerge,
   isTaskBlockedOnApproval,
   isPlanReviewSatisfied,
+  /* FNXC:HoldReleaseArmedPriority 2026-11-21-06:35 (RUFU-807 Step 3): the starvation episode's key and
+   * reader, so the sweep can read a card's prior count off the row it already listed and clear only the
+   * badges it authored. */
+  HOLD_RELEASE_STARVATION_METADATA_KEY,
+  readHoldReleaseStarvationEpisode,
+  /* FNXC:HoldReleaseArmedPriority 2026-11-21-08:25 (RUFU-807 Step 4): the episode shape the refusal
+   * wording is handed, so the suffix takes the observation itself rather than a re-derived summary. */
+  type TaskHoldReleaseStarvationEpisode,
   type PlanPremiseRejectionEpisode,
   /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 per-card decision gate. */
   isHumanPlanApprovalEnabled,
@@ -88,7 +96,7 @@ gathers the facts (lane roles from the card's own IR, the drain's own due page, 
 and `unclaimedWorkMeansStarved` is the one predicate that says "no consumer will take this row".
 */
 import { classifyUnclaimedWorkForTask } from "../workflows/unclaimed-graph-work-for-task.js";
-import { unclaimedWorkMeansStarved, type UnclaimedGraphWorkDecision, type UnclaimedGraphWorkOwner } from "../workflows/unclaimed-graph-work.js";
+import { unclaimedWorkMeansStarved, releaseSweepStarvedWaitDetail, type UnclaimedGraphWorkDecision, type UnclaimedGraphWorkOwner } from "../workflows/unclaimed-graph-work.js";
 import { DUE_PLANNING_CONTINUATION_BATCH_LIMIT } from "../workflows/continuation-drain-constants.js";
 import { checkPlanPremises, type PlanPremiseCheckResult } from "./plan-premise-check.js";
 /*
@@ -99,6 +107,18 @@ durable episode is what turns "the engine knew why and said nothing" into an ope
 refresh floor inside `wipAdmissionStallWrite` is what makes calling it from a poll safe.
 */
 import { publishWipAdmissionHold } from "./wip-admission-park.js";
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-06:30 (RUFU-807 Step 3):
+The naming half of the same fix, imported beside the capacity publisher it sits next to in the pass: one
+module owns "this card was refused for a gate", the other owns "this card was never reached at all". Both
+write key-level `sourceMetadata` episodes and both are best-effort, so neither can fail a release.
+*/
+import {
+  MAX_STARVATION_WRITES_PER_PASS,
+  clearHoldReleaseStarvationBadges,
+  measureOldestDeferredAge,
+  recordHoldReleaseStarvation,
+} from "./hold-release-starvation.js";
 import {
   advancePlanPremiseRejectionEpisode,
   buildPlanPremiseExhaustedError,
@@ -391,6 +411,25 @@ export interface HoldReleaseResult {
   unevaluatedCount?: number;
   /** Cards moved to the front of this pass because a truncated pass never evaluated them (RUFU-698). */
   rotatedDeferredCount?: number;
+  /**
+   * Cards placed in the armed front partition this pass (RUFU-807) — continuation-backed cards whose
+   * release is already armed, ordered ahead of the queue because their wait has a definite deadline.
+   * Printed only when non-zero, as its own field: it must never be folded into `rotated-deferred`, whose
+   * reconciliation against the previous pass's `unevaluatedCount` is an asserted contract.
+   */
+  armedPriorityCount?: number;
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-06:30 (RUFU-807 Step 3):
+  Armed cards this truncating pass named on the board (wrote or refreshed their starvation episode).
+  Printed as its own field outside the reconciling parenthesis, next to `armed-first`, and never folded
+  into `unevaluatedCount`: that figure counts every card left unevaluated, armed or not, and the pair
+  together is the diagnostic — "the pass left 700 cards unexamined and 1 of them was armed" reads
+  differently from either number alone.
+  */
+  /** Armed cards this pass named as starved (0 unless a pass truncated). */
+  starvedArmedCount?: number;
+  /** Age in ms of the OLDEST card this pass never evaluated, from its `createdAt`. */
+  oldestDeferredAgeMs?: number;
 }
 
 export type WipAdmissionRejection =
@@ -776,11 +815,32 @@ export function unclaimedPlanningWaitDetail(decision: UnclaimedGraphWorkDecision
   return ` Plan Review is already queued for this card, but nothing will dispatch it: ${cause}. The card stays put, and the next actor is ${UNCLAIMED_NEXT_ACTOR_LABEL[decision.owner] ?? decision.owner}.`;
 }
 
-function planReviewArmingSuffix(arming: PlanReviewArming, unclaimed?: UnclaimedGraphWorkDecision | null): string {
+function planReviewArmingSuffix(
+  arming: PlanReviewArming,
+  unclaimed?: UnclaimedGraphWorkDecision | null,
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-08:20 (RUFU-807 Step 4):
+  The card's own persisted starvation observation, read off `task.sourceMetadata` — no new store read, and
+  no second opinion about a fact the sweep already wrote. It is consulted by the TWO arms that name a run
+  (`armed` and `bailed: "active-continuation"`), because those are the only arms that can promise one, and
+  it outranks the RUFU-1050 unclaimed text: an unclaimed row explains why a healthy queue is not draining,
+  while a starvation observation is this card's own measured record of being skipped by the pass that would
+  have evaluated it. `null` keeps every historical sentence byte-identical, which is what leaves RUFU-1050's
+  and RUFU-698's assertions passing untouched.
+  */
+  starved?: TaskHoldReleaseStarvationEpisode | null,
+): string {
   const honest = unclaimedPlanningWaitDetail(unclaimed ?? undefined);
+  const starvedHonest = releaseSweepStarvedWaitDetail(starved ?? undefined);
   switch (arming.kind) {
     case "armed":
-      return " Plan Review is now queued for this card and will run; the card releases itself once it reports a passing verdict.";
+      /*
+      FNXC:HoldReleaseArmedPriority 2026-11-21-08:20 (RUFU-807 Step 4):
+      The arm that created a continuation row for a card the sweep has already deferred three times cannot
+      finish its sentence with "and will run": arming the row is not what evaluates it, the sweep is. The
+      measurement says the sweep has not reached this card, so that is the sentence.
+      */
+      return starvedHonest ?? " Plan Review is now queued for this card and will run; the card releases itself once it reports a passing verdict.";
     case "automatic":
       return " Plan Review runs before execution; this card stays in its planning lane until it reports.";
     case "unavailable":
@@ -792,8 +852,14 @@ function planReviewArmingSuffix(arming: PlanReviewArming, unclaimed?: UnclaimedG
           FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
           The one arm that names a specific armed row, so it is the one arm that can promise a run that
           will never happen. When the decision says no consumer will take that row, say so instead.
+
+          FNXC:HoldReleaseArmedPriority 2026-11-21-08:20 (RUFU-807 Step 4):
+          The second cause of the same false promise, measured on the card rather than on the row: RUFU-805's
+          row was healthy and due for five hours because the sweep that reads it never got as far as the
+          card. A starvation observation therefore pre-empts even a `null` unclaimed decision — the row may
+          be perfectly claimable and the card still never evaluated.
           */
-          return honest ?? " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
+          return starvedHonest ?? honest ?? " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
         case "plan-review-passed":
           return " A passing Plan Review has just been recorded — move the card again and it will be admitted.";
         case "awaiting-approval":
@@ -882,7 +948,13 @@ async function dischargeUnplannedAdmission(
         unclaimed = null;
       }
     }
-    return { continueRelease: false, detail: `${base}${planReviewArmingSuffix(arming, unclaimed)}` };
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-08:20 (RUFU-807 Step 4):
+    Read off the row the caller already handed this function: the episode is the sweep's own record, so the
+    honesty check costs one property lookup and performs no store read on a release hot path.
+    */
+    const starved = readHoldReleaseStarvationEpisode(task.sourceMetadata);
+    return { continueRelease: false, detail: `${base}${planReviewArmingSuffix(arming, unclaimed, starved)}` };
   }
   if (reason === "planning-status") {
     const staleClaim = await clearStalePlanningClaimIfSoleBlocker(store, deps, task, ir, options.pass);
@@ -1376,7 +1448,21 @@ the next pass would reach anyway — and it ends by construction at the first pa
 its budget, which deletes the entry.
 */
 const MAX_ROTATED_DEFERRED_IDS = 500;
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-04:05 (RUFU-807 Step 2):
+How many continuation-backed ("armed") cards the priority partition may hold. BOUNDED, and smaller than
+the deferred window on purpose: an armed population of 3 000 on a big board must not invert into "every
+armed card stays ahead of every scheduled card forever" — that only relocates RUFU-807's starvation onto
+the rest of the board. Armed cards past the cap are still evaluated, in queue order, in the third
+partition; the cap bounds just the part guaranteed to sit inside the next pass's budget.
+
+RUFU-698's rotation applies INSIDE this partition too, under the same one-pass-bounded inversion rule, so
+an armed population larger than one pass's budget rotates instead of re-refusing the same tail.
+*/
+const MAX_ARMED_PRIORITY_IDS = 200;
 const deferredTailsByProject = new Map<string, string[]>();
+/** RUFU-807: the armed partition's own previous-pass tail, kept separate from the non-armed one. */
+const armedDeferredTailsByProject = new Map<string, string[]>();
 const syntheticSweepProjects = new WeakMap<object, string>();
 let syntheticSweepProjectCounter = 0;
 
@@ -1403,19 +1489,121 @@ function sweepProjectKey(store: TaskStore): string {
   return key;
 }
 
+/** Split a queue-ordered list into (previously-deferred, the rest), keeping queue order WITHIN each part. */
+function takeDeferredFront(
+  ordered: readonly Task[],
+  deferredIds: readonly string[] | undefined,
+): { front: Task[]; rest: Task[] } {
+  const front: Task[] = [];
+  const rest: Task[] = [];
+  if (!deferredIds || deferredIds.length === 0) return { front, rest: [...ordered] };
+  const deferred = new Set(deferredIds);
+  // Ids that left the board simply never appear, so a stale tail cannot shift any other card.
+  for (const task of ordered) (deferred.has(task.id) ? front : rest).push(task);
+  return { front, rest };
+}
+
 /** Put the previously-deferred cards first, keeping queue order WITHIN each partition. */
 function rotateDeferredToFront(
   ordered: Task[],
   deferredIds: readonly string[] | undefined,
 ): { tasks: Task[]; rotatedCount: number } {
-  if (!deferredIds || deferredIds.length === 0) return { tasks: ordered, rotatedCount: 0 };
-  const deferred = new Set(deferredIds);
-  const first: Task[] = [];
-  const rest: Task[] = [];
-  // Ids that left the board simply never appear, so a stale tail cannot shift any other card.
-  for (const task of ordered) (deferred.has(task.id) ? first : rest).push(task);
-  if (first.length === 0) return { tasks: ordered, rotatedCount: 0 };
-  return { tasks: [...first, ...rest], rotatedCount: first.length };
+  const { front, rest } = takeDeferredFront(ordered, deferredIds);
+  if (front.length === 0) return { tasks: ordered, rotatedCount: 0 };
+  return { tasks: [...front, ...rest], rotatedCount: front.length };
+}
+
+/** What the sweep needs out of the ordering: the order itself plus the two counts it prints. */
+interface HoldReleaseEvaluationOrder {
+  readonly tasks: Task[];
+  /** Armed cards placed in the always-in-budget front partition (0 whenever the armed read was skipped). */
+  readonly armedCount: number;
+  /** Non-armed cards pulled forward from the previous pass's deferred tail (RUFU-698's field). */
+  readonly rotatedDeferredCount: number;
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-04:05 (RUFU-807 Step 2):
+The evaluation order is THREE queue-ordered partitions, built so a card whose release is already armed by
+a Plan Review approval can never sit behind an unbounded tail of cards that merely wait for a slot. Field
+evidence (RUFU-807): `budget-truncated unevaluated=700, scanned=873` on a project whose WIP slots were
+mostly FREE — the sweep was the gate, and the armed card was always in the truncated tail.
+
+  1. armed cards, previous armed-deferred tail first, capped at MAX_ARMED_PRIORITY_IDS;
+  2. the non-armed rotated-deferred tail (RUFU-698's window, its semantics unchanged);
+  3. every remaining card in plain queue order — where armed cards past the cap land, so the cap bounds
+     the guaranteed-in-budget front and never drops a card.
+
+Disjointness is structural: partition 3 is `queueOrdered` minus the ids placed in 1 and 2, so no card can
+appear twice however the two deferred tails overlap. RUFU-698's ONE-PASS-BOUNDED rule still holds — the
+tail maps always hold the PREVIOUS pass's tail, never this pass's own, and the armed partition rotates
+only over the armed map. With an empty armed set this returns the exact RUFU-698 order, which is the
+shape every pre-RUFU-807 fixture takes (no armed read available, or a board with no armed card).
+*/
+function orderTasksForReleaseEvaluation(
+  queueOrdered: readonly Task[],
+  armedIds: ReadonlySet<string>,
+  armedDeferredIds: readonly string[] | undefined,
+  nonArmedDeferredIds: readonly string[] | undefined,
+): HoldReleaseEvaluationOrder {
+  if (armedIds.size === 0) {
+    const rotation = rotateDeferredToFront(queueOrdered as Task[], nonArmedDeferredIds);
+    return { tasks: rotation.tasks, armedCount: 0, rotatedDeferredCount: rotation.rotatedCount };
+  }
+
+  const armedQueueOrdered: Task[] = [];
+  const nonArmedQueueOrdered: Task[] = [];
+  for (const task of queueOrdered) (armedIds.has(task.id) ? armedQueueOrdered : nonArmedQueueOrdered).push(task);
+
+  /*
+   * Rotation here reorders WITHIN the armed partition; it does not define it. Every armed card is in the
+   * partition (up to the cap), previously-deferred ones first — selecting only the deferred front would
+   * empty the partition on the pass that matters most, the FIRST pass after a Plan Review approval, since
+   * a freshly-armed card has no history in the armed tail map. That silent emptiness is what would make
+   * this whole fix depend on a card having already starved once.
+   */
+  const armedDeferred = takeDeferredFront(armedQueueOrdered, armedDeferredIds);
+  const armedFront = [...armedDeferred.front, ...armedDeferred.rest].slice(0, MAX_ARMED_PRIORITY_IDS);
+  const nonArmed = takeDeferredFront(nonArmedQueueOrdered, nonArmedDeferredIds);
+  const placed = new Set<string>([
+    ...armedFront.map((task) => task.id),
+    ...nonArmed.front.map((task) => task.id),
+  ]);
+  return {
+    tasks: [...armedFront, ...nonArmed.front, ...queueOrdered.filter((task) => !placed.has(task.id))],
+    armedCount: armedFront.length,
+    rotatedDeferredCount: nonArmed.front.length,
+  };
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-04:05 (RUFU-807 Step 2):
+One batched membership read per non-empty project pass answers "which of the cards I am about to order
+owns live continuation work", so those cards can be evaluated inside the next pass's budget instead of
+always landing in its truncated tail. Four guards, all of which degrade to today's ordering rather than
+failing the sweep, because this read can only ever influence ORDER:
+
+  - an empty candidate list issues NO query (an empty board must not grow a new read);
+  - a spent deadline skips it (the pass is already truncating; spending the budget on a read that orders
+    nothing would be the RUFU-871 shape again);
+  - a store without the seam (duck-typed, as RUFU-314's `logEntryOnce` fallback does it) is left alone;
+  - a read that throws returns an empty set and warns, because a starvation fix must never become a new
+    way to fail a release.
+*/
+async function readArmedContinuationTaskIds(
+  store: TaskStore,
+  candidateIds: readonly string[],
+  skip: boolean,
+): Promise<Set<string>> {
+  if (skip || candidateIds.length === 0) return new Set();
+  const read = (store as Partial<TaskStore>).listActiveTaskContinuationTaskIds;
+  if (typeof read !== "function") return new Set();
+  try {
+    return await read.call(store, candidateIds);
+  } catch {
+    schedulerLog.warn("Hold-release armed read failed; falling back to plain queue order (RUFU-807)");
+    return new Set();
+  }
 }
 
 /** Record/refresh the held-since clock for a task and return how long it has been held. */
@@ -1455,6 +1643,7 @@ export function resetHoldReleaseInstrumentation(): void {
   inFlightSweepProjects.clear();
   // RUFU-698: rotation state is per-process test-isolated state, and 11 suites call this between files.
   deferredTailsByProject.clear();
+  armedDeferredTailsByProject.clear();
 }
 
 export async function runHoldReleaseSweep(
@@ -1724,19 +1913,22 @@ export async function runHoldReleaseSweep(
     bucket as before, so a regression here shows up on the same token operators already read.
     */
     const irPrefetchStartedMs = deps.now();
-    if (!expired()) {
-      // Only the cards the candidate loop would actually evaluate: a paused, backed-off, or
-      // premise-parked card must draw no IR read at all (RUFU-246), and the same predicate decides both
-      // lists so the loop and the prefetch cannot disagree about who that covers.
-      const irCandidateIds = allTasks
-        .filter((task) => !sweepSkipsCardBeforeIrResolution(task, deps.now()))
-        .map((task) => task.id);
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-04:05 (RUFU-807 Step 2):
+    Hoisted out of the `expired()` guard because a SECOND consumer needs the exact same list: the armed
+    read below. One predicate, one list, so the candidate loop, the IR prefetch, and the armed partition
+    can never disagree about who this pass was going to evaluate — a paused, backed-off, or premise-parked
+    card draws no IR read (RUFU-246) and claims no armed slot either, which is what keeps the armed
+    partition from spending its guaranteed budget on cards the loop would `continue` past anyway.
+    */
+    const sweepCandidateIds = allTasks
+      .filter((task) => !sweepSkipsCardBeforeIrResolution(task, deps.now()))
+      .map((task) => task.id);
+    if (!expired() && sweepCandidateIds.length > 0) {
       // `resolverStore` is the sweep's counting facade, so the definition reads this performs land in
       // `reads(definitions=…)` rather than vanishing from the tally. No `definitionReadTally` is passed:
       // the proxy already counts the call, and passing both would double-count it.
-      if (irCandidateIds.length > 0) {
-        await prefetchWorkflowIrs(resolverStore, irCandidateIds, irCache, selectionCache);
-      }
+      await prefetchWorkflowIrs(resolverStore, sweepCandidateIds, irCache, selectionCache);
     }
     irResolveMs += deps.now() - irPrefetchStartedMs;
     const cachedWorkflowIr = createCachedWorkflowIrReader(resolverStore, irCache, selectionCache);
@@ -1758,14 +1950,19 @@ export async function runHoldReleaseSweep(
     dispatcher and board ordering cannot drift; retain allTasks as the occupancy
     and dependency snapshot rather than changing the global listTasks order.
     */
-    const tasksForReleaseEvaluation = (() => {
-      // RUFU-698: the cards the last truncated pass never reached get their turn first (see helper).
-      const rotation = rotateDeferredToFront(sortTasksByQueueOrder(allTasks), deferredTailsByProject.get(projectKey));
-      if (rotation.rotatedCount > 0) result.rotatedDeferredCount = rotation.rotatedCount;
-      return rotation.tasks;
-    })();
+    const armedIds = await readArmedContinuationTaskIds(store, sweepCandidateIds, expired());
+    const evaluationOrder = orderTasksForReleaseEvaluation(
+      sortTasksByQueueOrder(allTasks),
+      armedIds,
+      armedDeferredTailsByProject.get(projectKey),
+      deferredTailsByProject.get(projectKey),
+    );
+    if (evaluationOrder.armedCount > 0) result.armedPriorityCount = evaluationOrder.armedCount;
+    if (evaluationOrder.rotatedDeferredCount > 0) result.rotatedDeferredCount = evaluationOrder.rotatedDeferredCount;
+    const tasksForReleaseEvaluation = evaluationOrder.tasks;
 
     let breakIndex: number | undefined;
+    let truncatedTasks: Task[] | undefined;
     for (let index = 0; index < tasksForReleaseEvaluation.length; index += 1) {
       if (expired()) { breakIndex = index; break; }
       const task = tasksForReleaseEvaluation[index]!;
@@ -1909,11 +2106,89 @@ export async function runHoldReleaseSweep(
       can do this: a preamble-truncated pass never built an ordered list, which is also why the preamble
       line prints no `rotated-deferred` field — it has not rotated anything.
       */
-      const tail = tasksForReleaseEvaluation.slice(breakIndex).map((task) => task.id);
-      deferredTailsByProject.set(projectKey, tail.slice(0, MAX_ROTATED_DEFERRED_IDS));
+      /*
+      FNXC:HoldReleaseArmedPriority 2026-11-21-04:05 (RUFU-807 Step 2):
+      The truncated tail splits by partition, because the two halves rotate against different windows and
+      a card may never sit in both. RUFU-698's recording semantics hold for the non-armed half exactly as
+      before (bounded by MAX_ROTATED_DEFERRED_IDS, deleted by a pass that finished inside its budget); the
+      armed half is bounded by MAX_ARMED_PRIORITY_IDS so a tail cannot swell its own front partition. With
+      no armed card on the board both halves reduce to RUFU-698's single tail.
+      */
+      const truncatedTail = tasksForReleaseEvaluation.slice(breakIndex).map((task) => task.id);
+      const armedTail = truncatedTail.filter((taskId) => armedIds.has(taskId));
+      const nonArmedTail = truncatedTail.filter((taskId) => !armedIds.has(taskId));
+      if (armedTail.length > 0) armedDeferredTailsByProject.set(projectKey, armedTail.slice(0, MAX_ARMED_PRIORITY_IDS));
+      else armedDeferredTailsByProject.delete(projectKey);
+      if (nonArmedTail.length > 0) deferredTailsByProject.set(projectKey, nonArmedTail.slice(0, MAX_ROTATED_DEFERRED_IDS));
+      else deferredTailsByProject.delete(projectKey);
+      truncatedTasks = tasksForReleaseEvaluation.slice(breakIndex);
     } else {
       // A pass that finished inside its budget examined everyone: the inversion is over by definition.
       deferredTailsByProject.delete(projectKey);
+      armedDeferredTailsByProject.delete(projectKey);
+    }
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-06:35 (RUFU-807 Step 3):
+    Name the cards this pass never reached — the ARMED ones only — from the same in-memory rows the loop
+    already held, so the diagnostic performs no read beyond its own writes.
+
+    The deferral count is deliberately NOT a second in-process Map. `evaluatedTaskIds` is this pass's
+    existing record of who was examined, `heldSince`/`longestHeldMs` the existing record of how long a
+    wait has run, and the persisted episode's `stallCount` the durable count that survives a restart —
+    RUFU-805's silence began precisely at a restart, so an in-process accumulator would have reset to zero
+    at the moment the operator finally looked. A fourth structure counting "times deferred" would be a
+    second opinion about one fact, and the two disagreeing is how a badge outlives its cause. So the
+    truncation tail intersected with `armedIds` IS the starved set, the candidate row's own
+    `sourceMetadata` is the prior count, and `evaluatedTaskIds` decides who gets cleared.
+
+    Runs after the loop, beside RUFU-393's publisher, for that publisher's own reason: an awaited marker
+    write inside the measured region would charge the diagnostic to the phase whose cost it exists to
+    explain.
+    */
+    if (truncatedTasks && truncatedTasks.length > 0) {
+      const oldestDeferred = measureOldestDeferredAge(truncatedTasks, deps.now());
+      if (oldestDeferred !== undefined) result.oldestDeferredAgeMs = oldestDeferred;
+      const starvedCards = truncatedTasks
+        .filter((task) => armedIds.has(task.id))
+        .map((task) => ({
+          taskId: task.id,
+          column: task.column,
+          existing: readHoldReleaseStarvationEpisode(task.sourceMetadata),
+        }));
+      if (starvedCards.length > 0) {
+        /*
+        FNXC:HoldReleaseArmedPriority 2026-11-21-07:30 (RUFU-807 Step 3):
+        The summary counts the STATE, not the writes it accepted. Counting accepted writes would make the
+        field go quiet after each card's first hour — precisely when the starvation has become long enough
+        to matter — because the refresh floor then suppresses every later write. The count of armed cards
+        behind the break is the fact the operator needs on every pass; the write cadence is a separate
+        concern bounded by the floor.
+        */
+        result.starvedArmedCount = starvedCards.length;
+        const naming = await recordHoldReleaseStarvation(store, starvedCards, deps.now(), {
+          unevaluatedCount: result.unevaluatedCount ?? truncatedTasks.length,
+          ...(oldestDeferred !== undefined ? { oldestDeferredAgeMs: oldestDeferred } : {}),
+        });
+        if (naming.cappedCount > 0 || naming.writeFailedCount > 0) {
+          schedulerLog.warn(
+            `Hold-release starvation naming degraded: named=${naming.namedCount} already-named=${naming.alreadyNamedCount} `
+            + `write-failed=${naming.writeFailedCount} capped=${naming.cappedCount} (cap ${MAX_STARVATION_WRITES_PER_PASS})`,
+          );
+        }
+      }
+    }
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-06:35 (RUFU-807 Step 3):
+    Retire the badge on every card this pass DID reach, bounded by the same per-pass cap as the writes.
+    Cleared from the candidate rows already in hand (a `sourceMetadata` key test costs nothing), so no card
+    is queried for a fact the pass already read.
+    */
+    if (evaluatedTaskIds.size > 0) {
+      const reachedStarvedCards = allTasks
+        .filter((task) => evaluatedTaskIds.has(task.id) && task.sourceMetadata?.[HOLD_RELEASE_STARVATION_METADATA_KEY] != null)
+        .slice(0, MAX_STARVATION_WRITES_PER_PASS)
+        .map((task) => task.id);
+      if (reachedStarvedCards.length > 0) await clearHoldReleaseStarvationBadges(store, reachedStarvedCards);
     }
     /*
     FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
@@ -1956,7 +2231,30 @@ export async function runHoldReleaseSweep(
     hiding a slice of it.
     */
     const rotationField = (): string => (result.rotatedDeferredCount ? `, rotated-deferred=${result.rotatedDeferredCount}` : "");
-    const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${evaluateMs}ms over ${allTasks.length} tasks${phasesSummary(evaluateMs)})${slotFields()}${rotationField()}, released=${result.released.length}, held=${result.held.length}`
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-04:20 (RUFU-807 Step 2):
+    Its OWN field, outside the reconciling parenthesis, and never folded into `rotated-deferred`: that
+    field's identity with the previous pass's `unevaluatedCount` is an asserted contract
+    (hold-release-sweep-budget-fit.test.ts), and an armed card pulled out of the non-armed tail breaks the
+    sum whenever a truncated tail holds both kinds. Printed only when non-zero so a board with no armed
+    card keeps the byte-identical pre-RUFU-807 line.
+    */
+    const armedField = (): string => (result.armedPriorityCount ? `, armed-first=${result.armedPriorityCount}` : "");
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-06:35 (RUFU-807 Step 3):
+    The two truncation fields, printed only when non-zero and outside the reconciling parenthesis, in the
+    style of `armed-first` and `rotated-deferred`. Together with `budget-truncated unevaluated=N` they turn
+    the one number that has been on every pass for 14 hours into a diagnosable statement:
+    `unevaluated` says how many were skipped, `starved-armed` says how many of them had an armed release
+    waiting on that skip, and `oldest-deferred` says how long the lane's deepest card has been behind the
+    break — a tail whose oldest member is 2 days old is not a long lane, it is a card the rotation never
+    reaches. The lever those three point at is the cost the `slot-detail=` group already names (the
+    2026-11-14 line reads `slot:residual=12665ms`), never the budget constant itself.
+    */
+    const starvedField = (): string => (result.starvedArmedCount ? `, starved-armed=${result.starvedArmedCount}` : "");
+    const oldestDeferredField = (): string =>
+      (result.oldestDeferredAgeMs ? `, oldest-deferred=${result.oldestDeferredAgeMs}ms` : "");
+    const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${evaluateMs}ms over ${allTasks.length} tasks${phasesSummary(evaluateMs)})${slotFields()}${armedField()}${starvedField()}${oldestDeferredField()}${rotationField()}, released=${result.released.length}, held=${result.held.length}`
       + (result.budgetTruncated ? `, budget-truncated unevaluated=${result.unevaluatedCount ?? 0}` : "")
       + (sweepMs > budgetMs ? `, budgetOverrunMs=${sweepMs - budgetMs}` : "")
       + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}, prompts=${counters.prompts}, workItems=${counters.workItems}, evalSettings=${counters.evalSettings})`

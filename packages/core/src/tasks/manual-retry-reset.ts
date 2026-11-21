@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, HOLD_RELEASE_STARVATION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -215,6 +215,17 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
       RUFU-395 rule: if a park reads a number, Retry must reset that number or the park has no door.
       */
       [UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY]: null,
+      /*
+      FNXC:HoldReleaseArmedPriority 2026-11-21-05:28 (RUFU-807 Step 3):
+      And to the hold-release starvation episode, the EIGHTH key in this one statement. It is diagnostic
+      rather than a budget, but it belongs here for the same reason RUFU-273 put `planAdmissionStall` in:
+      a card the operator just pushed to the front of the queue must not keep wearing "the dispatcher never
+      reaches it" from before the push. Unlike `wipAdmissionStall` — withheld because its release owner is
+      the capacity gate itself, so an operator cannot lift it — this episode has no owner but the sweep's
+      next pass, which re-writes it honestly if the starvation is still real. Clearing therefore costs
+      nothing and buys an honest chip after a Retry.
+      */
+      [HOLD_RELEASE_STARVATION_METADATA_KEY]: null,
     },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],

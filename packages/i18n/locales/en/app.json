@@ -7948,6 +7948,13 @@
     "nousResearchLogoAlt": "Nous Research"
   },
   "stall": {
+    "release-sweep-budget-starved": {
+      "badgeLabel": "Awaiting a release pass",
+      "headline": "The scheduler's release pass keeps running out of budget before this card ({{waited}})",
+      "headlineUnspecified": "The scheduler's release pass keeps running out of budget before this card",
+      "description": "This card is planned and its plan review is queued, but the pass that releases cards has examined other cards past its per-pass limit every time and has not reached this one. No gate has refused it.",
+      "suggestedAction": "Nothing on this card needs fixing: the pass re-attempts every cycle, so shorten the planning lane it is competing with (finish or archive cards in it) to let it reach this one sooner."
+    },
     "wip-admission-throttled": {
       "badgeLabel": "Waiting for a WIP slot",
       "headline": "Waiting for a work-in-progress slot ({{waited}})",

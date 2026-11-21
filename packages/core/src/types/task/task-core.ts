@@ -722,6 +722,68 @@ export interface TaskPlanAdmissionStallEpisode {
 }
 
 /*
+FNXC:HoldReleaseArmedPriority 2026-11-21-05:10 (RUFU-807 Step 3):
+The hold/release sweep bounds its own work per pass, and RUFU-698 fixed the population case by rotating
+the previous pass's deferred tail forward. Neither mechanism can see the one case this episode exists
+for: a card whose Plan Review APPROVED owns a live continuation, so its wait is no longer an ordinary
+queue wait — it has a definite deadline — yet it still sorts behind every card ahead of it and can land
+in the truncated tail every single pass. Field evidence: `budget-truncated unevaluated=700, scanned=873`
+repeated for over 14 hours while every release surface kept promising "Plan Review is now queued for
+this card and will run", because a card released into an active WIP column legitimately says that.
+
+RUFU-807's ordering fix (armed cards first) makes this rare; this episode is what makes it LOUD when it
+still happens, because every existing announcer for a planning-lane card is triage's (`plan-admission-
+throttled`) and none of them observes the release sweep. Without a per-card record the only evidence is
+the engine log line, which is the same "countable but not diagnosable" gap RUFU-372 names.
+
+It is a `sourceMetadata` episode for the reasons RUFU-246 / RUFU-273 / RUFU-393 each established: no new
+`tasks` column, key-level writes through `updateTaskAtomic`'s `sourceMetadataPatch` so
+`duplicateOfTaskIds`/`handoffFrom`/`planAdmissionStall` survive, and the value sits in the slim row
+projection the sweeps already read candidates with. It is DIAGNOSTIC-ONLY: it must never gate admission,
+release, or merge — the sweep's ordering already does the releasing, and a badge that also gated would
+make a diagnostic a lifecycle dependency.
+
+Why persisted rather than derived: the fact recorded is "the sweep reached its deadline with THIS card
+still unevaluated", which is only observable inside the pass that truncates. A task read cannot re-derive
+it, exactly as RUFU-273 argues for the capacity-throttle observation.
+
+Cleared at key level by `buildManualRetryResetPatch` (RUFU-395's pairing rule: one operator Retry returns
+the lane its full budget) and by the move seam when the card actually crosses out of the hold lane.
+*/
+export const HOLD_RELEASE_STARVATION_METADATA_KEY = "holdReleaseStarvation" as const;
+
+/**
+ * Which hold/release starvation the row was last observed behind. One member today: the sweep's own
+ * budget. A fixed union so a future mechanism (a per-card deadline, a lane-specific cap) adds a code and
+ * the sentence table fails to compile until it is named — the same reason the planning family is keyed.
+ */
+export type TaskHoldReleaseStarvationCode =
+  /** A sweep pass reached its deadline with this armed card still unevaluated. */
+  | "release-sweep-budget-starved";
+
+/**
+ * Durable hold-release starvation episode for one card (RUFU-807). Nullable: absent or `null` means
+ * "never deferred past a sweep deadline", which is the state a released, moved, or retried card returns
+ * to.
+ */
+export interface TaskHoldReleaseStarvationEpisode {
+  /** The mechanism that deferred the card. Maps 1:1 onto a stall code. */
+  code: TaskHoldReleaseStarvationCode;
+  /** ISO timestamp of the most recent pass that left this card unevaluated. */
+  lastAt: string;
+  /** ISO timestamp of the FIRST such pass, preserved across refreshes so the operator sees how long the
+   *  starvation has run rather than when it was last seen. */
+  firstAt: string;
+  /** How many passes left this card unevaluated (1-based; resets when `code` changes). */
+  stallCount: number;
+  /** Cards the truncating pass never evaluated. A count, never ids — the row must not carry a card list. */
+  unevaluatedCount?: number;
+  /** Age in ms of the OLDEST card still unevaluated when the pass died. The measurement that says the
+   *  wait is bounded by the sweep and not by capacity. */
+  oldestDeferredAgeMs?: number;
+}
+
+/*
 FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
 Planning wrote a spec sentence that its own deterministic checker refuses, regenerated the identical
 sentence from the unchanged input, and burned the whole planning budget on copies of the same text.

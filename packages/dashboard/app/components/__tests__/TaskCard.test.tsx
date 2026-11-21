@@ -8857,6 +8857,65 @@ describe("TaskCard stall-reason wiring", () => {
     expect((document.querySelector(".card") as HTMLElement).hasAttribute("data-task-stall-reason")).toBe(false);
   });
 
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-09:40 (RUFU-807 Step 5):
+  truncated past it on every pass, and every release surface kept promising that the queued review "will
+  run". The chip is what replaces that promise where the operator looks. These two cases are the pair that
+  keeps the face honest: the server authority renders with its measured wait, and the raw episode ALONE
+  renders nothing — so the UI can never re-implement core's nomination floor and start badging cards whose
+  deferral was a single unlucky pass.
+  */
+  it("names a release sweep that keeps truncating past this card, with the measured wait", () => {
+    const waitedMs = 5 * 60 * 60 * 1000; // 5 h, the measured RUFU-805 wait
+    render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          stallReason: {
+            code: "release-sweep-budget-starved",
+            reason: "Plan Review is queued, but the hold/release sweep keeps deferring this card past its per-pass budget.",
+            observedAt: "2026-11-21T00:00:00.000Z",
+            waitedMs,
+          },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    const chip = screen.getByTestId("card-stall-reason-FN-001");
+    // The chip renders the headline with the measured wait, the same shape RUFU-393's chip asserts.
+    expect(chip.textContent).toContain("release pass keeps running out of budget before this card (5 h 0 m)");
+    expect(chip.textContent).not.toContain("{{waited}}");
+    expect(chip.getAttribute("data-stall-code")).toBe("release-sweep-budget-starved");
+    const card = document.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("data-task-stall-reason")).toBe("release-sweep-budget-starved");
+    // The lie this card removes must not reappear on the surface operators watch.
+    expect(chip.textContent).not.toMatch(/will run/i);
+  });
+
+  it("renders no chip from the holdReleaseStarvation episode alone — only the server stall authority speaks", () => {
+    render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceMetadata: {
+            holdReleaseStarvation: {
+              code: "release-sweep-budget-starved",
+              lastAt: "2026-11-21T00:00:00.000Z",
+              firstAt: "2026-11-20T19:00:00.000Z",
+              stallCount: 4,
+              unevaluatedCount: 700,
+            },
+          },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.queryByTestId("card-stall-reason-FN-001")).toBeNull();
+    expect((document.querySelector(".card") as HTMLElement).hasAttribute("data-task-stall-reason")).toBe(false);
+  });
+
   it("does NOT add a stall chip for a triage duplicate (the Needs-your-decision badge already says it)", () => {
     render(
       <TaskCard

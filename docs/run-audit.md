@@ -604,6 +604,52 @@ This event stays deliberately outside the curated delivery-pipeline catalogue an
 Still not carried, and the reason this section is not called a solution: **who holds the slots**. Holder
 identity is not in the refusal, so the row answers "which gate, how full" but not "which cards occupy it".
 
+## The release sweep that ran out of budget before reaching the card (RUFU-807)
+
+RUFU-807: `task:hold-release-starved` records one armed card that a truncating hold/release pass never
+evaluated. It is a different fact from `task:hold-release-declined`, which reports a card the sweep *reached*
+and refused for a named reason — so the pair answers "did the scheduler look at me, and if so, what did it
+conclude?", which is the question RUFU-805 could not answer. That card sat in `todo` for five hours with its
+plan review armed while every pass truncated past it, and each release surface — `fn task promote`,
+`fn_task_promote`, the dashboard move, `fn task retry` — answered that its review "is queued for this card
+and will run". Only the first half of that sentence was true.
+
+Prevention ships ahead of reporting: the sweep now orders its budget by partition, evaluating armed
+(continuation-backed) cards before the rest, so a card whose plan review is already queued is not competing
+for budget with cards that merely sit in a `hold` lane. The read behind that partition is membership, not
+content — `TaskStore.listActiveTaskContinuationTaskIds`, bounded and folded into the queue-order read that
+already ran, because the planner's own admission gate reads the same continuation table and a costlier sweep
+lane was measured to collapse first (RUFU-382: 30 min, 45 rows, zero releases). Partitioning is a priority,
+not a budget raise: the per-pass wall-clock bound (`SWEEP_BUDGET_MS`, 10 s) is untouched, and the only new
+number is `MAX_ARMED_PRIORITY_IDS` (200) — the cap on how many armed cards the front partition may hold,
+not a cap on how many cards the pass evaluates.
+
+Metadata is `taskId`, `column`, the fixed `code` `release-sweep-budget-starved`, `stallCount`,
+`unevaluatedCount`, and `oldestDeferredAgeMs` only when the pass could age the deferred tail. The `outcome`
+/ `source` / `stallPoolId` block that RUFU-372 added to the *suspend* row is deliberately not replicated:
+this pass never reached the card, so it knows no refusal, no gate, and no pool. `target` plus `agentId:
+"scheduler"` and a per-card `runId` (`hold-release:starved:<taskId>`) are explicit, because RUFU-430 lost
+13 926 rows to a row that could not be found by the usual query.
+
+Cadence is carried by the card, not the process: the episode lives in `sourceMetadata.holdReleaseStarvation`,
+written at KEY level through the same discipline as RUFU-393's park, so an unchanged observation re-emits at
+most once per 15 minutes and one truncating pass names at most 100 cards — half its own partition budget —
+so the diagnostic can never charge more than half the budget it exists to explain (RUFU-871's shape). The
+clear is one site for all three lanes the card can leave: any real column change clears the episode at the
+core move seam. A Manual Retry clears it as its own first act, alongside RUFU-393's and RUFU-826's markers,
+because a fresh budget makes the claim false immediately and an operator who asked for a retry is exactly who
+must not keep seeing "not reaching you".
+
+The badge is armed-only by construction: the starved set is the intersection of the truncation tail with the
+armed partition, never every held card. Naming all deferred cards would put "the dispatcher is not reaching
+me" on every ordinary queue-waiter and kill the signal. And this stall code is deliberately **wedge-silent**
+— the card face and the bounded audit row are its surfaces. The wedge discovery path never reaches a
+card in a planning lane that writes no `status`/`error`/`pausedReason`, and review-lane delivery revalidation
+clears wedges for cards in `hold`-trait lanes, so a wedge would only double-announce in the mailbox a cause
+the card already names.
+
+This event stays deliberately outside the curated delivery-pipeline catalogue and documents as prose here.
+
 ## Resume-placement coherence diagnostics
 
 RUFU-300: `task:resume-placement-mismatch` records one classified pin/column disagreement observed while an

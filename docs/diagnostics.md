@@ -482,6 +482,16 @@ reconciliation, the anti-symptom epsilon bound, and the cut.
 
 Reading it: `rotated-deferred` recurring pass after pass means the board cannot be evaluated inside the budget at all, and the lever is the cost of the leg named by `slot-detail`, not `SWEEP_BUDGET_MS`. A pass that finishes inside its budget clears the rotation, so the field disappearing is the signal that the queue head is no longer being inverted.
 
+## Hold-release armed-priority and starvation fields (RUFU-807)
+
+Three fields join RUFU-698's summary line. They answer the question `rotated-deferred` could not: rotation makes the queue fair **across** passes, which is exactly why a card armed to run *now* can stay at the tail for pass after pass — RUFU-805 measured five hours of that with its Plan Review already queued.
+
+- `armed-first=N` — `N` cards whose Plan Review is armed by an active triage-role continuation were placed ahead of the queue this pass. Printed only when `N > 0` and only on the full summary line, for RUFU-698's reason: a pass truncated in its preamble built no ordered list and prioritised nothing. The count is the ordered partition, so cards already rotated or released are counted once, never twice.
+- `starved-armed=N` — `N` armed cards sit in this pass's truncation tail, i.e. the sweep ran out of budget before reaching them. This counts the **starved state**, not the writes the refresh floor accepted, so the field does not go quiet precisely when starvation has become long — the cadence bound suppresses writes, never the observation. Non-zero is the machine-readable form of "the scheduler is not reaching a card that is ready to run".
+- `oldest-deferred=Nms` — how long the longest-waiting deferred card has been waiting, read off the candidate rows the pass already holds (no extra board read to report a wait). Absent when the deferred tail is empty; an absent field here means there was no tail to age, never a zero wait.
+
+Reading them together: `armed-first>0` with `starved-armed=0` is the fix working. `armed-first>0` **and** `starved-armed>0` means even the armed partition is larger than the budget — the lever is the cost of the leg named by `slot-detail`, exactly as for `rotated-deferred`, and NOT the per-pass wall-clock budget (`SWEEP_BUDGET_MS`, 10 s), which this change deliberately leaves alone. The only 200 in this family is `MAX_ARMED_PRIORITY_IDS`, the size of the front partition, never a count of evaluations per pass. `starved-armed` recurring also means the affected cards are carrying the `release-sweep-budget-starved` chip and one bounded `task:hold-release-starved` row per card per 15 minutes — that refresh floor is why the chip itself cannot appear before roughly 30 minutes (three records need two floors after the first) even though the streak arm is the earlier of the badge's two arms; the 1-hour `HOLD_RELEASE_STARVATION_ESCALATION_FLOOR_MS` age arm is the later one. The board face is the primary surface because run-audit is not readable from it.
+
 <!--
 FNXC:CapacitySlotCost 2026-10-16-21:08 (RUFU-698):
 The field exists because `budget-truncated unevaluated=444` was stable across passes on a 642-task project

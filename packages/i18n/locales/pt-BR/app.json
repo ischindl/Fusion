@@ -4833,6 +4833,13 @@
       "headline": "Waiting to be picked up",
       "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
     },
+    "release-sweep-budget-starved": {
+      "badgeLabel": "Aguardando uma passada de liberação",
+      "headline": "A passada de liberação do agendador fica sem orçamento antes deste cartão ({{waited}})",
+      "headlineUnspecified": "A passada de liberação do agendador fica sem orçamento antes deste cartão",
+      "description": "Este cartão está planejado e a revisão do plano está na fila, mas a passada que libera cartões sempre examina outros cartões até o limite por passada e não chegou a este. Nenhuma barreira o recusou.",
+      "suggestedAction": "Nada neste cartão precisa de correção: a passada tenta novamente a cada ciclo, então encurte a raia de planejamento com a qual ele compete (conclua ou arquive cartões nela) para que ela chegue a este mais cedo."
+    },
     "wip-admission-throttled": {
       "badgeLabel": "Aguardando vaga de WIP",
       "headline": "Aguardando uma vaga de trabalho em andamento ({{waited}})",

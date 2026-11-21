@@ -360,3 +360,97 @@ describe("TaskDetailModal wip-admission stallReason", () => {
     expect(screen.queryByTestId("task-detail-stall-reason-FN-WIPDONE")).toBeNull();
   });
 });
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-09:50 (RUFU-807 Step 5):
+The detail banner is where an operator goes after the chip, and for RUFU-805 both surfaces were silent for
+five hours while every release surface repeated the same false "will run". The banner therefore has to do
+three things the refusal never did: state the mechanism, carry the measured wait, and name the next actor
+without sending the operator to a gate they could waive or a failure lane where nothing failed.
+
+It also proves the copy is the localized catalog's: passing the engine's English sentence straight through
+would make the banner untranslatable and re-word it every time the authority is reworded — the rule the
+planning and WIP families already hold.
+*/
+describe("TaskDetailModal release-sweep starvation stallReason", () => {
+  it("names a release sweep that keeps truncating past this card, with its wait and next step", () => {
+    const waitedMs = 5 * 60 * 60 * 1000; // 5 h, the measured RUFU-805 wait
+    renderDetail(
+      makeTask({
+        id: "FN-STARVED",
+        column: "todo",
+        status: "pending",
+        stallReason: {
+          code: "release-sweep-budget-starved",
+          reason: "engine sentence for release-sweep-budget-starved",
+          observedAt: "2026-11-21T00:00:00.000Z",
+          waitedMs,
+        },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-STARVED");
+    expect(banner.getAttribute("data-stall-code")).toBe("release-sweep-budget-starved");
+    expect(banner).toHaveTextContent("release pass keeps running out of budget before this card (5 h 0 m)");
+    const description = banner.querySelector(".task-stall-reason-description")?.textContent ?? "";
+    expect(description.trim().length).toBeGreaterThan(0);
+    // Localized catalog copy, not the engine's sentence.
+    expect(description).not.toContain("engine sentence for");
+    expect(banner.querySelector(".task-stall-reason-action")?.textContent?.trim().length).toBeGreaterThan(0);
+  });
+
+  it("promises no run and names no gate the operator could waive", () => {
+    const waitedMs = 3 * 60 * 60 * 1000;
+    renderDetail(
+      makeTask({
+        id: "FN-STARVPROMISE",
+        column: "todo",
+        status: "pending",
+        stallReason: {
+          code: "release-sweep-budget-starved",
+          reason: "engine sentence for release-sweep-budget-starved",
+          observedAt: "2026-11-21T00:00:00.000Z",
+          waitedMs,
+        },
+      }),
+    );
+    const text = screen.getByTestId("task-detail-stall-reason-FN-STARVPROMISE").textContent ?? "";
+    // The exact sentence this task removes from the refusal path must not return on the board.
+    expect(text).not.toMatch(/will run|releases itself/i);
+    expect(text).not.toMatch(/\bfail(ed|ure)?\b/i);
+    expect(text).not.toMatch(/approve|waive|bypass/i);
+  });
+
+  it("headlines the wait without an invented age when the server carries none", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-STARVNOAGE",
+        column: "todo",
+        status: "pending",
+        stallReason: {
+          code: "release-sweep-budget-starved",
+          reason: "engine sentence for release-sweep-budget-starved",
+          observedAt: "2026-11-21T00:00:00.000Z",
+        },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-STARVNOAGE");
+    expect(banner).toHaveTextContent("release pass keeps running out of budget before this card");
+    expect(banner.querySelector(".task-stall-reason-headline")?.textContent).not.toMatch(/\(\s*\)/);
+  });
+
+  it("shows no starvation banner on a landed card", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-STARVDONE",
+        column: "done",
+        status: "done",
+        stallReason: {
+          code: "release-sweep-budget-starved",
+          reason: "stale episode on a landed row",
+          observedAt: "2026-11-21T00:00:00.000Z",
+        },
+      }),
+    );
+    expect(screen.queryByTestId("task-detail-stall-reason-FN-STARVDONE")).toBeNull();
+  });
+});

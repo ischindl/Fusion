@@ -645,6 +645,7 @@ import {
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
   PLAN_ADMISSION_STALL_METADATA_KEY,
+  HOLD_RELEASE_STARVATION_METADATA_KEY,
   DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
@@ -664,6 +665,7 @@ export {
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
   PLAN_ADMISSION_STALL_METADATA_KEY,
+  HOLD_RELEASE_STARVATION_METADATA_KEY,
   DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
@@ -675,6 +677,10 @@ export {
 };
 export type { PlanPremiseRejectionEpisode } from "./types/task/task-core.js";
 export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types/task/task-core.js";
+/* FNXC:HoldReleaseArmedPriority 2026-11-21-06:40 (RUFU-807 Step 3): the starvation episode's own pair, in
+ * every barrel that enumerates its twin by name — the engine's sweep writes the episode and core's
+ * operator-reset patch clears it, so both lanes must resolve the same declared type. */
+export type { TaskHoldReleaseStarvationCode, TaskHoldReleaseStarvationEpisode } from "./types/task/task-core.js";
 export type { TaskDeterministicSpecRejectionEpisode } from "./types/task/task-core.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types/task/task-core.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types/task/task-core.js";

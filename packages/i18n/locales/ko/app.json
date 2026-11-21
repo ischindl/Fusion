@@ -4833,6 +4833,13 @@
       "headline": "Waiting to be picked up",
       "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
     },
+    "release-sweep-budget-starved": {
+      "badgeLabel": "해제 패스 대기 중",
+      "headline": "스케줄러의 해제 패스가 이 카드에 도달하기 전에 예산을 소진합니다 ({{waited}})",
+      "headlineUnspecified": "스케줄러의 해제 패스가 이 카드에 도달하기 전에 예산을 소진합니다",
+      "description": "이 카드는 계획되었고 계획 리뷰가 대기열에 있지만, 카드를 해제하는 패스는 매번 다른 카드들을 한계까지 검사하고 여기에는 도달하지 못했습니다. 게이트가 이 카드를 거부한 것이 아닙니다.",
+      "suggestedAction": "이 카드에서 고칠 것은 없습니다: 패스는 주기마다 다시 시도하므로, 경쟁하는 계획 레인을 줄이면(그 카드를 완료하거나 모아두면) 더 빨리 이 카드에 도달합니다."
+    },
     "wip-admission-throttled": {
       "badgeLabel": "작업 중 슬롯 대기 중",
       "headline": "작업 중 슬롯을 대기 중입니다 ({{waited}})",

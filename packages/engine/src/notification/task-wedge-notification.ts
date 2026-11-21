@@ -601,6 +601,20 @@ const STALL_WEDGE_ACTIONS: Record<TaskStallReasonCode, string | null> = {
   notification-service work outside this task's scope, recorded as a follow-up rather than half-wired here.
   */
   "wip-admission-throttled": null,
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-06:45 (RUFU-807 Step 5):
+  Silent, for the same two structural reasons RUFU-393 gives for its sibling and not for a third: (1) no
+  wedge discovery path reaches a planning-lane card that writes no `status`/`error`/`pausedReason` —
+  RUFU-180's sweep names only the three review-lane codes — and (2) the delivery path's own revalidation
+  clears any wedge whose card rests in a `hold`-trait lane (`notification-service.ts`, `hasProgressed`),
+  which is exactly where a starved card sits. A non-null string here would therefore be a dead affordance.
+
+  The surfaces this code CAN own are the ones it ships with: the localized chip on the card face and the
+  detail banner, and one bounded `task:hold-release-starved` row per refresh window. A mailbox message on
+  top of those would double-announce a cause the card already names, which is the defect that made
+  `dependency-blocker` and every planning-lane code null in the first place.
+  */
+  "release-sweep-budget-starved": null,
   "plan-lane-ineligible": null,
   "plan-premise-held": null,
   "plan-spec-unreadable": null,

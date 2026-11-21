@@ -1,7 +1,10 @@
 import {
+  HOLD_RELEASE_STARVATION_METADATA_KEY,
   PLAN_ADMISSION_STALL_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
   type Task,
+  type TaskHoldReleaseStarvationCode,
+  type TaskHoldReleaseStarvationEpisode,
   type TaskPlanAdmissionStallCode,
   type TaskPlanAdmissionStallEpisode,
   type TaskWipAdmissionStallCode,
@@ -113,7 +116,19 @@ export type TaskStallReasonCode =
   send an operator to triage capacity for a card that is already planned.
   */
   /** A hold->WIP crossing has been refused and the card is parked at the seam. */
-  | "wip-admission-throttled";
+  | "wip-admission-throttled"
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-05:10 (RUFU-807 Step 3):
+  The release-sweep case neither existing admission code can name. `plan-admission-throttled` says the
+  planner is busy and `wip-admission-throttled` says a slot is full; both are FALSE for a card whose Plan
+  Review approved and whose WIP column has room — the truth is that the dispatcher's per-pass budget dies
+  before it reaches this card. Field evidence ran 14+ hours with `capacity_refused=0`, so every existing
+  code would have sent the operator to a knob that was not stuck. Separate code on the same grounds the
+  other two families give: the remedies differ, and collapsing them makes the answers indistinguishable
+  to every consumer that branches on `code`.
+  */
+  /** A planned, release-armed card is repeatedly left unevaluated by the hold/release sweep's budget. */
+  | "release-sweep-budget-starved";
 
 export interface TaskStallReason {
   code: TaskStallReasonCode;
@@ -510,6 +525,158 @@ export function clearPlanAdmissionStallPatch(): Record<string, unknown> {
 }
 
 /*
+FNXC:HoldReleaseArmedPriority 2026-11-21-05:10 (RUFU-807 Step 3):
+The read/write pair for the hold-release starvation episode, kept beside the planning pair it mirrors so
+the two cannot drift. The floors copy RUFU-393's values and its reasoning verbatim: the REFRESH floor
+bounds writes (an unbounded ~180 rows/hour/card becomes at most 4), and the longer ESCALATION floor gates
+the CHIP — a pass that truncates once is normal scheduling, while an armed card the sweep still has not
+reached an hour later has no other announcer, because every planning-lane announcer belongs to triage and
+none of them observes the release sweep.
+
+The writer is the sweep itself — the one lane that can see "this pass died at its deadline with this card
+unevaluated". Nothing here infers that from elapsed time, which is the mistake RUFU-393 names: an
+inference at read time would be a second authority competing with the observer.
+*/
+
+/** How often one sustained starvation episode may re-stamp `lastAt`. */
+export const HOLD_RELEASE_STARVATION_REFRESH_FLOOR_MS = 15 * 60_000;
+
+/** How long an armed card must have been left unevaluated before the badge fires (longer on purpose). */
+export const HOLD_RELEASE_STARVATION_ESCALATION_FLOOR_MS = 60 * 60_000;
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-06:05 (RUFU-807 Step 3):
+The SECOND way a badge fires, and the one that answers quickly. The hour floor on its own was too late for
+the measured shape: one card sat 2.0 days (`longest held 7186192ms`) under passes that each truncated with
+`unevaluated=700`, so an operator reading the board during hour one saw nothing wrong with it. Three
+CONSECUTIVE budget deferrals separates a mechanism from bad luck: one truncated pass is ordinary scheduling
+(RUFU-698's entire premise is that the next pass rotates the tail forward), while a card the rotation
+reaches three times in a row is not being rotated to, it is being skipped. It counts PASSES and not
+milliseconds, so it names a starved card well inside an hour on a fast-polling board and cannot be outrun
+by a board whose poll interval happens to be long.
+*/
+export const HOLD_RELEASE_STARVATION_NAME_AFTER_DEFERRALS = 3;
+
+/** The single operator sentence for the code. Display copy; consumers branch on `code`. */
+export const HOLD_RELEASE_STARVED_STALL_REASON =
+  "Its release is armed but the task dispatcher has not reached it within its per-pass budget; it is waiting on the dispatcher, not on a free slot.";
+
+/** Code union of the persisted episode — the codes the row itself can carry. */
+type HoldReleaseStarvationEpisodeCode = TaskHoldReleaseStarvationCode;
+
+/** Episode code -> stall reason. A fixed table: an episode code with no entry cannot appear as a stall. */
+const HOLD_RELEASE_STARVATION_SENTENCES: Record<HoldReleaseStarvationEpisodeCode, string> = {
+  "release-sweep-budget-starved": HOLD_RELEASE_STARVED_STALL_REASON,
+};
+
+/**
+ * Read the persisted hold-release-starvation episode off a row. Validation is structural, not
+ * permissive, exactly as RUFU-273's reader does: a stored payload whose `code` is outside the fixed
+ * union is no episode at all, so a malformed or hand-edited value degrades to silence instead of
+ * surfacing a code the dashboard has no copy for.
+ */
+export function readHoldReleaseStarvationEpisode(
+  sourceMetadata: Record<string, unknown> | undefined,
+): TaskHoldReleaseStarvationEpisode | undefined {
+  const raw = sourceMetadata?.[HOLD_RELEASE_STARVATION_METADATA_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const candidate = raw as Partial<TaskHoldReleaseStarvationEpisode>;
+  if (!isHoldReleaseStarvationEpisodeCode(candidate.code)) return undefined;
+  if (typeof candidate.lastAt !== "string" || typeof candidate.firstAt !== "string") return undefined;
+  if (typeof candidate.stallCount !== "number" || !Number.isFinite(candidate.stallCount)) return undefined;
+  return candidate as TaskHoldReleaseStarvationEpisode;
+}
+
+/** True when `code` is one of the codes the row may carry; keeps the union the single source of truth. */
+function isHoldReleaseStarvationEpisodeCode(code: unknown): code is HoldReleaseStarvationEpisodeCode {
+  return typeof code === "string" && Object.prototype.hasOwnProperty.call(HOLD_RELEASE_STARVATION_SENTENCES, code);
+}
+
+/** How long a starvation has run, measured from the base the episode itself proves (RUFU-273's rule). */
+export function holdReleaseStarvationAgeMs(
+  episode: TaskHoldReleaseStarvationEpisode,
+  nowMs: number = Date.now(),
+): number {
+  const firstMs = Date.parse(episode.firstAt);
+  if (!Number.isFinite(firstMs)) return 0;
+  return Math.max(0, nowMs - firstMs);
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-08:05 (RUFU-807 Step 4):
+ONE predicate decides whether a persisted starvation episode is strong enough to speak, and every
+surface that speaks — the board's stall badge, the release refusal sentence, and any future one — calls it.
+Two copies of the rule is how a card ends up wearing a badge while its refusal sentence still promises a
+run, which is the exact dishonesty RUFU-1050 was landed to remove.
+
+Either half alone nominates: an hour of continuous deferral, or the streak threshold (three consecutive
+budget deferrals) which answers inside an hour on a fast-polling board. `stallCount` is read from the
+episode rather than recomputed, so the count survives a restart — RUFU-805's silence began at one.
+*/
+export function holdReleaseStarvationIsNominating(
+  episode: TaskHoldReleaseStarvationEpisode | undefined,
+  nowMs: number = Date.now(),
+): episode is TaskHoldReleaseStarvationEpisode {
+  if (!episode) return false;
+  if (episode.stallCount >= HOLD_RELEASE_STARVATION_NAME_AFTER_DEFERRALS) return true;
+  return holdReleaseStarvationAgeMs(episode, nowMs) >= HOLD_RELEASE_STARVATION_ESCALATION_FLOOR_MS;
+}
+
+/** Observation payload the sweep contributes at a truncating pass. */
+export interface HoldReleaseStarvationObservation {
+  code: TaskHoldReleaseStarvationCode;
+  unevaluatedCount?: number;
+  oldestDeferredAgeMs?: number;
+}
+
+/**
+ * Decide whether a deferral justifies a row write, and produce the episode to write (RUFU-807).
+ *
+ * Returns `undefined` when the write must be skipped — a sustained same-code episode inside the refresh
+ * floor — which is what keeps a sweep that truncates every few seconds from stamping the field on every
+ * armed card every time. A different code restarts the episode and resets `stallCount`, the RUFU-273
+ * rule, so a future mechanism cannot inherit the old episode's count. The caller writes the result
+ * through `sourceMetadataPatch` keyed by `HOLD_RELEASE_STARVATION_METADATA_KEY`.
+ */
+export function holdReleaseStarvationWrite(
+  existing: TaskHoldReleaseStarvationEpisode | undefined,
+  observation: HoldReleaseStarvationObservation,
+  observedAt: number = Date.now(),
+): TaskHoldReleaseStarvationEpisode | undefined {
+  const now = new Date(observedAt).toISOString();
+  const lastAtMs = existing ? Date.parse(existing.lastAt) : Number.NaN;
+  const freshEnough = Number.isFinite(lastAtMs) && observedAt - lastAtMs < HOLD_RELEASE_STARVATION_REFRESH_FLOOR_MS;
+  const sameCode = existing?.code === observation.code;
+
+  if (existing && !sameCode) {
+    return {
+      code: observation.code,
+      lastAt: now,
+      firstAt: now,
+      stallCount: 1,
+      ...(observation.unevaluatedCount !== undefined ? { unevaluatedCount: observation.unevaluatedCount } : {}),
+      ...(observation.oldestDeferredAgeMs !== undefined ? { oldestDeferredAgeMs: observation.oldestDeferredAgeMs } : {}),
+    };
+  }
+
+  if (existing && sameCode && freshEnough) return undefined;
+
+  return {
+    code: observation.code,
+    lastAt: now,
+    firstAt: existing?.firstAt ?? now,
+    stallCount: (existing?.stallCount ?? 0) + 1,
+    ...(observation.unevaluatedCount !== undefined ? { unevaluatedCount: observation.unevaluatedCount } : {}),
+    ...(observation.oldestDeferredAgeMs !== undefined ? { oldestDeferredAgeMs: observation.oldestDeferredAgeMs } : {}),
+  };
+}
+
+/** The key-preserving clear patch (RUFU-273's rule): a whole-field wipe would orphan every other
+ *  provenance key that shares `sourceMetadata`. */
+export function clearHoldReleaseStarvationPatch(): Record<string, unknown> {
+  return { [HOLD_RELEASE_STARVATION_METADATA_KEY]: null };
+}
+
+/*
 FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
 The execution-lane branch, deliberately THIN: unlike `derivePlanningAdmissionStall` it invents no
 inference of its own and reads exactly one persisted episode. The reason is the failure this task fixes.
@@ -584,9 +751,11 @@ and so the parent function keeps reading as a lane dispatch.
 Evidence precedence is deliberate and mirrors "the most specific proven answer wins":
 1. RUFU-246's premise episode — a *named contract violation* outranks a generic admission stall, and it
    is derived rather than copied into this episode so the two writers can never disagree.
-2. The persisted admission episode — maps 1:1 onto its code. Triage wrote it for the capacity gate; the
+2. RUFU-807's hold-release starvation episode — the card is already planned and armed for release, so it
+   has moved past every gate the planning family names, and its wait now has a deadline instead of a queue.
+3. The persisted admission episode — maps 1:1 onto its code. Triage wrote it for the capacity gate; the
    reconciliation sweep wrote it for the lanes triage cannot observe.
-3. A future `nextRecoveryAt` — the engine already scheduled its own retry, so the wait has a cause even
+4. A future `nextRecoveryAt` — the engine already scheduled its own retry, so the wait has a cause even
    though no episode was written.
 
 The population guards are the definition of the silent set, not decoration: a paused or user-paused card
@@ -614,6 +783,34 @@ function derivePlanningAdmissionStall(
   const premise = metadata?.[PLAN_PREMISE_REJECTION_METADATA_KEY];
   if (premise && typeof premise === "object" && !Array.isArray(premise)) {
     return { code: "plan-premise-held", reason: PLAN_PREMISE_HELD_STALL_REASON, observedAt };
+  }
+
+  /*
+   FNXC:HoldReleaseArmedPriority 2026-11-21-05:22 (RUFU-807 Step 3):
+   The release-sweep starvation episode outranks the planning-admission episode and loses only to the
+   premise refusal, because it is the NEWER and more specific fact: a card carrying this episode has
+   already been PLANNED (its approval released the continuation the sweep read), so a leftover
+   `planAdmissionStall` from an earlier planning throttle describes a gate the card is no longer behind.
+   The premise episode still wins because a named contract violation names a fix, while this names a
+   mechanism.
+
+   The escalation floor, not the refresh floor, gates the badge — RUFU-393's rule adopted verbatim. One
+   truncated pass is ordinary scheduling; an armed card still unevaluated an hour later is a mechanism
+   failure with no other announcer. The lane guard above (`planningColumns.has(task.column)`) is the
+   positional guard: a starved card that has since crossed into WIP stops claiming starvation without
+   depending on the move-seam clear landing, because that clear is fire-and-forget inside a non-reentrant
+   lock.
+   */
+  const starved = readHoldReleaseStarvationEpisode(metadata);
+  if (holdReleaseStarvationIsNominating(starved, context.now ?? Date.now())) {
+    const starvedFirstMs = Date.parse(starved.firstAt);
+    return {
+      code: "release-sweep-budget-starved",
+      reason: HOLD_RELEASE_STARVATION_SENTENCES[starved.code],
+      observedAt,
+      // The real elapsed wait, not the threshold that tripped the badge.
+      waitedMs: Number.isFinite(starvedFirstMs) ? Math.max(0, (context.now ?? Date.now()) - starvedFirstMs) : 0,
+    };
   }
 
   const episode = readPlanAdmissionStallEpisode(metadata);

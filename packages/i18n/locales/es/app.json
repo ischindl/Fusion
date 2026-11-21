@@ -4833,6 +4833,13 @@
       "headline": "Waiting to be picked up",
       "suggestedAction": "No action needed; reorder or assign the card if a different one should run first."
     },
+    "release-sweep-budget-starved": {
+      "badgeLabel": "Esperando una pasada de liberación",
+      "headline": "La pasada de liberación del programador agota su presupuesto antes de llegar a esta tarjeta ({{waited}})",
+      "headlineUnspecified": "La pasada de liberación del programador agota su presupuesto antes de llegar a esta tarjeta",
+      "description": "Esta tarjeta está planificada y su revisión de plan está en cola, pero la pasada que libera tarjetas siempre examina otras hasta agotar su límite por pasada y no ha llegado a esta. Ninguna barrera la ha rechazado.",
+      "suggestedAction": "Nada en esta tarjeta necesita reparación: la pasada reintenta en cada ciclo, así que acorta el carril de planificación con el que compite (termina o archiva tarjetas ahí) para que llegue antes a esta."
+    },
     "wip-admission-throttled": {
       "badgeLabel": "Esperando un hueco de WIP",
       "headline": "Esperando un hueco de trabajo en curso ({{waited}})",

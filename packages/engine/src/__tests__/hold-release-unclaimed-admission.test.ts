@@ -42,8 +42,12 @@ import {
 import { DUE_PLANNING_CONTINUATION_BATCH_LIMIT } from "../workflows/continuation-drain-constants.js";
 import {
   UNCLAIMED_GRAPH_WORK_DEFERRAL_REPEAT_MS,
+  releaseSweepStarvedWaitDetail,
   type UnclaimedGraphWorkDecision,
 } from "../workflows/unclaimed-graph-work.js";
+/* FNXC:HoldReleaseArmedPriority 2026-11-21-08:35 (RUFU-807 Step 4): the episode shape is core's, so the
+ * test names it from core rather than re-declaring a local lookalike. */
+import { type TaskHoldReleaseStarvationEpisode } from "@fusion/core";
 
 const WORKFLOW_ID = "custom:rufu-1050";
 const NOW = Date.now();
@@ -53,6 +57,27 @@ const AGED = new Date(NOW - 60 * 60_000).toISOString();
 const PRE_FIX_SENTENCE = " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
 
 const PLANNED_PROMPT = "# Planned\n\n## Mission\nShip the honest admission sentence.\n\n## Steps\n\n- 1. Name the next actor.\n";
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-08:30 (RUFU-807 Step 4):
+RUFU-1050's vocabulary blames the continuation ROW. RUFU-805's row was healthy, due, and unclaimed for
+five hours because the pass that would have read it never reached the CARD, so no code in that family fits
+and the pre-fix promise stayed on the card the whole time. This fixture is that state: the sweep's own
+persisted observation of deferring this card, written by the observer that measured it.
+*/
+function starvedMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const first = new Date(NOW - 3 * 3_600_000).toISOString();
+  return {
+    holdReleaseStarvation: {
+      code: "release-sweep-budget-starved",
+      lastAt: new Date(NOW - 60_000).toISOString(),
+      firstAt: first,
+      stallCount: 4,
+      unevaluatedCount: 700,
+      ...overrides,
+    },
+  };
+}
 
 function workflowIr(): WorkflowIr {
   return {
@@ -282,5 +307,149 @@ describe("unclaimedPlanningWaitDetail — one sentence per starved code", () => 
     const detail = unclaimedPlanningWaitDetail(decision("terminal-node-orphan", "triage")) ?? "";
     expect(detail).toContain("The card stays put");
     expect(detail).toContain("planner, reached through a replan admission");
+  });
+});
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-08:35 (RUFU-807 Step 4):
+The second false promise over one armed row. RUFU-1050 removed the sentence for a row no consumer will
+take; RUFU-805's row was healthy and DUE, and the card still sat five hours because the hold/release
+sweep — the only automatic mover a held card has — ran out of per-pass budget before reaching it. Both
+arms that name a run had to learn this state, and both had to keep their historical wording byte-for-byte
+when the card carries no such observation, because a card whose wait is honest deserves the old sentence.
+
+The assertions are therefore pairs, one per arm: starved copy that forbids the promise, and the pre-fix
+sentence surviving intact on the same arm when no observation exists.
+*/
+describe("promoteHeldTask — the admission sentence for a budget-starved armed card (RUFU-807)", () => {
+  const ARMED_PRE_FIX_SENTENCE = " Plan Review is now queued for this card and will run; the card releases itself once it reports a passing verdict.";
+
+  it("stops promising a run for an armed card the sweep has deferred past its budget", async () => {
+    // A card with a seed seam that INSTALLS a row, so the `armed` arm — not `active-continuation` — is
+    // the one under test: this is the arm RUFU-1050 never had to touch because it could not know the
+    // sweep's history for this card.
+    const arming = await makeFixture(card({ sourceMetadata: starvedMetadata() }), [], ["WI-1"]);
+    (arming.store as unknown as { seedStrandedPlanReviewContinuation: unknown }).seedStrandedPlanReviewContinuation = async () => ({
+      seeded: true,
+      workItemId: "WI-armed-now",
+    });
+
+    const result = await promoteHeldTask(arming.store, "RUFU-1050");
+
+    expect(result.released).toBe(false);
+    const detail = result.detail ?? "";
+    expect(detail).not.toContain("and will run");
+    expect(detail).not.toContain(ARMED_PRE_FIX_SENTENCE);
+    // Names the mechanism, the count the sweep measured, and who has to move.
+    expect(detail).toContain("hold/release sweep has deferred it 4 times");
+    expect(detail).toContain("700 cards were left unevaluated");
+    expect(detail).toContain("3 hours");
+    expect(detail).not.toContain("no slot is full");
+    // RUFU-372's honest-absence rule: a pass that truncated before this card never consulted a capacity
+    // pool, so the sentence may name the missing evaluation but must not speak about slots.
+    expect(detail).not.toMatch(/slot (is|are) (full|free)/);
+    expect(detail).toContain("No gate has refused this card");
+    // The remedy named is the sweep, never a human workaround and never a gate waiver.
+    expect(detail).toContain("the next actor is the hold/release sweep");
+  });
+
+  it("replaces the active-continuation promise too, even with a row the drain happily consumed", async () => {
+    /*
+    Drain progress proves the row is claimable, so RUFU-1050's own check returns `null` and the pre-fix
+    sentence would print. RUFU-805 is exactly this state: a healthy row on a card the pass never reached.
+    The starvation observation must therefore pre-empt a `null` unclaimed decision.
+    */
+    notePlanningContinuationDrainProgress(NOW);
+    const { store } = await makeFixture(card({ sourceMetadata: starvedMetadata() }), [item()], ["WI-1"]);
+
+    const result = await promoteHeldTask(store, "RUFU-1050");
+
+    const detail = result.detail ?? "";
+    expect(detail).not.toContain("and will run");
+    expect(detail).not.toContain(PRE_FIX_SENTENCE);
+    expect(detail).toContain("hold/release sweep");
+  });
+
+  it("keeps both pre-fix sentences for a card the sweep is reaching", async () => {
+    // No observation on the row + a drain that ran a second ago: "will run" is a true sentence again, and
+    // rewriting it would be RUFU-1050's over-correction in the other direction.
+    notePlanningContinuationDrainProgress(NOW);
+    const activeRow = await makeFixture(card(), [item()], ["WI-1"]);
+    const activeResult = await promoteHeldTask(activeRow.store, "RUFU-1050");
+    expect((activeResult.detail ?? "").endsWith(PRE_FIX_SENTENCE)).toBe(true);
+
+    resetPlanningContinuationDrainProgress();
+    const arming = await makeFixture(card(), [], ["WI-1"]);
+    /*
+    The shared fixture mocks the seed seam as `active-continuation` because every RUFU-1050 case below has
+    an ACTIVE row. The `armed` arm needs the opposite: the seam actually installs a row, which is the only
+    way this file can reach the sentence that says "and will run" after creating one.
+    */
+    (arming.store as unknown as { seedStrandedPlanReviewContinuation: unknown }).seedStrandedPlanReviewContinuation = async () => ({
+      seeded: true,
+      workItemId: "WI-armed-now",
+    });
+    const armedResult = await promoteHeldTask(arming.store, "RUFU-1050");
+    // A freshly armed card with no deferral history still gets the original promise.
+    expect(armedResult.detail ?? "").toContain(ARMED_PRE_FIX_SENTENCE);
+  });
+
+  it("stays silent below the nomination threshold, so one truncated pass never rewrites the sentence", async () => {
+    /*
+    One deferred pass is ordinary scheduling — RUFU-698's whole premise is that the next pass rotates the
+    tail forward — and the streak threshold is what separates a mechanism from bad luck. The same predicate
+    that gates the badge gates this sentence, so a card can never wear a badge whose text still promises a
+    run, nor a rewritten sentence with no badge.
+    */
+    notePlanningContinuationDrainProgress(NOW);
+    const single = starvedMetadata({ stallCount: 1, lastAt: new Date(NOW - 60_000).toISOString(), firstAt: new Date(NOW - 60_000).toISOString() });
+    const { store } = await makeFixture(card({ sourceMetadata: single }), [item()], ["WI-1"]);
+
+    const result = await promoteHeldTask(store, "RUFU-1050");
+
+    expect((result.detail ?? "").endsWith(PRE_FIX_SENTENCE)).toBe(true);
+  });
+});
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-08:35 (RUFU-807 Step 4):
+The pure sentence builder, asserted directly so the wording contract does not depend on the release seam's
+fixtures, and so the nomination threshold is proven SHARED with the badge rather than restated here.
+*/
+describe("releaseSweepStarvedWaitDetail", () => {
+  const episode = (overrides: Record<string, unknown> = {}): TaskHoldReleaseStarvationEpisode => ({
+    code: "release-sweep-budget-starved",
+    lastAt: new Date(NOW - 60_000).toISOString(),
+    firstAt: new Date(NOW - 90 * 60_000).toISOString(),
+    stallCount: 3,
+    ...overrides,
+  }) as TaskHoldReleaseStarvationEpisode;
+
+  it("speaks at exactly the threshold the badge uses, and not below it", () => {
+    expect(releaseSweepStarvedWaitDetail(episode(), NOW)).toContain("deferred it 3 times");
+    /*
+    Below the streak threshold AND below the age floor: silent. `firstAt` has to be moved with
+    `stallCount` because the fixture's default firstAt is 90 minutes old, which nominates on the AGE half
+    of the rule on its own — a fixture that trips one threshold while testing the other proves nothing.
+    */
+    expect(releaseSweepStarvedWaitDetail(
+      episode({ stallCount: 2, firstAt: new Date(NOW - 5 * 60_000).toISOString() }),
+      NOW,
+    )).toBeNull();
+    // The age half of the rule, independent of the streak: an hour of deferral speaks on one observation.
+    expect(releaseSweepStarvedWaitDetail(episode({ stallCount: 1 }), NOW)).toContain("1 hour");
+    expect(releaseSweepStarvedWaitDetail(undefined, NOW)).toBeNull();
+  });
+
+  it("forbids every promise the state falsifies", () => {
+    const detail = releaseSweepStarvedWaitDetail(episode(), NOW) ?? "";
+    expect(detail).not.toMatch(/will run|releases itself|move the card again/);
+    expect(detail).toContain("No gate has refused this card");
+    expect(detail).toContain("hold/release sweep");
+  });
+
+  it("prints an age a human can read rather than a millisecond count", () => {
+    expect(releaseSweepStarvedWaitDetail(episode({ firstAt: new Date(NOW - 45_000).toISOString(), stallCount: 3 }), NOW)).toContain("minute");
+    expect(releaseSweepStarvedWaitDetail(episode({ firstAt: new Date(NOW - 3 * 86_400_000).toISOString(), stallCount: 3 }), NOW)).toContain("days");
   });
 });

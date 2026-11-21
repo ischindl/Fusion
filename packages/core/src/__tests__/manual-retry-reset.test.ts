@@ -267,7 +267,18 @@ describe("buildManualRetryResetPatch", () => {
   state but left this register would be refused again by the very pass the operator was pointed at. The
   literal stays pinned rather than derived, so a rename that would orphan a persisted episode is caught here.
   */
-  it("clears the plan-premise, planning-admission, deterministic-spec, branch-conflict-refusal, stranded-reclaim and unclaimed-graph-work episodes at the key level, never the whole field", () => {
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-06:50 (RUFU-807 Step 3):
+  The eighth key is the hold-release starvation episode, and it is the first member of this list that is
+  purely diagnostic — the other seven each gate or bound something, so leaving them would have made Retry
+  a no-op. It belongs here for RUFU-273's reason instead: an operator who just pushed a card to the front
+  of the queue must not see it still wearing "the dispatcher never reaches it" from before the push. The
+  contrast that decides it is `wipAdmissionStall`, deliberately NOT a member below: that episode's release
+  owner is the capacity gate itself, so an operator cannot lift it, while this one's only owner is the
+  sweep's next pass — which re-writes it honestly if the starvation is still real. Clearing therefore
+  costs nothing and buys an honest chip after a Retry.
+  */
+  it("clears the plan-premise, planning-admission, deterministic-spec, branch-conflict-refusal, stranded-reclaim, unclaimed-graph-work and hold-release-starvation episodes at the key level, never the whole field", () => {
     /*
     FNXC:BranchConflictRecovery 2026-11-04-14:36 (RUFU-395):
     The third key is this family's own refusal register. RUFU-395 made `refusalCount` the sole
@@ -276,8 +287,8 @@ describe("buildManualRetryResetPatch", () => {
     the operator just released. The literal stays pinned on purpose — a constant rename that would
     orphan a persisted episode is still caught here rather than in production.
     */
-    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null });
-    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null });
+    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null, holdReleaseStarvation: null });
+    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null, unclaimedGraphWork: null, holdReleaseStarvation: null });
     expect(buildManualRetryResetPatch()).not.toHaveProperty("sourceMetadata");
   });
 

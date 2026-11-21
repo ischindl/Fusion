@@ -40,7 +40,20 @@ seam PRE-ROUTES (`action: "rearm"`) and the caller invokes the authority with an
 `EXECUTION_REARM_RECOVERY_REASONS`; the authority still decides eligibility, and `not-eligible` or
 `no-work-evidence` is a real outcome this seam must not hide.
 */
-import { UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "@fusion/core";
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-08:15 (RUFU-807 Step 4):
+The nomination predicate and age reader are imported rather than restated so the release refusal and the
+board badge decide to speak on one measurement. Restating either threshold here would create a second
+authority over when a starvation is loud enough to mention — the failure RUFU-273 names for the episode
+clock itself.
+*/
+import {
+  UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY,
+  holdReleaseStarvationAgeMs,
+  holdReleaseStarvationIsNominating,
+  type Task,
+  type TaskHoldReleaseStarvationEpisode,
+} from "@fusion/core";
 
 /*
 FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
@@ -613,6 +626,63 @@ export function unclaimedGraphWorkWithholdingIsReportable(code: UnclaimedGraphWo
 }
 
 /** Whether a decision means "no consumer will take this row", i.e. a run promise about it is a lie. */
+/**
+ * FNXC:HoldReleaseArmedPriority 2026-11-21-08:15 (RUFU-807 Step 4):
+ * The honest release-refusal wording for a card the hold/release sweep is OBSERVED to defer, or `null`
+ * when the card carries no such observation. This is RUFU-1050's seam widened by one cause, and it exists
+ * because RUFU-1050's vocabulary could not name RUFU-805's shape at all: every code in that family blames
+ * the continuation ROW (`due-unclaimed`, `lease-held`, `behind-drain-window`), while RUFU-805's row was
+ * healthy and due — what never happened was the release sweep reaching the CARD to look at it.
+ *
+ * So the two seams are kept apart deliberately. This function decides no `UnclaimedGraphWorkCode` and
+ * claims nothing about the row, because a code here would say "no consumer will take this row" — false.
+ * It reads only the card's own persisted starvation episode, written by the one observer that measured the
+ * deferral, and shares core's nomination predicate with the board badge so the badge and this sentence can
+ * never disagree about whether the state is strong enough to speak. The wording asserts what will NOT
+ * happen instead of promising what will: the sweep re-attempts every pass and has deferred this card past
+ * its budget N times in a row.
+ *
+ * FNXC:HonestAbsence 2026-11-21-05:40 (RUFU-807 code review, P2):
+ * The sentence may claim only what the observing pass actually measured. An earlier draft ended "Nothing is
+ * running this card yet and no slot is full" — but a pass that truncated BEFORE reaching this card never
+ * consulted a capacity pool, so that half asserted a negative it had not observed, which is exactly the
+ * shape RUFU-372's honest-absence rule forbids (an absent measurement is not a zero measurement). What the
+ * truncation DOES prove is that no gate refused the card, because a gate is only reached by evaluating it,
+ * so the sentence says that and stops. Dropping the slot claim also removes an accidental promise: "no slot
+ * is full" reads as "a slot is free for you", which a starved pass cannot know either.
+ *
+ * Kept here rather than inline at the call site because the whole claim of the RUFU-718 seam is that this
+ * file pair is the ONLY place release-admission wording lives — the board move route, promote, the CLI and
+ * `fn_task_promote` must not each invent their own story about a card that will not move.
+ */
+export function releaseSweepStarvedWaitDetail(
+  episode: TaskHoldReleaseStarvationEpisode | undefined,
+  nowMs: number = Date.now(),
+): string | null {
+  if (!holdReleaseStarvationIsNominating(episode, nowMs)) return null;
+  const deferred = episode?.stallCount ?? 0;
+  const unevaluated = episode?.unevaluatedCount;
+  const ageMs = episode ? holdReleaseStarvationAgeMs(episode, nowMs) : 0;
+  const age = formatStarvationAge(ageMs);
+  return (
+    ` Plan Review is queued for this card, but the hold/release sweep has deferred it ${deferred} `
+    + `time${deferred === 1 ? "" : "s"} without reaching it`
+    + `${unevaluated !== undefined ? ` (${unevaluated} cards were left unevaluated behind its per-pass budget)` : ""}`
+    + ` — it has been waiting ${age}. No gate has refused this card: the sweep never reached it to ask; the `
+    + "next actor is the hold/release sweep, which re-attempts every pass and has run out of budget before this card every time."
+  );
+}
+
+/** Age in operator words. A starvation measured in hours must not be printed as a millisecond count. */
+function formatStarvationAge(ageMs: number): string {
+  if (!Number.isFinite(ageMs) || ageMs <= 0) return "less than a minute";
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${Math.floor(hours / 24)} days`;
+}
+
 export function unclaimedWorkMeansStarved(decision: UnclaimedGraphWorkDecision): boolean {
   switch (decision.code) {
     case "due-unclaimed":

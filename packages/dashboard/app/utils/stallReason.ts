@@ -131,6 +131,16 @@ export type StallReasonCode =
   */
   | "wip-admission-throttled"
   /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-09:10 (RUFU-807 Step 5):
+  Carried VERBATIM from `TaskStallReasonCode`, and it is the planning lane's third distinct waiting reason.
+  It must not collapse into `plan-admission-throttled`: that code means the planner is busy, and its remedy
+  is a planner slot. This one means the scheduler's release pass ran out of per-card budget before reaching
+  this card, so the card is armed, waiting, and not being looked at — and the remedy is a different knob
+  entirely. RUFU-805's operator read "Queued for planning" behaviour from a board that was actually
+  describing a starvation, which is the same wrong-knob failure RUFU-393 records for the WIP twin.
+  */
+  | "release-sweep-budget-starved"
+  /*
   FNXC:ProviderThrottleIsTransient 2026-09-30-14:45 (RUFU-286):
   Client-synthesized (like `agent-approval`, not carried from a server code): the card's own agent is
   sitting in a provider-throttle cooldown, so the card is not moving while the heartbeat re-probe is
@@ -502,6 +512,8 @@ function serverStallReason(subject: StallSubject, context: StallContext): StallR
   if (isPlanningAdmissionStallCode(server.code)) return planAdmissionReason(server.code, context);
   // Same shared-list discipline for the execution-lane admission code (RUFU-393).
   if (isWipAdmissionStallCode(server.code)) return wipAdmissionReason(server, context, subject);
+  // And for the release-sweep starvation code (RUFU-807).
+  if (isHoldReleaseStarvationCode(server.code)) return holdReleaseStarvationReason(server, context);
   switch (server.code) {
     case "merge-blocker":
     // fallthrough: an enabled gate that has not run yet genuinely blocks the merge, so it shares the merge-blocker copy group; only its code (and therefore its test/data attribute) differs.
@@ -631,6 +643,60 @@ type WipAdmissionStallCode = (typeof WIP_ADMISSION_CODES)[number];
 
 function isWipAdmissionStallCode(code: string): code is WipAdmissionStallCode {
   return (WIP_ADMISSION_CODES as readonly string[]).includes(code);
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-09:15 (RUFU-807 Step 5):
+A third lane family, kept in its own list for the reason RUFU-393 gives for splitting itself away from the
+planning seven: the three codes send an operator to three different knobs (planner capacity, the WIP column's
+limit, the scheduler's release sweep), and the defect this card reports is precisely that one of them was
+indistinguishable from another. Same one-list-three-uses discipline — the type, the dispatch, and face
+visibility all read this list, so the code cannot be mapped in one place and ignored in another.
+*/
+const HOLD_RELEASE_STARVATION_CODES = ["release-sweep-budget-starved"] as const;
+
+type HoldReleaseStarvationCode = (typeof HOLD_RELEASE_STARVATION_CODES)[number];
+
+function isHoldReleaseStarvationCode(code: string): code is HoldReleaseStarvationCode {
+  return (HOLD_RELEASE_STARVATION_CODES as readonly string[]).includes(code);
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-09:15 (RUFU-807 Step 5):
+The chip for a card the release sweep keeps deferring. Two wording rules, both load-bearing:
+
+- It never says "failed", "stuck", or "will run". Nothing is wrong with the card — it is planned, armed, and
+  correct — and the sentence that promised a run is the exact copy this task removes from the refusal path.
+  A chip that repeated that promise on the board would restore the defect on the surface operators watch.
+- It names the mechanism and the wait, because "deferred by a scheduler pass that ran out of budget" and
+  "queued normally" looked identical for five hours and the difference decides whether an operator acts.
+
+The age comes from the server's `waitedMs`, measured in core from the episode's own `firstAt` — never from
+`updatedAt`, which any writer bumps — and is formatted by core's shared rule so the CLI and this banner read
+one measurement. When it is absent the non-interpolating variant is used rather than a headline that reads
+"(waiting )", the honesty rule RUFU-393 and `dependency-block` both apply.
+*/
+function holdReleaseStarvationReason(
+  server: TaskStallReason,
+  context: StallContext,
+): StallReason {
+  const { t } = context;
+  const waited = typeof server.waitedMs === "number" ? formatWipAdmissionStallWait(server.waitedMs) : undefined;
+  return {
+    code: "release-sweep-budget-starved",
+    badgeLabel: t("stall.release-sweep-budget-starved.badgeLabel", "Awaiting a release pass"),
+    headline: waited
+      ? t("stall.release-sweep-budget-starved.headline", "The scheduler's release pass keeps running out of budget before this card ({{waited}})", { waited })
+      : t("stall.release-sweep-budget-starved.headlineUnspecified", "The scheduler's release pass keeps running out of budget before this card"),
+    description: t(
+      "stall.release-sweep-budget-starved.description",
+      "This card is planned and its plan review is queued, but the pass that releases cards has examined other cards past its per-pass limit every time and has not reached this one. No gate has refused it.",
+    ),
+    suggestedAction: t(
+      "stall.release-sweep-budget-starved.suggestedAction",
+      "Nothing on this card needs fixing: the pass re-attempts every cycle, so shorten the planning lane it is competing with (finish or archive cards in it) to let it reach this one sooner.",
+    ),
+  };
 }
 
 /*
@@ -1130,6 +1196,15 @@ export function stallReasonVisibleOnFace(
   transient, so a card in its lane's normal resting state never reaches here with this code.
   */
   if (isWipAdmissionStallCode(stall.code)) return true;
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-09:10 (RUFU-807 Step 5):
+  Earns the card face for RUFU-273's reason and RUFU-805's evidence: the card sat five hours reading as an
+  ordinary queued card, so a reason that reached only the detail banner would leave the reported symptom —
+  "why hasn't this moved?" answered from a production log — exactly as unfixed. It is not an ordinary wait:
+  core's nomination floor has already decided the deferral outlived a single unlucky pass, and unlike the
+  two ordinary review-lane resting states this names a mechanism that will keep repeating on its own.
+  */
+  if (isHoldReleaseStarvationCode(stall.code)) return true;
   switch (stall.code) {
     case "wedge":
     case "dependency-block":

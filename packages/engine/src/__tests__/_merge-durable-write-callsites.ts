@@ -121,6 +121,20 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   DISTINCT, no row touched, so it is a reader beside its per-task sibling rather than a writer.
   */
   listPendingOverlapWaitTaskIds: { kind: "non-writer", reason: "reads pending overlap-wait episode owners board-wide without mutation" },
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-05:32 (RUFU-807 Step 8):
+  The armed-membership read the hold/release sweep needs to keep an already-armed card inside its budget.
+  A projected `task_id` SELECT over the work-item table, filtered to the task kind and the closed active
+  state set: no row hydration, no payload column, and no write in any arm — the function has no catch
+  block and emits no audit row of its own, so the RUFU-433 sink question (does an audit insert inside the
+  method make it a writer?) resolves NO here on inspection rather than by prefix rule. RUFU-807's audit
+  row lives in `execution/hold-release-starvation.ts`, reaches the store only through
+  `emitBoundedRunAudit`, and is therefore already accounted on the classified
+  `recordRunAuditEventBuffered` / `recordRunAuditEvent` writers, not on this read. A reader beside
+  `listWorkflowWorkItemsForTasks` that deliberately returns no rows at all, because row hydration is the
+  cost the release lane cannot afford per candidate.
+  */
+  listActiveTaskContinuationTaskIds: { kind: "non-writer", reason: "reads which task ids own an active task-kind continuation, projected ids only, without mutation" },
   mutateScript: { kind: "writer", reason: "persists script-catalog mutations with settings-version attribution" },
   publishTaskOverlapDeliveries: { kind: "writer", reason: "persists delivery snapshots on open overlap-wait episodes" },
   claimTaskVerificationRequest: { kind: "writer", reason: "persists or mutates TaskStore state" },

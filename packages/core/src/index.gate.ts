@@ -1778,6 +1778,29 @@ export {
   planAdmissionStallWrite,
   clearPlanAdmissionStallPatch,
   PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS,
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-05:32 (RUFU-807 Step 3):
+  The hold-release starvation pair, in the gate barrel beside its planning twin for the reason above: the
+  engine's release sweep writes the episode and core resets clear it, so both lanes must resolve the same
+  decider and the same two floors. HOLD_RELEASE_STARVED_STALL_REASON joins the sentence group because the
+  dashboard and the stall ladder read the sentence off the derived reason, never restate it.
+  */
+  readHoldReleaseStarvationEpisode,
+  holdReleaseStarvationWrite,
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-21-08:10 (RUFU-807 Step 4):
+  The nomination predicate joins the barrel because a SECOND surface now speaks this state — the release
+  refusal sentence in the engine — and it must decide to speak on exactly the measurement the board badge
+  uses. Two copies of the threshold rule is how a card ends up wearing the badge while its refusal text
+  still promises a run.
+  */
+  holdReleaseStarvationAgeMs,
+  holdReleaseStarvationIsNominating,
+  clearHoldReleaseStarvationPatch,
+  HOLD_RELEASE_STARVATION_REFRESH_FLOOR_MS,
+  HOLD_RELEASE_STARVATION_ESCALATION_FLOOR_MS,
+  HOLD_RELEASE_STARVATION_NAME_AFTER_DEFERRALS,
+  HOLD_RELEASE_STARVED_STALL_REASON,
   PLAN_ADMISSION_THROTTLED_STALL_REASON,
   PLAN_LANE_INELIGIBLE_STALL_REASON,
   PLAN_PREMISE_HELD_STALL_REASON,
@@ -1786,7 +1809,7 @@ export {
   PLAN_NO_ADMISSION_STALL_REASON,
   RECOVERABLE_WORK_STALL_REASON,
 } from "./tasks/task-stall-reason.js";
-export type { TaskStallReason, TaskStallReasonCode, StallableTask, TaskStallReasonContext, PlanAdmissionStallObservation } from "./tasks/task-stall-reason.js";
+export type { TaskStallReason, TaskStallReasonCode, StallableTask, TaskStallReasonContext, PlanAdmissionStallObservation, HoldReleaseStarvationObservation } from "./tasks/task-stall-reason.js";
 export {
   readWipAdmissionStallEpisode,
   wipAdmissionStallWrite,
@@ -1837,9 +1860,10 @@ extra sharp edge: the engine writes the key and the CORE operator-reset patch cl
 only from the full barrel would have the gate lane persist `undefined` as a literal property name while
 `buildManualRetryResetPatch` nulls the real one — an operator Retry that silently never lifts the bound.
 */
-export { PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY } from "./types.js";
+export { PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, /* FNXC:HoldReleaseArmedPriority 2026-11-21-05:32 (RUFU-807 Step 3): in BOTH barrels for the reason RUFU-547 states above - the engine writes this key and core's operator-reset patch clears it, so a gate lane that could not name it would persist `undefined` as a literal property while buildManualRetryResetPatch nulled the real one. */ HOLD_RELEASE_STARVATION_METADATA_KEY } from "./types.js";
 export type { StrandedContinuationReclaimAnnouncement, StrandedContinuationReclaimEpisode } from "./types.js";
 export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types.js";
+export type { TaskHoldReleaseStarvationCode, TaskHoldReleaseStarvationEpisode } from "./types.js";
 export type { TaskDeterministicSpecRejectionEpisode } from "./types.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types.js";

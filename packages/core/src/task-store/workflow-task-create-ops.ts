@@ -19,7 +19,7 @@ import {and, eq, inArray, isNull} from "drizzle-orm";
 import {filterArchived as filterArchivedAsync} from "../async-stores/async-archive-db.js";
 import type {Task, TaskCreateInput, Column, ColumnId, TaskDocumentWithTask, RunMutationContext, TaskCommitAssociation, GoalCitation, GoalCitationInput, TaskBranchAssignmentMode, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind} from "../types.js";
 /* RUFU-320: minting-prefix resolution moved to store.resolveTaskIdMinting (task-prefix.ts). */
-import {COLUMNS} from "../types.js";
+import {ACTIVE_WORKFLOW_WORK_ITEM_STATES, COLUMNS} from "../types.js";
 import {parseWorkflowIr, serializeWorkflowIr} from "../workflows/workflow-ir.js";
 import {resolveAllowedColumns, workflowHasColumn} from "../workflows/workflow-transitions.js";
 import type {WorkflowFieldDefinition} from "../workflows/workflow-ir-types.js";
@@ -510,6 +510,47 @@ export async function listWorkflowWorkItemsForTasksImpl(
       byTask.get(item.taskId)?.push(item);
     }
     return byTask;
+}
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-21-03:32 (RUFU-807 Step 1):
+The cheap batched answer to "which of these cards own a live TASK continuation?", so the hold/release
+sweep can put continuation-backed cards inside its evaluated set instead of budget-truncating past them.
+
+Why a new read instead of reusing `listWorkflowWorkItemsForTasks`: that reader hydrates every column of
+every matching row (`rowToWorkflowWorkItem`) and returns them, which for 873 candidates is exactly the
+row-materialization cost RUFU-871 measured as the sweep's dominant expense (788 MB / 60 s, ~90 % inside
+the Postgres driver). This query projects `task_id` alone and returns a Set — the caller's question is
+membership, never payload — so it can be issued once per project per pass without changing what the
+pass costs.
+
+The predicate is the SAME closed vocabulary the seeders use for "is this card busy" (kind `task` AND
+`ACTIVE_WORKFLOW_WORK_ITEM_STATES`), deliberately not a second definition: the two must agree about who
+is armed, or the sweep prioritises a card the seeder would consider idle. Merge-kind rows are excluded —
+`kind: "merge"` is a review-lane row, and this read exists for the planning-lane release decision.
+
+No async backend means no work-item table to consult, which is answered with an EMPTY set rather than a
+throw: this read only ever re-orders an evaluation that is about to happen anyway, and a store shape that
+cannot answer the question must degrade to today's ordering, not fail the sweep.
+*/
+export async function listActiveTaskContinuationTaskIdsImpl(
+  store: TaskStore,
+  taskIds: readonly string[],
+): Promise<Set<string>> {
+  if (taskIds.length === 0) return new Set();
+  const layer = store.asyncLayer;
+  if (!layer) return new Set();
+  const scope = projectScopeFor(schema.project.workflowWorkItems.projectId, layer.projectId);
+  const rows = await layer.db
+    .select({ taskId: schema.project.workflowWorkItems.taskId })
+    .from(schema.project.workflowWorkItems)
+    .where(and(
+      scope,
+      inArray(schema.project.workflowWorkItems.taskId, [...taskIds]),
+      eq(schema.project.workflowWorkItems.kind, "task" satisfies WorkflowWorkItemKind),
+      inArray(schema.project.workflowWorkItems.state, [...ACTIVE_WORKFLOW_WORK_ITEM_STATES]),
+    ));
+  return new Set(rows.map((row) => row.taskId));
 }
 
 export async function listDueWorkflowWorkItemsImpl(store: TaskStore, filter: WorkflowWorkItemDueFilter = {}): Promise<WorkflowWorkItem[]> {

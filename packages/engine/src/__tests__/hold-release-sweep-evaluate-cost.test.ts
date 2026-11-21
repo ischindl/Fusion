@@ -207,6 +207,14 @@ async function makeCountingStore(options: { board: SeedCard[]; ir: WorkflowIr; s
       })),
     getWorkflowDefinition: async () => ({ ir: options.ir }),
     listWorkflowWorkItemsForTask: async () => [],
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-04:20 (RUFU-807 Step 2):
+    The armed-continuation read is implemented in this SHARED counting fake rather than per test case, so
+    every pass here exercises the real call path and the Proxy tallies it. Returning the empty set keeps
+    this file's byte-identical expectations: no card on its board is armed, so the ordering reduces to
+    RUFU-698's plain queue order and the assertions below measure what they always measured.
+    */
+    listActiveTaskContinuationTaskIds: async () => new Set<string>(),
     getCompletionHandoffAcceptedMarker: async () => null,
     checkAndRecordUnplannedExecutionBlock: async () => true,
     recordRunAuditEvent: async () => undefined,
@@ -307,6 +315,14 @@ describe("hold-release sweep evaluate cost (RUFU-871 Step 2 measurement)", () =>
     expect(pass1.getTaskWorkflowSelectionsAsync).toBe(1);
     expect(pass1.getWorkflowDefinition).toBe(1);
     expect(pass2.getWorkflowDefinition).toBe(1);
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-21-04:20 (RUFU-807 Step 2):
+    The armed read is a PER-PASS constant, not a per-task read: one batched membership query names every
+    continuation-backed candidate at once. A regression to one read per candidate would land exactly where
+    RUFU-871's field evidence put the driver (788 MB / 60 s), and this is the line that catches it.
+    */
+    expect(pass1.listActiveTaskContinuationTaskIds).toBe(1);
+    expect(pass2.listActiveTaskContinuationTaskIds).toBe(1);
 
     // (2) Zero per-task reads, on either pass.
     expect(pass1.getTaskWorkflowSelection ?? 0).toBe(0);
