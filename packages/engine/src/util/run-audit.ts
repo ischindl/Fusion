@@ -293,6 +293,33 @@ export type GitMutationType =
    */
   | "merge:ai-empty"
   | "merge:ai-review-verdict"
+  /**
+   * Metadata shape:
+   * ```ts
+   * {
+   *   taskId: string;
+   *   priorTipSha: string;
+   *   liveTipSha: string;
+   *   rebuildCount: number;
+   *   reason: "tip-advanced" | "ceiling-reached";
+   *   outcome: "episode-carried" | "parked";
+   * }
+   * ```
+   *
+   * FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+   * One row per ACCEPTED rebuild caused ONLY by the integration tip advancing, written after the
+   * durable carry is accepted so the counter increment is itself the dedupe witness. Before this event
+   * the whole livelock left exactly one log line per cycle and no audit row at all, so 40 passes were
+   * indistinguishable from a slow merge. The two tip SHAs are content-addressed identifiers, not text:
+   * the reconcile sentence, findings, and diffs never enter a row. `reason`/`outcome` are closed sets:
+   * `tip-advanced` + `episode-carried` is a tolerated rebuild, `ceiling-reached` + `parked` is the
+   * bounded stop. This member is DELIBERATELY outside the curated `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`
+   * catalogue and is documented as prose in `docs/run-audit.md` (precedent:
+   * `self-healing/sweep-failure-audit.ts` and the RUFU-462 heap-ceiling row), because the catalogue is
+   * locked table-for-table against that document's delivery-pipeline table and this is a merge-window
+   * diagnostic, not a delivery-pipeline stage.
+   */
+  | "merge:ai-tip-advance-rebuild"
   | "merge:ai-review-blocked"
   | "merge:ai-review-landed-with-concerns"
   | "merge:ai-local-sync"

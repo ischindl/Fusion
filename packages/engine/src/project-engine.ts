@@ -134,6 +134,7 @@ import { sweepStaleAutostashes, VerificationError } from "./merger.js";
 import {
   runAiMerge,
   AiMergeBlockedError,
+  AiMergeIntegrationTipAdvanceExhaustedError,
   landWorkspaceTask,
   WorkspaceFinalizeBlockedError,
   WorkspaceReviewRequiredError,
@@ -6542,6 +6543,36 @@ export class ProjectEngine {
               } catch (recoveryErr) {
                 runtimeLog.error(
                   `Auto-merge: failed to park ${taskId} after AI review block: ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
+                );
+              }
+              continue;
+            }
+            /*
+            FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+            The tip-advance ceiling is the SAME shape of terminal operator work as an exhausted AI
+            review, and it is classified in this same typed-before-text arm for the same reason: its
+            sentence names the integration branch and both tip SHAs, so any text sniffing after this
+            point could read it as a conflict and bounce the card back for a re-rebase that will lose
+            the same race again. The park spends the retry race exactly once, here, which is the only
+            place cause (b) is ever allowed to touch `mergeRetries`; the rebuild path itself never does.
+            A PR-strategy project keeps today's generic handling below, unchanged, because that lane owns
+            its own retry budget and PR branch bookkeeping.
+            */
+            if (err instanceof AiMergeIntegrationTipAdvanceExhaustedError) {
+              try {
+                await store.updateTask(taskId, {
+                  status: "failed",
+                  mergeRetries: maxAutoMergeRetriesOnErr,
+                  error: err.message,
+                });
+                await store.logEntry(
+                  taskId,
+                  `AI merge stopped after ${String(err.rebuildCount)} consecutive integration-tip rebuilds (limit ${String(err.ceiling)}): the branch could not be replayed onto a trunk that kept moving. Rebase or merge onto the current integration head and request merge again, or land it by hand.`,
+                  "AiMergeTipAdvanceExhausted",
+                );
+              } catch (recoveryErr) {
+                runtimeLog.error(
+                  `Auto-merge: failed to park ${taskId} after tip-advance exhaustion: ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
                 );
               }
               continue;

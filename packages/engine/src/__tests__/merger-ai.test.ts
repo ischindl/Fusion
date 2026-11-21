@@ -33,6 +33,8 @@ import {
   REVIEW_VERDICT_MARKER,
   RESOLVED_PRIOR_FINDINGS_MARKER,
   AiMergeBlockedError,
+  AiMergeIntegrationTipAdvanceExhaustedError,
+  MAX_TIP_ADVANCE_REBUILDS,
 } from "../merge/merger-ai.js";
 import { EXECUTOR_FAILED_INCOMPLETE_REASON } from "../overseer/planner-overseer.js";
 import { finalizeProvenAutoMergeTask } from "../merge/auto-merge-finalization.js";
@@ -193,6 +195,22 @@ function makeStore(
 }
 
 // A merge agent that actually performs the squash merge with git.
+/*
+FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+Records every patch a fenced `updateTaskAtomic` author actually applied, so a test can tell a carry
+(no `mergeRetries` key) from the cause (a) wipe (both keys) instead of inferring it from behavior.
+*/
+function recordAtomicPatches(store: { updateTaskAtomic: ReturnType<typeof vi.fn> }, task: unknown): Array<Record<string, unknown>> {
+  const patches: Array<Record<string, unknown>> = [];
+  const original = store.updateTaskAtomic.getMockImplementation()!;
+  store.updateTaskAtomic.mockImplementation(async (id: string, updater: (current: unknown) => Record<string, unknown> | undefined) => {
+    const patch = await updater(task);
+    if (patch) patches.push(patch);
+    return (original as (id: string, u: typeof updater) => unknown)(id, updater);
+  });
+  return patches;
+}
+
 function realMergeAgent(branch: string) {
   return vi.fn(async (cwd: string) => {
     try {
@@ -374,6 +392,356 @@ describe("runAiMerge", () => {
     expect(result.merged).toBe(true);
     expect(reviewAgent).toHaveBeenCalledTimes(3);
     expect(git(dir, "show main:after-review.txt")).toContain("new source identity");
+  });
+
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-17:15 (RUFU-1100):
+  Symptom Verification RUFU-1100 groups the four cases the livelock needed into one class: the card that
+  must now LAND after a foreign landing (the RUFU-702 shape), the History surface that must announce each
+  accepted rebuild exactly once, the cause-(a) wipe that must survive the split, and the ceiling that must
+  stop a faster trunk. The class list should show both halves of the fix - the carry and the refusal to
+  carry - without grepping.
+  */
+  describe("Symptom Verification RUFU-1100 - the integration tip advances inside the merge window", () => {
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+    The RUFU-702 livelock. Another card lands on main between this card's two clean approvals, so the
+    reviewed candidate's base moved while its CONTENT did not. Before this fix the one identity predicate
+    read that as an invalidation, threw away the approved squash and the retry race, and rebuilt — and the
+    next landing lost the same race. Measured: three rebuilds, two approved squashes discarded, zero
+    landings in 2h20m.
+
+    The card must now LAND. It does so on two reviews rather than three precisely because the approval
+    earned before the advance is credited forward: the rebuilt patch is byte-for-byte the content the
+    reviewer was shown, proven by `git patch-id --stable`.
+    */
+    it("lands when the integration tip advances after a clean approval of a faithfully replayed diff", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, task, logs } = makeStore(dir);
+      const patches = recordAtomicPatches(store, task);
+      let advanced = false;
+      const reviewAgent = vi.fn(async () => {
+        if (!advanced) {
+          advanced = true;
+          // Another card publishes to the integration branch while this card is mid-review.
+          writeFileSync(join(dir, "other-card.txt"), "landed by someone else\n");
+          git(dir, "add other-card.txt");
+          git(dir, "commit -q -m 'main: another card lands'");
+        }
+        return "REVIEW_VERDICT: approve";
+      });
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      // Both contributions survive: the advance was carried, and the card's own work still landed.
+      expect(git(dir, "show main:feature.txt")).toContain("feature work");
+      expect(git(dir, "show main:other-card.txt")).toContain("landed by someone else");
+      // The carried approval means the reviewer was asked again only for the rebuilt candidate, not from zero.
+      expect(reviewAgent).toHaveBeenCalledTimes(2);
+      /*
+      The durable witness is read out of the patches the carry authored, because a successful landing clears
+      the episode — asserting on the final row would assert on the absence the landing deliberately wrote.
+      */
+      const carry = patches
+        .map((patch) => patch.aiMergeReviewReconciliation as Record<string, unknown> | null | undefined)
+        .filter((state): state is Record<string, unknown> => !!state && typeof state === "object")
+        .find((state) => state.tipAdvanceRebuilds === 1);
+      expect(carry).toBeTruthy();
+      expect(typeof carry!.tipAdvanceFirstAt).toBe("string");
+      // Exactly one rebuild was accepted, it was tolerated, and it wrote exactly one audit row.
+      const rebuildRows = store.recordRunAuditEvent.mock.calls
+        .map(([event]) => event as { mutationType?: string; metadata?: Record<string, unknown> })
+        .filter((event) => event.mutationType === "merge:ai-tip-advance-rebuild");
+      expect(rebuildRows).toHaveLength(1);
+      expect(rebuildRows[0].metadata).toMatchObject({ rebuildCount: 1, reason: "tip-advanced", outcome: "episode-carried" });
+      /*
+      The row is ids/counts/fixed enums ONLY, so the closed key set is asserted rather than sampled:
+      a sentence, a path, or a diff that ever rides along would make this fail here rather than in a
+      redaction review. The two tip SHAs are content-addressed identifiers, which is the one kind of
+      free text this family permits.
+      */
+      expect(Object.keys(rebuildRows[0].metadata!).sort()).toEqual(["liveTipSha", "outcome", "priorTipSha", "reason", "rebuildCount", "taskId"]);
+      // The rebuild is observable without querying the audit store.
+      expect(logs.filter((line) => /Integration branch advanced while this card/.test(line))).toHaveLength(1);
+      // The retry race a card already spent is never a side product of somebody else landing first: no
+      // state-carrying patch here may touch `mergeRetries`. (The cause (a) wipe still writes both keys, and
+      // this test never reaches cause (a).)
+      expect(patches.filter((patch) => "aiMergeReviewReconciliation" in patch && "mergeRetries" in patch)).toHaveLength(0);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-17:01 (RUFU-1100):
+    The production History surface is the duck-typed once-seam, not `logEntry`: the merge harness above
+    injects a store without it, so a test set that only used that harness would leave the leg production
+    actually takes unexercised. This case injects the seam and asserts BOTH halves of its contract: the
+    dedupe key is the accepted rebuild itself (tip SHA + counter), which is what makes a re-dispatch
+    unable to announce the same drift twice, and the `logEntry` fallback is not reached when the seam exists.
+    */
+    it("writes the rebuild History line once per accepted rebuild through the once-seam when the store has it", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, logs } = makeStore(dir);
+      const once = vi.fn(async () => true);
+      store.logEntryOnce = once;
+      let advanced = false;
+      let advancedTip = "";
+      const reviewAgent = vi.fn(async () => {
+        if (!advanced) {
+          advanced = true;
+          writeFileSync(join(dir, "other-card.txt"), "landed by someone else\n");
+          git(dir, "add other-card.txt");
+          git(dir, "commit -q -m 'main: another card lands'");
+          // The tip the carry must name: main after the foreign landing, before this card lands on top of it.
+          advancedTip = git(dir, "rev-parse main");
+        }
+        return "REVIEW_VERDICT: approve";
+      });
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      expect(once).toHaveBeenCalledTimes(1);
+      expect(once).toHaveBeenCalledWith("FN-1", expect.objectContaining({
+        dedupeKey: `ai-tip-advance-rebuild:${advancedTip}:1`,
+        outcome: "AiMergeTipAdvance",
+      }));
+      // The seam answered, so the append-only fallback must stay silent for the History line. (The engine's
+      // own merge-log sentence is a different string and is asserted by the sibling case.)
+      expect(logs.filter((line) => /Integration branch advanced while this card/.test(line))).toHaveLength(0);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+    Cause (a) must stay cause (a). A tip advance that arrives TOGETHER with a replaced source head is not
+    a bare advance: the reviewer answered a contribution that no longer exists. The episode wipes, the
+    retry race clears with it, and no rebuild record is written — the last clause is what proves the two
+    causes were really separated rather than the carry arm swallowing both.
+    */
+    it("wipes the episode when the tip advances and the source head is replaced in the same window", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, task } = makeStore(dir);
+      const patches = recordAtomicPatches(store, task);
+      let drifted = false;
+      const reviewAgent = vi.fn(async () => {
+        if (!drifted) {
+          drifted = true;
+          writeFileSync(join(dir, "other-card.txt"), "landed by someone else\n");
+          git(dir, "add other-card.txt");
+          git(dir, "commit -q -m 'main: another card lands'");
+          git(dir, "checkout -q fusion/fn-1");
+          writeFileSync(join(dir, "late-source.txt"), "the author pushed again\n");
+          git(dir, "add late-source.txt");
+          git(dir, "commit -q -m 'feat: source identity replaced'");
+          git(dir, "checkout -q main");
+        }
+        return "REVIEW_VERDICT: approve";
+      });
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      expect(git(dir, "show main:late-source.txt")).toContain("the author pushed again");
+      const wipe = patches.find((patch) => patch.aiMergeReviewReconciliation === null);
+      expect(wipe).toBeTruthy();
+      expect(Object.keys(wipe!)).toContain("mergeRetries");
+      expect(store.recordRunAuditEvent.mock.calls.filter(([event]) => (event as { mutationType?: string }).mutationType === "merge:ai-tip-advance-rebuild")).toHaveLength(0);
+      expect(task.aiMergeReviewReconciliation?.tipAdvanceRebuilds ?? 0).toBe(0);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+    A trunk that moves faster than this card can review is not a reason to spin forever. Every review pass
+    is met with a fresh landing, so the code-owned ceiling is reached and the card parks instead of
+    rebuilding. The counters, the audit rows, and the History lines all have to answer for every one of
+    those passes — a stop nobody can count is the same blind spot the livelock had.
+    */
+    it("parks at the ceiling when the integration tip advances on every pass, recording each rebuild", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, task, logs } = makeStore(dir);
+      let pass = 0;
+      const reviewAgent = vi.fn(async () => {
+        pass++;
+        writeFileSync(join(dir, `other-card-${String(pass)}.txt`), `pass ${pass}\n`);
+        git(dir, `add other-card-${String(pass)}.txt`);
+        git(dir, `commit -q -m 'main: trunk keeps moving ${String(pass)}'`);
+        return "REVIEW_VERDICT: approve";
+      });
+
+      await expect(runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      })).rejects.toBeInstanceOf(AiMergeIntegrationTipAdvanceExhaustedError);
+
+      const rebuildRows = store.recordRunAuditEvent.mock.calls
+        .map(([event]) => event as { mutationType?: string; metadata?: Record<string, unknown> })
+        .filter((event) => event.mutationType === "merge:ai-tip-advance-rebuild")
+        .map((event) => event.metadata!);
+      expect(rebuildRows).toHaveLength(MAX_TIP_ADVANCE_REBUILDS);
+      expect(rebuildRows.map((row) => row.rebuildCount)).toEqual([1, 2, 3, 4, 5]);
+      expect(rebuildRows.slice(0, MAX_TIP_ADVANCE_REBUILDS - 1).every((row) => row.reason === "tip-advanced" && row.outcome === "episode-carried")).toBe(true);
+      const last = rebuildRows[MAX_TIP_ADVANCE_REBUILDS - 1];
+      expect(last.reason).toBe("ceiling-reached");
+      expect(last.outcome).toBe("parked");
+      // Every tip SHA pair is content-addressed into the row, so a reader can tell which two heads moved.
+      expect(rebuildRows.every((row) => /^[0-9a-f]{40}$/.test(String(row.priorTipSha)) && /^[0-9a-f]{40}$/.test(String(row.liveTipSha)))).toBe(true);
+      expect(logs.filter((line) => /Integration branch advanced/.test(line))).toHaveLength(MAX_TIP_ADVANCE_REBUILDS);
+      // The ceiling is a stop, not a wipe: the durable episode keeps its counted history.
+      expect(task.aiMergeReviewReconciliation?.tipAdvanceRebuilds).toBe(MAX_TIP_ADVANCE_REBUILDS);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-17:20 (RUFU-1100):
+    The livelock did not merely cost a rebuild: it refunded the corrective budget and forgot the finding
+    ledger, so a card that had already spent a corrective pass got it back and a reviewer's recorded
+    disposition vanished with the episode. This case advances the tip on a card that has a FINDING, a spent
+    corrective pass, and one earned clean approval, then asserts the carry-forward preserved all three and
+    still wrote no `mergeRetries`. A carry that quietly refunded the budget or dropped the ledger would keep
+    every other test here green.
+    */
+    it("carries the finding ledger and the spent corrective budget across the advance", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, task } = makeStore(dir, {}, { merger: { mode: "ai", maxReviewPasses: 2 } });
+      const patches = recordAtomicPatches(store, task);
+      const blocker = "the settings route still reads the stale guard";
+      let review = 0;
+      const reviewAgent = vi.fn(async () => {
+        review++;
+        if (review === 1) return `${blocker}\nSEVERITY: blocking\nREVIEW_VERDICT: reject`;
+        if (review === 2) {
+          writeFileSync(join(dir, "other-card.txt"), "landed by someone else\n");
+          git(dir, "add other-card.txt");
+          git(dir, "commit -q -m 'main: another card lands'");
+          return "PRIOR_FINDING_DISPOSITIONS:\nfinding-1-1: corrected\nREVIEW_VERDICT: approve";
+        }
+        return "REVIEW_VERDICT: approve";
+      });
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      const carry = patches
+        .map((patch) => patch.aiMergeReviewReconciliation as Record<string, unknown> | null | undefined)
+        .filter((state): state is Record<string, unknown> => !!state && typeof state === "object")
+        .find((state) => state.tipAdvanceRebuilds === 1);
+      expect(carry).toBeTruthy();
+      // The ledger survives with its disposition, the spent corrective pass stays spent, and the credit
+      // earned before the advance is still credited.
+      expect(carry!.findings).toHaveLength(1);
+      expect((carry!.findings as Array<Record<string, unknown>>)[0].disposition).toBe("corrected");
+      expect(carry!.correctivePasses).toBe(1);
+      expect(carry!.consecutiveCleanApprovals).toBe(1);
+      expect(patches.filter((patch) => "aiMergeReviewReconciliation" in patch && "mergeRetries" in patch)).toHaveLength(0);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-19:05 (RUFU-1100):
+    The mixed tip-plus-source case above cannot prove the SOURCE leg alone still invalidates: if the tip
+    leg ever won the order, that case would carry and only this one would notice. A push to the author's
+    own branch with `main` untouched is cause (a) on its own, and the durable shape must stay the pair
+    the operator dismissal writes: the episode nulled AND `mergeRetries` cleared together, with no
+    rebuild row of kind (b) anywhere.
+    */
+    it("wipes the episode together with the retry race when only the source head is replaced", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const { store, task } = makeStore(dir);
+      const patches = recordAtomicPatches(store, task);
+      let changedSource = false;
+      const reviewAgent = vi.fn(async () => {
+        if (!changedSource) {
+          changedSource = true;
+          git(dir, "checkout -q fusion/fn-1");
+          writeFileSync(join(dir, "late-source.txt"), "the author pushed again\n");
+          git(dir, "add late-source.txt");
+          git(dir, "commit -q -m 'feat: source identity replaced'");
+          git(dir, "checkout -q main");
+        }
+        return "REVIEW_VERDICT: approve";
+      });
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      expect(git(dir, "show main:late-source.txt")).toContain("the author pushed again");
+      const wipe = patches.find((patch) => patch.aiMergeReviewReconciliation === null);
+      expect(wipe).toBeTruthy();
+      // Both keys travel together, exactly as `dismissAiMergeReviewFinding` writes them.
+      expect(Object.keys(wipe!)).toContain("mergeRetries");
+      expect(store.recordRunAuditEvent.mock.calls.filter(([event]) => (event as { mutationType?: string }).mutationType === "merge:ai-tip-advance-rebuild")).toHaveLength(0);
+      expect(task.aiMergeReviewReconciliation?.tipAdvanceRebuilds ?? 0).toBe(0);
+    });
+
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-19:05 (RUFU-1100):
+    The other half of the credit rule, and the half that makes the carry safe rather than a loophole.
+    The sibling case above proves credit survives a faithful replay; this one proves a candidate whose
+    patch is NOT the one the reviewer approved earns nothing. The occasion is the real one - the episode
+    arrives already carried across a foreign landing, with one clean approval and an `approvedPatchId`
+    that the rebuilt patch cannot match. Pre-rule the counter would have read 1, the next approval would
+    have reached the landing gate of 2, and an unreviewed patch would have landed on one review call.
+    */
+    it("refuses to carry approval credit onto a rebuilt candidate whose patch differs from the approved one", async () => {
+      const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+      const sourceSha = git(dir, "rev-parse fusion/fn-1");
+      const tipBeforeLanding = git(dir, "rev-parse main");
+      // Another card lands, so the episode this invocation loads names a tip it has already left.
+      writeFileSync(join(dir, "other-card.txt"), "landed by someone else\n");
+      git(dir, "add other-card.txt");
+      git(dir, "commit -q -m 'main: another card lands'");
+      const { store, task } = makeStore(dir, {
+        aiMergeReviewReconciliation: {
+          sourceSha,
+          integrationTipSha: tipBeforeLanding,
+          findings: [],
+          consecutiveCleanApprovals: 1,
+          correctivePasses: 0,
+          tipAdvanceRebuilds: 0,
+          // A patch identity no rebuilt candidate can answer to.
+          approvedPatchId: "0".repeat(40),
+        },
+      });
+      const patches = recordAtomicPatches(store, task);
+      const reviewAgent = vi.fn(async () => "REVIEW_VERDICT: approve");
+
+      const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+        mergeAgent: realMergeAgent("fusion/fn-1"),
+        reviewAgent,
+      });
+
+      expect(result.merged).toBe(true);
+      // The advance really was carried (the landing itself clears the episode, so the witness is the
+      // patch the carry authored, not the final row).
+      const carry = patches
+        .map((patch) => patch.aiMergeReviewReconciliation as Record<string, unknown> | null | undefined)
+        .filter((state): state is Record<string, unknown> => !!state && typeof state === "object")
+        .find((state) => state.tipAdvanceRebuilds === 1);
+      expect(carry).toBeTruthy();
+      expect(carry!.consecutiveCleanApprovals).toBe(1);
+      // The candidate rebuild authored the credit as ZERO even though the loaded episode held 1.
+      const rebuilt = patches
+        .map((patch) => patch.aiMergeReviewReconciliation as Record<string, unknown> | undefined)
+        .filter((state) => !!state && typeof state === "object" && typeof state.candidateSha === "string")
+        .find((state) => "consecutiveCleanApprovals" in state);
+      expect(rebuilt).toBeTruthy();
+      expect(rebuilt!.consecutiveCleanApprovals).toBe(0);
+      expect(rebuilt!.approvedPatchId).toBeUndefined();
+      // Two clean approvals were therefore needed; one would mean the unreviewed patch was credited.
+      expect(reviewAgent).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("passes explicit still-present findings to a corrective merger", async () => {

@@ -1274,6 +1274,53 @@ The confirmed-landing recovery lane — the pump-driven retry for a merge whose 
 
 Metadata stays ids/outcomes-only in the family's own sense: the configured remote name is the one string the row exists to carry. Remote URLs, ref tips, credentials in a remote URL, review findings, and error prose never enter the row; a failed push keeps its detail in the engine log and in `stderrPreview`.
 
+### The merge episode that a moving trunk kept discarding (RUFU-1100)
+
+`merge:ai-tip-advance-rebuild` records one **accepted** rebuild of an AI-merge clean room whose only
+changed input was the integration branch's tip. One row exists per rebuild, and no row exists for a
+rebuild caused by anything else.
+
+The event exists because the livelock it now bounds was invisible. On RUFU-702 (2026-11-18) a card sat
+`in-review` through three tip-driven rebuilds over 2h20m: each advance of `main` discarded an approved
+squash, the finding dispositions, the spent corrective budget, **and** the auto-merge retry race, so the
+mechanism that was supposed to notice the loop was the thing each loop reset. The whole episode left one
+engine log line per cycle and no audit row, so 40 passes were indistinguishable from a slow merge. A
+second symptom of the same blindness was on the board face: the card showed `merging` and had advanced
+`updatedAt`, and the review-stall classifier exempts `in-review` cards whose `updatedAt` moved — active
+bookkeeping, not a stall — so the wedge alert could not fire either.
+
+Metadata is `{ taskId, priorTipSha, liveTipSha, rebuildCount, reason, outcome }`:
+
+- `priorTipSha` / `liveTipSha` are the two integration heads the rebuild moved between. They are
+  content-addressed identifiers, which is what puts them in a row at all: this family's contract forbids
+  prose and paths, and a SHA is neither. They are also the pair an operator needs in order to tell "the
+  trunk moved" apart from "this card's branch moved", which is the distinction the whole event is for.
+- `rebuildCount` is the durable count of consecutive tip-driven rebuilds inside the rolling window, read
+  from the same increment the carry writes. It is not derived from `mergeRetries` and not from
+  `MAX_CONCURRENT_ADVANCE_RETRIES`, which bounds a different cause (losing the landing compare-and-set to
+  a concurrent advance) and is per-invocation.
+- `reason` is `"tip-advanced"` for a tolerated rebuild and `"ceiling-reached"` for the pass that spent the
+  code-owned ceiling. `outcome` is `"episode-carried"` or `"parked"` beside it, never independently.
+
+**Consumer rule: one accepted rebuild writes exactly one row, and a row is never written for a rebuild
+that was not accepted.** The emit happens after the compare-and-set that carries the episode, and the
+`rebuildCount` increment inside that same write is the dedupe witness — a re-dispatch that observes no
+drift never reaches the emit, so an engine restart can neither double-count a drift nor forget the bound,
+and no process-local set is involved. `parked` is terminal for the episode: the card goes `failed` with the
+retry race spent once in that same statement, no bounce, no re-review, and no automatic claimant. Reading
+`episode-carried` rows without a following `parked` row therefore means the card is still waiting on a
+trunk, which is the state the ceiling is a stop for. Cause-(a) invalidations — a changed source head, a
+dismissed finding, an orphan writer — deliberately write **no** row of this type; they keep their own
+wipe, and a row here would credit a wipe to the trunk.
+
+This member is intentionally **outside** the curated `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS` catalogue, which
+`run-audit-catalogue.test.ts` locks table-for-table against that document's delivery-pipeline tables: the
+row is a merge-window diagnostic about how often a base moved, not a delivery-pipeline stage. Precedent for
+prose-only membership is `self-healing/sweep-failure-audit.ts` and the RUFU-462 boot heap-ceiling row. It is
+also outside the AGENTS.md Run Audit list, since that list enumerates catalogue members. Emission goes
+through the FN-9175 bounded seam (`emitBoundedRunAudit`), so an absent, throwing, rejecting, or hanging sink
+cannot alter, delay, or fail the merge it is reporting on.
+
 ### Long-term memory budget maintenance (RUFU-279, RUFU-665)
 
 `memory:long-term-over-budget` records a long-term `MEMORY.md` (project scope, or one durable agent's

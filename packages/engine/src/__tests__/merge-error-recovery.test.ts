@@ -76,7 +76,7 @@ vi.mock("../runtimes/in-process-runtime.js", () => ({
 import { ProjectEngine } from "../project-engine.js";
 import { runtimeLog } from "../logger.js";
 import { VerificationError } from "../merger.js";
-import { AiMergeBlockedError, runAiMerge } from "../merge/merger-ai.js";
+import { AiMergeBlockedError, AiMergeIntegrationTipAdvanceExhaustedError, runAiMerge } from "../merge/merger-ai.js";
 
 type MockTask = {
   id: string;
@@ -414,6 +414,85 @@ describe("ProjectEngine merge error recovery", () => {
       "MergeConflictBounce",
     );
     expect(hasErrorLog(errorSpy, "failed to bounce")).toBe(false);
+  });
+
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  SYMPTOM: a card whose integration branch keeps moving underneath it rebuilt its clean room forever —
+  three rebuilds, two approved squashes discarded, zero landings in 2h20m on RUFU-702 — because every
+  rebuild reset the very retry budget that was supposed to bound it.
+  ASSERTION: once the code-owned ceiling on consecutive tip-driven rebuilds is spent, the card parks
+  `failed` with the retry race spent in the SAME statement, never bounces to in-progress, never re-enters
+  review, and schedules no timer. The sentence is the merge lane's own, unmodified by any text classifier,
+  and it names the remedy an operator can actually take.
+  */
+  it("parks an exhausted integration-tip advance race without retrying, bouncing, or re-reviewing", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const store = makeStore({
+      tasks: [makeTask({ mergeRetries: 0, aiMergeReviewReconciliation: { candidateSha: "abc123def456", tipAdvanceRebuilds: 5 } })],
+    });
+    const tipAdvanceError = new AiMergeIntegrationTipAdvanceExhaustedError(TASK_ID, "a".repeat(40), "b".repeat(40), 5, 5);
+    vi.mocked(runAiMerge).mockRejectedValueOnce(tipAdvanceError);
+
+    const engine = createEngine(store);
+    await runMergeCycle(engine);
+
+    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, {
+      status: "failed",
+      mergeRetries: 3,
+      error: tipAdvanceError.message,
+    });
+    expect(store.updateTask).not.toHaveBeenCalledWith(TASK_ID, expect.objectContaining({ status: null }));
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalledWith(TASK_ID, expect.any(String), "MergeConflictBounce");
+    expect(store.logEntry).toHaveBeenCalledWith(TASK_ID, expect.stringContaining("5 consecutive integration-tip rebuilds"), "AiMergeTipAdvanceExhausted");
+    expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), expect.any(Number));
+    // The stop must not classify as a git conflict: this card needs a rebase by a human, not a bounce.
+    expect(store.addTaskComment).not.toHaveBeenCalledWith(TASK_ID, expect.stringContaining("Bouncing back"), "agent");
+    const canMergeTask = (engine as unknown as { canMergeTask: (task: MockTask, retries: number) => boolean }).canMergeTask.bind(engine);
+    expect(canMergeTask(makeTask({ status: "failed", updatedAt: new Date(0).toISOString() }), 3)).toBe(false);
+    vi.useRealTimers();
+  });
+
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-19:05 (RUFU-1100):
+  SYMPTOM: a carried merge episode deliberately has no `candidateSha` - the candidate was dropped so it
+  could be rebuilt on the new tip. The blocked-landing copy interpolates that SHA, so a card parked while
+  carried would have named a commit that no longer describes anything reviewable.
+  ASSERTION: with the carried shape (no candidate, rebuilds already counted) the same park names the
+  candidate by role, not by a stale SHA, and still refuses to bounce or re-review.
+  */
+  it("describes a carried episode by role instead of naming a dropped candidate SHA", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const store = makeStore({
+      tasks: [makeTask({
+        mergeRetries: 0,
+        aiMergeReviewReconciliation: {
+          sourceSha: "c".repeat(40),
+          integrationTipSha: "d".repeat(40),
+          findings: [],
+          consecutiveCleanApprovals: 1,
+          correctivePasses: 1,
+          tipAdvanceRebuilds: 2,
+        },
+      })],
+    });
+    vi.mocked(runAiMerge).mockRejectedValueOnce(new AiMergeBlockedError(TASK_ID, ["the settings route still reads the stale guard"]));
+
+    const engine = createEngine(store);
+    await runMergeCycle(engine);
+
+    const patch = store.updateTask.mock.calls.map(([, p]) => p as Record<string, unknown>).find((p) => p.status === "failed");
+    expect(patch).toBeTruthy();
+    const error = String(patch!.error);
+    expect(error).toContain("the reviewed candidate");
+    expect(error).not.toMatch(/[0-9a-f]{7,40}/);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalledWith(TASK_ID, expect.any(String), "MergeConflictBounce");
+    expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), expect.any(Number));
+    vi.useRealTimers();
   });
 
   it("parks typed AI review blocks containing conflicts without retrying or bouncing", async () => {

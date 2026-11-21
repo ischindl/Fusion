@@ -1767,6 +1767,27 @@ export interface AiMergeReviewReconciliation {
   */
   invalidAcknowledgementCandidateSha?: string;
   terminal?: boolean;
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  Three additive fields make a bare integration-tip advance a TOLERATED and COUNTED event instead
+  of an invalidation cause. All state is stored as one JSON text column, so these need no migration
+  and no column-list edit; every mutation must stay a spread of the same base object because the
+  orphan-writer fence compares serialized bytes.
+
+  - `tipAdvanceRebuilds` / `tipAdvanceFirstAt`: durable witness of consecutive rebuilds caused
+    ONLY by the integration tip moving. The counter is not per-attempt, because a per-attempt reset
+    is what made the RUFU-702 livelock unbounded (measured: two approved squashes discarded, three
+    rebuilds, zero landings in 2h20m). It ages out by its own window instead of by review activity:
+    a drift is normally detected by the assert that runs IMMEDIATELY AFTER an approval, so a rule
+    that reset on "a verdict was captured" would reset on every drift and never reach the ceiling.
+  - `approvedPatchId`: the `git patch-id --stable` of the diff the reviewer actually approved.
+    Approval credit carries across a rebuild by CONTENT identity, never by the bare fact that the
+    tip moved. Tree equality is the wrong discriminator here: a whole-repo tree can never match
+    across a base move, while a stable patch-id matches exactly when the replay is faithful.
+  */
+  tipAdvanceRebuilds?: number;
+  tipAdvanceFirstAt?: string;
+  approvedPatchId?: string;
 }
 
 export interface FileScopeLeaseReleaseReceipt {

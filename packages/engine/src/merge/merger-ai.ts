@@ -45,7 +45,7 @@ import { commitIdentityArgs, resolveCommitIdentity } from "../git-identity.js";
  * Pure helpers (prompt builders, verdict parser) are exported for unit testing;
  * the orchestrator accepts injectable agent functions for the same reason.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { realpathSync, readdirSync, existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
@@ -88,6 +88,7 @@ import {
   resolveReviewColumns,
   annotateEnospcError,
   type TempFsDiagnosticDeps,
+  WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "@fusion/core";
 import { selectUserCommentsForAgentContext } from "../agents/agent-user-comments.js";
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
@@ -299,6 +300,24 @@ export function recordBranchGroupPrSyncFailureAudit(
 const MAX_CONCURRENT_ADVANCE_RETRIES = 3;
 
 /*
+FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+Ceiling on consecutive rebuilds caused ONLY by the integration tip advancing. It is a code-owned
+constant, not a settings key, because the loop it bounds was measured unbounded: RUFU-702 burned
+two approved squashes and 2h20m with zero landings while every pass reset its own witness.
+
+It is deliberately SEPARATE from MAX_CONCURRENT_ADVANCE_RETRIES. That constant bounds a different
+cause — `landSquash` losing its compare-and-set to a concurrent advance after the review already
+returned — and it is a per-invocation counter. Folding the two would let one cause consume the
+other's budget and would hide which of the two lost the race.
+
+The counting window reuses the repo's existing 6 h re-notify cooldown rather than inventing a
+second duration: a card making steady progress over days must not accumulate a terminal count, while
+one burst of a moving trunk still reaches the ceiling inside a single merge window.
+*/
+export const MAX_TIP_ADVANCE_REBUILDS = 5;
+const TIP_ADVANCE_REBUILD_WINDOW_MS = WEDGE_RENOTIFY_COOLDOWN_MS;
+
+/*
 FNXC:MergeReliability 2026-08-09-23:09:
 A generation that lost `raceMergeWithAbort` can outlive the settle latch while a successor owns
 this task. Its aborted signal is the write-authority fence: suppressing every transient status
@@ -342,6 +361,51 @@ async function gitOk(args: string[], cwd: string): Promise<boolean> {
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/*
+FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+`git patch-id` reads its diff from stdin, so it cannot go through this file's argv-only `git()`
+helper; it needs the spawn seam (same shape as `rewritten-delivery-reconciliation.ts`). It is
+async, never `execSync`, per the engine no-blocking-shellout rule.
+
+The discriminator for carrying approval credit across a rebuild is the STABLE PATCH, not the tree.
+A whole-repository tree can never match across a base move — replaying the same contribution onto a
+newer tip changes every ancestor blob — while `patch-id --stable` of `tip..candidate` names exactly
+one thing: the content the reviewer was shown. Measured on a scratch repo: the same contribution on
+bases T1 and T2 produced two different `HEAD^{tree}` values and one identical patch-id.
+
+A failure to compute is reported as `undefined`, which means "no credit carries" — the safe answer,
+because an approval the reviewer never gave must not be inferred from a missing measurement.
+
+Exported because the invariant it encodes (one patch-id across a base move, different patch-ids across a
+content change) is only provable against real git plumbing, and `merge-ai-tip-advance-rufu-1100.real-git.test.ts`
+is the only reader that needs the seam.
+*/
+export async function stablePatchIdBetween(cwd: string, baseSha: string, headSha: string): Promise<string | undefined> {
+  let diff: string;
+  try {
+    diff = await git(["diff", baseSha, headSha], cwd);
+  } catch {
+    return undefined;
+  }
+  if (!diff.trim()) return undefined;
+  return await new Promise<string | undefined>((resolve) => {
+    const child = spawn("git", ["patch-id", "--stable"], { cwd });
+    let out = "";
+    let settled = false;
+    const finish = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    child.stdout.setEncoding("utf-8");
+    child.stdout.on("data", (chunk: string) => { out += chunk; });
+    child.on("error", () => finish(undefined));
+    child.on("close", (code) => finish(code === 0 ? out.trim().split(/\s+/)[0] || undefined : undefined));
+    child.stdin.on("error", () => finish(undefined));
+    child.stdin.end(diff);
+  });
 }
 
 /*
@@ -661,9 +725,23 @@ export class AiMergeBlockedError extends Error {
 
 /**
  * FNXC:AIMergeReviewReconciliation 2026-08-20-22:38:
- * A dismissal or source/tip replacement invalidates the entire reconciliation episode. The
+ * A dismissal or source replacement invalidates the entire reconciliation episode. The
  * clean-room caller catches this sentinel and starts a fresh episode rather than allowing a
  * reviewer response captured against stale state to recreate the dismissed candidate.
+ *
+ * FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+ * This sentinel has TWO causes, and only one of them is an invalidation.
+ * (a) GENUINE invalidation, unchanged by RUFU-1100: the branch field drifted, the source head was
+ *     replaced (an operator push), a finding was dismissed through `dismissAiMergeReviewFinding`,
+ *     or an orphan writer replaced the durable state row. The episode wipes and the merge retry
+ *     race resets, byte-for-byte as before, because a review captured against that state must
+ *     never answer the new identity.
+ * (b) The integration tip merely ADVANCED. That is not an invalidation: the branch content is the
+ *     same and no finding was dismissed. It now throws
+ *     {@link AiMergeIntegrationTipAdvancedError} instead, which carries the episode forward, and it
+ *     may NEVER wipe the episode nor reset `mergeRetries`. Measured on RUFU-702 (2026-11-18): three
+ *     tip-driven rebuilds discarded two approved squashes, reset the retry race three times, and
+ *     landed nothing in 2h20m, because this predicate answered both causes with one answer.
  */
 class AiMergeReviewReconciliationInvalidatedError extends Error {
   constructor() {
@@ -671,6 +749,62 @@ class AiMergeReviewReconciliationInvalidatedError extends Error {
     this.name = "AiMergeReviewReconciliationInvalidatedError";
   }
 }
+
+/**
+ * FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100) cause (b):
+ * The integration tip advanced and nothing else did. The episode has already been carried
+ * durably to the new tip by the writer that throws this, so the clean-room caller only rebuilds
+ * the candidate on the new base; it writes no wipe and spends no retry race.
+ */
+class AiMergeIntegrationTipAdvancedError extends Error {
+  readonly priorTipSha: string;
+  readonly liveTipSha: string;
+  /** The durable count of consecutive tip-driven rebuilds, including this one. */
+  readonly rebuildCount: number;
+  constructor(priorTipSha: string, liveTipSha: string, rebuildCount: number) {
+    super(`AI merge integration tip advanced from ${priorTipSha} to ${liveTipSha}`);
+    this.name = "AiMergeIntegrationTipAdvancedError";
+    this.priorTipSha = priorTipSha;
+    this.liveTipSha = liveTipSha;
+    this.rebuildCount = rebuildCount;
+  }
+}
+
+/**
+ * Non-transient hard fail: the integration tip kept advancing underneath this card and the
+ * code-owned ceiling on consecutive tip-driven rebuilds is spent. Like {@link AiMergeBlockedError}
+ * this is terminal operator work, not a git conflict, so it is classified by type before any text
+ * sniffing.
+ *
+ * FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+ * The wording of this sentence is load-bearing, not style. Two existing text classifiers read
+ * merge failure text: `project-engine.ts` sniffs `"conflict"`/`"Conflict"` next to this typed arm,
+ * and `workflow-merge-nodes.ts` maps a value containing `"already"` beside `"main"`/`"merged"`/
+ * `"landed"` to `already-landed`, plus `"manual"`/`"conflict"` to `manual-required`. A sentence
+ * carrying any of those would be re-routed into a bounce, a cooldown, or a false success by the
+ * very lanes that must park it. So it names both tip SHAs, the count, and the remedy, and avoids
+ * every one of those words.
+ */
+export class AiMergeIntegrationTipAdvanceExhaustedError extends Error {
+  readonly taskId: string;
+  readonly priorTipSha: string;
+  readonly liveTipSha: string;
+  readonly rebuildCount: number;
+  /** The code-owned ceiling this episode reached, carried so every surface quotes one number. */
+  readonly ceiling: number;
+  constructor(taskId: string, priorTipSha: string, liveTipSha: string, rebuildCount: number, ceiling: number) {
+    super(
+      `AI merge stopped: the integration branch moved ${String(rebuildCount)} times in a row while this card waited in its merge window (limit ${String(ceiling)}), last rebuild from ${priorTipSha} onto ${liveTipSha}. Rebase or merge the branch onto the current integration head yourself and request merge again, or land it by hand.`,
+    );
+    this.name = "AiMergeIntegrationTipAdvanceExhaustedError";
+    this.taskId = taskId;
+    this.priorTipSha = priorTipSha;
+    this.liveTipSha = liveTipSha;
+    this.rebuildCount = rebuildCount;
+    this.ceiling = ceiling;
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Agent runners (injectable for tests)
@@ -1545,6 +1679,16 @@ export async function landOneRepo(
           initialPriorReasons: outstandingReviewReasons,
         });
       } catch (error) {
+        if (error instanceof AiMergeIntegrationTipAdvancedError) {
+          /*
+          FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+          Cause (b): the episode is already carried and the audit row plus History line are already
+          written, so this arm only rebuilds the clean room on the tip the loop head re-reads. It
+          writes NO state patch and consumes no retry race. `MAX_CONCURRENT_ADVANCE_RETRIES` below
+          stays a separate bound for the different cause that is losing the landing compare-and-set.
+          */
+          continue;
+        }
         if (error instanceof AiMergeReviewReconciliationInvalidatedError) {
           await log("AI merge: reconciliation episode changed during review — rebuilding from current source and integration identities");
           continue;
@@ -4738,14 +4882,8 @@ async function mergeAndReview(input: {
   const { mergeRoot, branch, integrationBranch, tipSha, taskTitle, includeTaskId, trailers, taskId, maxPasses, mergeAgent, reviewAgent, audit, log, setStatus, store, signal } = input;
   const current = await store.getTask(taskId);
   const sourceSha = await git(["rev-parse", "--verify", branch], mergeRoot);
-  let state: NonNullable<Task["aiMergeReviewReconciliation"]> | undefined = current?.aiMergeReviewReconciliation;
-  if (!state || state.sourceSha !== sourceSha || state.integrationTipSha !== tipSha) {
-    const legacy = boundBlockingReviewReasons(input.initialPriorReasons ?? []);
-    state = { sourceSha, integrationTipSha: tipSha, findings: legacy.map((text, index) => ({ id: `legacy-${index + 1}`, text, disposition: "pending" as const })), consecutiveCleanApprovals: 0, correctivePasses: 0 };
-  }
-  let needsMerge = !state.candidateSha;
-  let persistedState = current?.aiMergeReviewReconciliation;
   const sameState = (left: Task["aiMergeReviewReconciliation"], right: Task["aiMergeReviewReconciliation"]): boolean => JSON.stringify(left) === JSON.stringify(right);
+  let persistedState = current?.aiMergeReviewReconciliation;
   const persistState = async (expected: Task["aiMergeReviewReconciliation"], next: NonNullable<Task["aiMergeReviewReconciliation"]>): Promise<void> => {
     await store.updateTaskAtomic(taskId, (live) => {
       if (!sameState(live.aiMergeReviewReconciliation, expected)) throw new AiMergeReviewReconciliationInvalidatedError();
@@ -4753,31 +4891,234 @@ async function mergeAndReview(input: {
     });
     persistedState = next;
   };
-  const assertCurrentEpisodeIdentity = async (): Promise<void> => {
+  /*
+  FNXC:AIMergeReviewReconciliation 2026-08-20-22:38 / FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  Cause (a): a genuine invalidation. The episode and the merge retry race are cleared TOGETHER,
+  byte-for-byte as before this card, because a reviewer response captured against a source that no
+  longer exists or a finding an operator dismissed must never answer the new identity. `store.ts`
+  `dismissAiMergeReviewFinding` writes this same patch shape on purpose; it reaches here through the
+  `sameState` leg, and it stays distinguishable from cause (b) precisely because it changes the row.
+  */
+  const invalidateEpisode = async (expectedState: NonNullable<Task["aiMergeReviewReconciliation"]>): Promise<never> => {
+    await store.updateTaskAtomic(taskId, (currentTask) => {
+      if (!sameState(currentTask.aiMergeReviewReconciliation, expectedState)) return undefined;
+      return { aiMergeReviewReconciliation: null, mergeRetries: undefined };
+    });
+    throw new AiMergeReviewReconciliationInvalidatedError();
+  };
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  One History line per tolerated rebuild, so an operator reads the state on the card without querying
+  the audit store. Written through the duck-typed once-seam with a dedupe key over the tip and the
+  counter — the same witness the audit row uses — and with the `logEntry` fallback a store without the
+  seam still satisfies.
+  */
+  const recordTipAdvanceHistory = async (rebuildCount: number, priorTipSha: string, liveTipSha: string, exhausted: boolean): Promise<void> => {
+    const action = exhausted
+      ? `Integration branch advanced for the ${String(rebuildCount)}th rebuild in a row (limit ${String(MAX_TIP_ADVANCE_REBUILDS)}); landing stopped here rather than rebuilding again. Rebase or merge the branch onto the current integration head and request merge again, or land it by hand. (${short(priorTipSha)} -> ${short(liveTipSha)})`
+      : `Integration branch advanced while this card was in its merge window, so its reviewed candidate is being rebuilt on the new base (${short(priorTipSha)} -> ${short(liveTipSha)}). Review findings, corrective budget, and approval credit are carried forward (rebuild ${String(rebuildCount)}/${String(MAX_TIP_ADVANCE_REBUILDS)}).`;
+    const onceStore = store as unknown as {
+      logEntryOnce?: (id: string, input: { action: string; outcome?: string; dedupeKey: string; windowMs: number }) => Promise<boolean>;
+    };
+    if (typeof onceStore.logEntryOnce === "function") {
+      await onceStore.logEntryOnce(taskId, {
+        action,
+        outcome: "AiMergeTipAdvance",
+        dedupeKey: `ai-tip-advance-rebuild:${liveTipSha}:${String(rebuildCount)}`,
+        windowMs: TIP_ADVANCE_REBUILD_WINDOW_MS,
+      }).catch(() => undefined);
+      return;
+    }
+    await store.logEntry(taskId, action, "AiMergeTipAdvance").catch(() => undefined);
+  };
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100) cause (b): the integration tip merely advanced.
+  Nothing about this card changed, so nothing may be thrown away. One fenced compare-and-set carries
+  the episode to the new tip: findings keep their dispositions, `correctivePasses` keeps the budget
+  already spent, `consecutiveCleanApprovals` keeps the credit earned, and `approvedPatchId` keeps the
+  content that credit was earned for. Only the candidate itself is dropped, so the next pass rebuilds
+  it on the new base. This patch has NO `mergeRetries` key at all: the race a card has already spent
+  is never a side product of somebody else landing first.
+
+  This is the ONE carry writer. Both places that can observe a bare tip advance — the review-boundary
+  assert and the episode-start capture — route through it and fence against the live ROW, so a drift can
+  be carried exactly once: whichever site writes first makes the other site's fence see an
+  already-current row. A design that mutated the in-memory state at capture instead would leave the row
+  naming the old tip, and the assert's own `sameState` leg would then read that disagreement as an
+  orphan writer and wipe the episode it had just been fixed to carry.
+
+  Two fields go with the candidate because both name it, not the episode:
+  - `invalidAcknowledgementCandidateSha` is keyed on an exact candidate, and a rebuilt candidate on a
+    new base can never be that SHA again, so retaining it would be a permanently dead leg.
+  - `candidateTreeSha` is only meaningful beside its candidate.
+
+  Why a throw from inside the updater is the accept/skip signal here: `updateTaskAtomic` returns the
+  task either way and expresses no applied/skip verdict (`moves.ts:396-397` names `{ task, moved }`, but
+  that shape belongs to `moveTaskIf`, which exists precisely because `updateTaskAtomic` cannot express
+  it). `persistState` above already refuses through a thrown updater, so the carry reuses the one
+  mechanism this seam has, and every caller learns which patch was authored from the returned kind.
+  */
+  const carryEpisodeAcrossTipAdvance = async (
+    rowState: NonNullable<Task["aiMergeReviewReconciliation"]>,
+    liveTipSha: string,
+  ): Promise<{ kind: "carried"; state: NonNullable<Task["aiMergeReviewReconciliation"]>; priorTipSha: string; rebuildCount: number } | { kind: "exhausted"; priorTipSha: string; rebuildCount: number } | { kind: "orphan-writer" }> => {
+    const priorTipSha = rowState.integrationTipSha;
+    const nowMs = Date.now();
+    const windowStartMs = rowState.tipAdvanceFirstAt ? Date.parse(rowState.tipAdvanceFirstAt) : Number.NaN;
+    const withinWindow = Number.isFinite(windowStartMs) && nowMs - windowStartMs <= TIP_ADVANCE_REBUILD_WINDOW_MS;
+    const rebuildCount = (withinWindow ? rowState.tipAdvanceRebuilds ?? 0 : 0) + 1;
+    const firstAt = withinWindow ? rowState.tipAdvanceFirstAt! : new Date(nowMs).toISOString();
+    const carried: NonNullable<Task["aiMergeReviewReconciliation"]> = {
+      ...rowState,
+      integrationTipSha: liveTipSha,
+      candidateSha: undefined,
+      candidateTreeSha: undefined,
+      invalidAcknowledgementCandidateSha: undefined,
+      tipAdvanceRebuilds: rebuildCount,
+      tipAdvanceFirstAt: firstAt,
+    };
+    let accepted = false;
+    try {
+      await store.updateTaskAtomic(taskId, (currentTask) => {
+        /* An orphan writer replaced the row: that is cause (a)'s fact, never cause (b)'s. */
+        if (!sameState(currentTask.aiMergeReviewReconciliation, rowState)) throw new AiMergeReviewReconciliationInvalidatedError();
+        accepted = true;
+        return { aiMergeReviewReconciliation: carried };
+      });
+    } catch (error) {
+      if (error instanceof AiMergeReviewReconciliationInvalidatedError && !accepted) return { kind: "orphan-writer" };
+      throw error;
+    }
+    persistedState = carried;
+    /*
+    Observability is emitted only after the carry is ACCEPTED, and the durable counter increment is
+    itself the witness, so no process-local set is needed: a re-dispatch that observes no drift never
+    reaches this line, and an engine restart can neither double-emit nor forget the bound.
+    */
+    const exhausted = rebuildCount >= MAX_TIP_ADVANCE_REBUILDS;
+    void emitBoundedRunAudit(store, {
+      taskId,
+      agentId: "merger",
+      runId: `merge-${taskId}`,
+      domain: "git",
+      mutationType: "merge:ai-tip-advance-rebuild",
+      target: integrationBranch,
+      metadata: {
+        taskId,
+        priorTipSha,
+        liveTipSha,
+        rebuildCount,
+        reason: exhausted ? ("ceiling-reached" as const) : ("tip-advanced" as const),
+        outcome: exhausted ? ("parked" as const) : ("episode-carried" as const),
+      },
+    }, { log: aiMergeLog });
+    await recordTipAdvanceHistory(rebuildCount, priorTipSha, liveTipSha, exhausted);
+    await log(exhausted
+      ? `AI merge: integration tip advanced to ${short(liveTipSha)} for the ${String(rebuildCount)}th time in a row (limit ${String(MAX_TIP_ADVANCE_REBUILDS)}) — stopping instead of rebuilding again`
+      : `AI merge: integration tip advanced ${short(priorTipSha)} -> ${short(liveTipSha)}; carrying the review episode to the new tip (rebuild ${String(rebuildCount)}/${String(MAX_TIP_ADVANCE_REBUILDS)})`);
+    return exhausted
+      ? { kind: "exhausted", priorTipSha, rebuildCount }
+      : { kind: "carried", state: carried, priorTipSha, rebuildCount };
+  };
+  type EpisodeIdentityVerdict = { kind: "current" } | { kind: "invalidated" } | { kind: "tip-advanced"; priorTipSha: string; liveTipSha: string; rebuildCount: number } | { kind: "tip-advance-exhausted"; priorTipSha: string; liveTipSha: string; rebuildCount: number };
+  const currentEpisodeIdentity = async (checkTipAdvance = true): Promise<EpisodeIdentityVerdict> => {
     const expectedState = state;
-    if (!expectedState) throw new AiMergeReviewReconciliationInvalidatedError();
+    if (!expectedState) return { kind: "invalidated" };
     const liveTask = await store.getTask(taskId);
     const liveBranch = liveTask?.branch ?? branch;
     const liveSourceSha = await git(["rev-parse", "--verify", liveBranch], mergeRoot);
     const liveTipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], mergeRoot);
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100): the one predicate, three causes, adjudicated
+    separately. The first three legs are cause (a) and keep today's wipe; a bare tip advance is cause
+    (b) and carries. A tip advance AND a source change is still cause (a): (a) is decided first.
+    */
     if (
       liveBranch !== branch
       || liveSourceSha !== expectedState.sourceSha
-      || liveTipSha !== expectedState.integrationTipSha
       || !sameState(liveTask?.aiMergeReviewReconciliation, expectedState)
     ) {
-      await store.updateTaskAtomic(taskId, (currentTask) => {
-        if (!sameState(currentTask.aiMergeReviewReconciliation, expectedState)) return undefined;
-        return { aiMergeReviewReconciliation: null, mergeRetries: undefined };
-      });
-      throw new AiMergeReviewReconciliationInvalidatedError();
+      return { kind: "invalidated" };
     }
+    if (checkTipAdvance && liveTipSha !== expectedState.integrationTipSha) {
+      const carry = await carryEpisodeAcrossTipAdvance(expectedState, liveTipSha);
+      if (carry.kind === "orphan-writer") return { kind: "invalidated" };
+      if (carry.kind === "exhausted") return { kind: "tip-advance-exhausted", priorTipSha: carry.priorTipSha, liveTipSha, rebuildCount: carry.rebuildCount };
+      /*
+      FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+      The carry deliberately does NOT rebuild here. `tipSha` is this function's parameter and is what the
+      candidate build (`merge --no-ff <tipSha>`), the patch-identity comparison, and the landing
+      compare-and-set all use, so a rebuild driven from a carried state would replay the OLD tip and then
+      lose the landing race forever. The sentinel hands control back to the outer merge loop, which
+      re-reads the tip at its own head and calls this function again with the identity it just measured;
+      the episode-start capture then finds the row already current, so the drift is counted exactly once.
+      */
+      return { kind: "tip-advanced", priorTipSha: carry.priorTipSha, liveTipSha, rebuildCount: carry.rebuildCount };
+    }
+    return { kind: "current" };
+  };
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  This capture was the SECOND tip-driven wipe, and fixing only the assert would have re-created the
+  episode here on the very next pass, undoing the fix. Only a missing row or a changed SOURCE head is a
+  new episode. When the integration tip alone differs, the episode carries to the new base through the
+  one carry writer, which is what lets a card whose clean room was rebuilt by the `concurrent` landing
+  arm keep its findings, its corrective budget, and its earned approval.
+  */
+  let state: NonNullable<Task["aiMergeReviewReconciliation"]> | undefined = current?.aiMergeReviewReconciliation;
+  if (!state || state.sourceSha !== sourceSha) {
+    const legacy = boundBlockingReviewReasons(input.initialPriorReasons ?? []);
+    state = { sourceSha, integrationTipSha: tipSha, findings: legacy.map((text, index) => ({ id: `legacy-${index + 1}`, text, disposition: "pending" as const })), consecutiveCleanApprovals: 0, correctivePasses: 0 };
+  } else if (state.integrationTipSha !== tipSha) {
+    /*
+    The row names a tip this invocation has already left behind. The carry is durable, and because
+    `tipSha` here IS the loop head's fresh measurement, the carried state can be adopted directly:
+    the candidate is rebuilt on the base the caller actually passed.
+    */
+    const carry = await carryEpisodeAcrossTipAdvance(state, tipSha);
+    if (carry.kind === "exhausted") throw new AiMergeIntegrationTipAdvanceExhaustedError(taskId, carry.priorTipSha, tipSha, carry.rebuildCount, MAX_TIP_ADVANCE_REBUILDS);
+    if (carry.kind === "carried") state = carry.state;
+  }
+  let needsMerge = !state.candidateSha;
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-17:22 (RUFU-1100):
+  A carried episode arrives with its candidate deliberately dropped, so the merge about to run is a REBASE
+  onto the tip the loop head measured — not a corrective pass addressing a finding. Without this
+  discriminator the corrective guard refuses exactly the card this fix exists for: a tip advance that
+  arrives after a corrective pass and before the second clean approval leaves `correctivePasses > 0` with
+  every finding already dispositioned, and pre-fix the wipe had hidden that by resetting the budget. The
+  signature is unambiguous because a rebuild always re-persists `candidateSha` before any later carry could
+  be recorded: a missing candidate beside a non-zero rebuild counter can only mean the drift that dropped it
+  is what this pass is rebuilding for.
+  */
+  let rebuildAfterCarriedAdvance = !state.candidateSha && (state.tipAdvanceRebuilds ?? 0) > 0;
+  /*
+  FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+  `checkTipAdvance` is false at exactly one call site — the one immediately after a review response —
+  and that narrowing is what makes carried credit real rather than decorative. That site's stated purpose
+  has always been "a review response can arrive after an operator dismisses its finding or pushes a new
+  source", i.e. cause (a) only. If it also decided cause (b), a tip that moved DURING the review would be
+  detected before the verdict it was waiting for had been recorded, so the approval the reviewer had just
+  given would be carried forward as zero credit and every drift would still cost a full re-approval.
+  Deferring only the tip leg keeps every guarantee the site was written for: the verdict is recorded, and
+  no candidate is ever re-reviewed (the loop head asserts in full) or returned for landing (the
+  confirmation gate asserts in full) against an identity nobody re-measured. An advisory-severity landing
+  that returns below is then refused by the landing compare-and-set, which is the correct handler for a
+  stale base and is not this predicate's job.
+  */
+  const assertCurrentEpisodeIdentity = async (checkTipAdvance = true): Promise<void> => {
+    const verdict = await currentEpisodeIdentity(checkTipAdvance);
+    if (verdict.kind === "tip-advance-exhausted") {
+      throw new AiMergeIntegrationTipAdvanceExhaustedError(taskId, verdict.priorTipSha, verdict.liveTipSha, verdict.rebuildCount, MAX_TIP_ADVANCE_REBUILDS);
+    }
+    if (verdict.kind === "tip-advanced") throw new AiMergeIntegrationTipAdvancedError(verdict.priorTipSha, verdict.liveTipSha, verdict.rebuildCount);
+    if (verdict.kind === "invalidated") return await invalidateEpisode(state!);
   };
   while (true) {
     throwIfAborted(signal, taskId);
     const actionable = state.findings.filter((finding) => finding.disposition === "still-present");
     if (needsMerge) {
-      if (state.correctivePasses > 0 && actionable.length === 0) {
+      if (state.correctivePasses > 0 && actionable.length === 0 && !rebuildAfterCarriedAdvance) {
         throw new AiMergeBlockedError(taskId, ["review reconciliation has no actionable finding"]);
       }
       await git(["reset", "--hard", tipSha], mergeRoot); await git(["clean", "-fd"], mergeRoot);
@@ -4790,9 +5131,33 @@ async function mergeAndReview(input: {
       let candidateSha = await git(["rev-parse", "HEAD"], mergeRoot);
       if (candidateSha === tipSha && state.findings.length === 0) return { squashSha: null, priorReasons: [] };
       if (candidateSha !== tipSha) { await ensureCommitTaskMetadata(mergeRoot, taskId, includeTaskId, trailers); candidateSha = await git(["rev-parse", "HEAD"], mergeRoot); }
-      state = { ...state, candidateSha, candidateTreeSha: await git(["rev-parse", `${candidateSha}^{tree}`], mergeRoot), consecutiveCleanApprovals: 0 };
+      /*
+      FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+      This is the single place the carry-over rule may live, and the rule is CONTENT, never occasion.
+      An approval earned before a tip advance carries onto the rebuilt candidate ONLY when the rebuilt
+      patch is the very content the reviewer saw, proven by `git patch-id --stable` of `tip..candidate`.
+      A candidate whose replay differs was never reviewed, so it earns no credit and the counter resets
+      to 0 exactly as it does today. The patch is only measured when there is credit to carry, so an
+      episode's first candidate costs no extra git invocations.
+      */
+      const rebuiltPatchId: string | undefined = state.consecutiveCleanApprovals > 0 && state.approvedPatchId
+        ? await stablePatchIdBetween(mergeRoot, tipSha, candidateSha)
+        : undefined;
+      const creditCarries: boolean = rebuiltPatchId !== undefined && rebuiltPatchId === state.approvedPatchId;
+      if (rebuiltPatchId !== undefined && !creditCarries) {
+        await log(`AI merge: rebuilt candidate patch ${short(rebuiltPatchId)} differs from the approved ${short(state.approvedPatchId ?? "")} — approval credit resets to 0`);
+      }
+      state = {
+        ...state,
+        candidateSha,
+        candidateTreeSha: await git(["rev-parse", `${candidateSha}^{tree}`], mergeRoot),
+        approvedPatchId: creditCarries ? state.approvedPatchId : undefined,
+        consecutiveCleanApprovals: creditCarries ? state.consecutiveCleanApprovals : 0,
+      };
       await persistState(persistedState, state);
       needsMerge = false;
+      /* The exemption was for THIS rebuild only; any later merge block is a real corrective pass. */
+      rebuildAfterCarriedAdvance = false;
     }
     const candidateSha: string = state.candidateSha!;
     await assertCurrentEpisodeIdentity();
@@ -4802,7 +5167,13 @@ async function mergeAndReview(input: {
     const activePriorFindings = state.findings.filter((finding) => finding.disposition === "pending" || finding.disposition === "still-present");
     const verdict = parseReviewVerdict(await reviewAgent(mergeRoot, buildReviewPrompt({ taskId, branch, integrationBranch, tipSha, squashSha: candidateSha, diffStat, priorReasons: activePriorFindings.map((finding) => finding.text), priorFindings: activePriorFindings.map((finding) => ({ id: finding.id, text: finding.text })), userComments: selectUserCommentsForAgentContext(task) })));
     // A review response can arrive after an operator dismisses its finding or pushes a new source.
-    await assertCurrentEpisodeIdentity();
+    /*
+    FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100): cause (a) ONLY here. The tip leg is deferred to
+    the next loop head / landing gate so the verdict this call was waiting for is recorded before a drift
+    can consume it; without the narrowing a trunk that moved during the review would still cost a full
+    re-approval and the carry would move zero credit.
+    */
+    await assertCurrentEpisodeIdentity(false);
     const ids = new Set(state.findings.map((finding) => finding.id));
     const dispositionCounts = new Map<string, number>();
     for (const { id } of verdict.priorFindingDispositions ?? []) {
@@ -4850,9 +5221,17 @@ async function mergeAndReview(input: {
     await audit.git({ type: "merge:ai-review-verdict", target: integrationBranch, metadata: { taskId, verdict: verdict.verdict, severity: verdict.severity, squashSha: candidateSha } });
     if (verdict.verdict === "approve") {
       const unconfirmed = state.findings.filter((finding) => finding.disposition === "pending").length;
+      /*
+      FNXC:AIMergeTipAdvance 2026-11-21-16:15 (RUFU-1100):
+      Record WHAT was approved at the exact moment credit is earned. A clean approval of a different
+      content replaces the identity rather than adding to it, and a non-clean verdict clears it, so the
+      only patch an approval can ever be credited forward for is the patch a reviewer actually saw.
+      */
+      const earnedPatchId: string | undefined = clean ? await stablePatchIdBetween(mergeRoot, tipSha, candidateSha) : undefined;
       state = {
         ...state,
         consecutiveCleanApprovals: clean ? state.consecutiveCleanApprovals + 1 : 0,
+        approvedPatchId: earnedPatchId,
         ...(unusableAcknowledgement ? { invalidAcknowledgementCandidateSha: candidateSha } : {}),
       };
       await persistState(persistedState, state);

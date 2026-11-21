@@ -462,6 +462,30 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   flushRunAuditSink: { kind: "writer", reason: "drains the per-store run-audit sink, batch-inserting accepted rows into runAuditEvents" },
   recordRunAuditEventBuffered: { kind: "writer", reason: "accepts a best-effort run-audit row into the per-store sink drain that batch-inserts it" },
   replayRunAuditSinkDeadLetter: { kind: "writer", reason: "re-inserts spilled run-audit dead-letter rows so they become durable again" },
+  /*
+  FNXC:PlanningLifecycleLockCensus 2026-11-21-17:01 (RUFU-1100 step 5):
+  RUFU-600 landed these three public TaskStore surfaces and left them unnamed here, which refuses the
+  WHOLE durable-write inventory regeneration through `assertInventoryRegenerationInputs` - the identical
+  mechanism the RUFU-433 note above and the RUFU-312 `clearListReadCaches` note below both record, and
+  the reason this ratchet sat red on `main` until RUFU-312 re-audited it. RUFU-1100 hit the refusal while
+  regenerating its own changed `mergeAndReview` call sites and had to classify them to run at all.
+
+  None of the three is a durable writer: each is an operator-lane answer about, or an action on, a
+  PostgreSQL ADVISORY key, and none writes a task row or a ledger row.
+  - `diagnosePlanningLifecycleLock` runs two SELECTs (the advisory-key holder diagnosis plus the session
+    population) and returns them; with no PostgreSQL backend bound it returns `null` without asking.
+  - `listPlanningLifecycleHolderSessions` is the same session-population read on its own.
+  - `releasePlanningLifecycleLock` is the destructive one of the three and is still not a writer here:
+    its only server-side effect is `SELECT pg_terminate_backend(pid)` on a holder session it did not
+    open, guarded by an explicit `confirm` plus an `isCardLive` veto. It persists nothing, so it belongs
+    with the lease/lock operations already listed as non-writers (`acquireSymbolLocks`,
+    `acquireMergeQueueLease`, `reconcileStaleSymbolLocks`) rather than with the writers above. Its
+    destructiveness is a lifecycle authority question, not an orphaned-durable-write question, which is
+    the only axis this census measures.
+  */
+  diagnosePlanningLifecycleLock: { kind: "non-writer", reason: "reads the advisory-key holder diagnosis and session population for one task; returns null with no PostgreSQL backend bound" },
+  listPlanningLifecycleHolderSessions: { kind: "non-writer", reason: "reads the live planning-lifecycle holder session population without mutation" },
+  releasePlanningLifecycleLock: { kind: "non-writer", reason: "terminates a holder session under confirm plus a liveness veto; persists no task or ledger row" },
 };
 const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "__invokeHandoffMergeQueueFailureInjectorForTesting",
