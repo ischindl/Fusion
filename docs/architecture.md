@@ -3705,3 +3705,66 @@ which is also the adoption path for the next sweep. A gate must sit above **ever
 worktrunk backend call is still a git spawn for that pass — and the affected-card set must be derived from
 task rows, never by asking git the question the gate exists to refuse.
 
+
+## Merge-frontier re-entry invariant (RUFU-834)
+
+A `failed` workflow work item is a **verdict**, not a queue position. The invariant is that a verdict may
+be re-run only by a named owner that brings its own evidence requirement and its own bounded budget for one
+unchanged question — never by widening a generic pump. RUFU-308 established this for the WIP `step-execute`
+frontier; RUFU-834 is the same construction for the merge frontier, where the absence of an owner was not a
+slow path but a freeze: a card `in-review` with both pre-merge gates approved, `status` NULL, `error` empty
+and its `merge` row `failed` is invisible to every status-gated sweep. Measured at the time: 14 days inert,
+104 cards waiting on `file-scope:RUFU-293`, 144 `held` rows across three such cards. (RUFU-832 has since
+released the review lane's scheduling claim entirely, so a new overlapping card is no longer frozen by an
+inert one; the unmerged checkout, branch, and the undelivered merge remain, which is what this seam owns.)
+
+Six rules keep the seam from becoming the hole it fills:
+
+- **The claim sets stay closed.** The continuation drain lists `states: ["runnable", "retrying"]`,
+  `ACTIVE_WORKFLOW_WORK_ITEM_STATES` enumerates work states and never names `failed`, and
+  `evaluateStrandedContinuationReclaim` answers `reason: "scheduler-owned"` for a terminal row. Each of the
+  last two carries a comment at its site naming RUFU-834 as the reason the branch must not widen: making
+  the stranded sweep the owner of every terminal row would erase RUFU-272's capacity/pause discrimination,
+  and letting the pump claim terminal rows would re-run nodes the graph already decided against with no
+  evidence and no budget. `merge-rearm-symptom.test.ts` asserts all three refusals as a CONTROL, so a
+  "fix" that widens a pump turns the control red instead of turning green quietly.
+- **A re-arm is not a move.** The grant is a `retrying` continuation installed at the dead node through
+  `replaceActiveTaskWorkflowContinuation` (the only sanctioned writer of a `kind: "task"` row) plus
+  `{ status: null, error: null }` to shed the dead run's badge. No `column`, no `paused`, no
+  `mergeRetries`, no `mergeConfirmed`, no `worktree`/`branch`, no `mergeDetails`. A card that gained a lane
+  change here would be a lifecycle claim made by a recovery pass, which containment exists to refuse.
+- **The evidence is the card's own unlanded delivery, and it is reused, not re-derived.** `hasStepWorkEvidence`
+  (the shared per-repository checkout prover) is called with `occupied` as the sole granting verdict; an
+  `empty` or `unknown` verdict refuses. RUFU-425's lane-leg rule applies unchanged: a proof read at the
+  wrong repository is a false grant, and this verdict is what authorizes re-running a merge.
+- **The budget never rides on `mergeDetails`.** `cleanupMergeStateForReverification` legitimately nulls
+  `mergeDetails` and zeroes `mergeRetries` on the stale-merge-state path, so a ladder stored there is wiped
+  by an unrelated repair and the ceiling silently resets to unlimited (RUFU-1027's shape). The episode lives
+  at `sourceMetadata[MERGE_REARM_EPISODE_METADATA_KEY]`, written KEY-level through
+  `updateTaskAtomic.sourceMetadataPatch`, keyed by a signature over the card's merge frontier (task id,
+  selected workflow, sorted merge-region node ids, gate satisfaction) so a changed question starts a fresh
+  budget while an unchanged one cannot buy attempts by waiting. The key is declared in core's `task-core`
+  purely so `buildManualRetryResetPatch` can clear it — core cannot import the engine — and the engine
+  imports it rather than re-spelling it (RUFU-1050's rule): a second literal is a second key, and a Retry
+  that nulls one while the sweep reads the other is RUFU-395's "Retry stopped being an exit".
+- **Discovery is by role and by row, on a bound read.** The sweep walks the board in pages with ONE batched
+  `listWorkflowWorkItemsForTasks` per page (an unbounded `limit` keeps the oldest N cards by `created_at`
+  and blinds the pass to its own population; an unbatched read is the N+1 shape RUFU-767 measured at
+  3 200 queries per 60 s), resolves the review lane through the card's own workflow IR rather than the
+  `in-review` literal (RUFU-272's renamed-board hole), and requires the failure to be in the MERGE region —
+  a failure on the step frontier belongs to RUFU-308.
+- **The freeze must be finite, and the lease keeps its own owner.** Exhaustion is one terminal park
+  (`status: "failed"` + the `MERGE_REARM_EXHAUSTED:` sentinel, announced once through `logEntryOnce`), whose
+  metadata reports the live counters, never the pre-burning snapshot. This seam never releases a lease and
+  never moves a column: `releaseFileScopeWaitingContinuations` remains the release authority for the
+  followers' `file-scope:<id>` waits, and terminalization is what makes the holder's blocking finite instead
+  of permanent. Since RUFU-832 a review-trait column answers `none` at `classifyFileScopeLease`, so an inert
+  card holds no new claim while it still holds its checkout; rows already parked on a `file-scope:<id>` wait
+  outlive that release and are drained by the release owner. Both halves — inert card claims nothing, a
+  landed card is no longer a holder at all — are asserted as behavior, so the wait and its release are both
+  visible in one test.
+
+The audit pair `task:merge-rearmed` / `task:merge-rearm-exhausted` is the only durable trace of a granted
+merge re-entry, for the same reason RUFU-308's `task:execution-rearmed` exists: no lifecycle row is written.
+Documented in [docs/run-audit.md](run-audit.md) → The merge node that died with no owner, and kept out of the
+curated delivery-pipeline catalogue because a re-arm is not a step every card passes through.

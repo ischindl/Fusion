@@ -330,6 +330,16 @@ waiting on the other's verdict with nothing able to act: the deadlock this class
 */
 const UNCLAIMED_GRAPH_WORK_RECORD_EPISODE_KEYS = ["executionRearmEpisode", "branchConflictRecoveryEpisode"] as const;
 
+/*
+FNXC:MergeNodeReArm 2026-11-21-11:38 (RUFU-834):
+`mergeRearmEpisode` is DELIBERATELY not in that set, even though it carries a budget and a named Retry exit
+like the two that are. RUFU-834's park only ever stands on a card in a review lane, and this classifier
+already answers `not-planning-lane` for every card whose lane neither plans nor executes, so the record
+would never be consulted — while a stale merge episode left on a card that later reached a planning or WIP
+lane would veto the repair of a genuinely dead execution row. That is precisely the two-sweeps-waiting-on-
+each-other deadlock the exclusion of the admission-stall episodes above was written to end.
+*/
+
 /** Does any durable record already announce this failure? Absence is NOT health — see the module note. */
 function hasDurableRecoveryRecord(input: UnclaimedGraphWorkInput): boolean {
   if (input.terminalRecordExists === true) return true;

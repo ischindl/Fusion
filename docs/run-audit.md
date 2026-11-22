@@ -2237,3 +2237,79 @@ WHERE mutation_type = 'task:workflow-step-timeout'
 GROUP BY 1, 2
 ORDER BY 3 DESC;
 ```
+
+### The merge node that died with no owner (RUFU-834)
+
+A card can reach `in-review` with both pre-merge gates approved, `status` NULL, `error` empty,
+`mergeRetries` 0, and its `merge` workflow work item `failed`, and then be driven by nobody. `failed` is a
+verdict, not a queue position: the continuation drain claims `runnable`/`retrying` only,
+`stranded-continuation-reclaim` refuses terminal states by design, RUFU-308's `execution-rearm` guards both
+the WIP lane and the `step-execute` node, and the gate owners (FN-8492, FN-9243, FN-279) re-seed a gate and
+never a merge. Measured on RunFusion: RUFU-293 sat that way for 14 days with zero `merge*` audit rows in a
+two-hour sample while 104 cards waited on `file-scope:RUFU-293` — 144 `held` rows across three such cards.
+The card looked healthy on every field a status gate reads, which is why no revival lane ever claimed it.
+
+`reconcileInertMergeNode` (`packages/engine/src/self-healing.ts`) → `attemptMergeRearm`
+(`packages/engine/src/executor/merge-rearm.ts`) is that shape's re-entry owner, and it writes four rows.
+They are listed as prose, not as a table: the lock-step test that keeps `docs/run-audit.md` and the curated
+catalogue table-for-table reads a documented event out of any row whose leading cell is a backticked event
+name, so a table here would be a false claim of membership in that curated set. RUFU-684's
+`task:workflow-step-timeout`, RUFU-462's `runtime:heap-ceiling` and RUFU-279's `memory:*` trio are
+documented the same way for the same reason.
+
+- `task:merge-rearmed` — one re-arm granted. Metadata `{ taskId, nodeId, reason, attempt, attemptLimit,
+  evidence, outcome: "rearmed" }`.
+- `task:merge-rearm-exhausted` — the one-shot terminal park. Metadata `{ taskId, nodeId, attempt, refusal,
+  attemptLimit, refusalLimit, column, outcome: "parked" }`, read off the row that was just fenced so the
+  sentence never reports a snapshot from before the spend.
+- `task:reconcile-inert-merge-node` — the sweep granted this card its re-entry. Metadata `{ taskId, column,
+  nodeId, code: "eligible", outcome: "rearmed" }`.
+- `task:reconcile-inert-merge-node-no-action` — the sweep examined and withheld this card. Metadata
+  `{ taskId, column, nodeId, code, outcome: "no-action" }`.
+
+`reason` is the fixed `inert-failed-merge-node`, and `evidence` is the fixed `occupied` — the checkout
+prover's only granting verdict, expressed as the enum and never as a path, a diff, or a SHA. `code` on the
+withheld row is the refusal verdict from the closed `MergeRarmVerdict` vocabulary in
+`packages/engine/src/executor/merge-rearm.ts` — `not-review-lane`, `active-work-exists`, `live-session`,
+`no-failed-merge-item`, `failure-belongs-to-gate`, `gate-not-approved`, `merge-blocker-present`,
+`human-merge-hold`, `auto-merge-withheld`, `already-landed`, `no-own-work`, `lease-held-by-other`,
+`workspace-owned-elsewhere`, `suppressed-paused`, `too-young`, `sentinel-already-parked` (and `eligible`,
+which appears only on the granting row) — so one query answers "why is this card still inert" instead of
+requiring the engine log. The `-no-action` row is memoised per `(card, code)` on the manager the way RUFU-356
+memoises its own: a sustained refusal stays countable without re-announcing every pass, while a card that
+starts refusing for a NEW reason still announces itself. A lost race is neither — it emits no row, because
+the next pass re-examines it and a row would say nothing actionable.
+
+Like RUFU-531's `task:review-verdict-recorded`, RUFU-279's `memory:*` trio, RUFU-462's
+`runtime:heap-ceiling` and RUFU-684's `task:workflow-step-timeout`, these four are deliberately outside the
+curated delivery-pipeline catalogue that `run-audit-catalogue.test.ts` locks table-for-table: a re-arm is
+not a step every card passes through, and a catalogue row would imply it is. All four go through the
+FN-9175 bounded seam (`emitBoundedRunAudit`, never `createRunAuditor`), and
+`merge-rearm-budget.test.ts` proves the sink cannot veto the ladder — an absent, throwing, rejecting,
+pending, late-resolving or late-rejecting sink leaves the outcome, the attempt count, the seed count and
+the single park notice identical.
+
+The row is the ONLY durable trace that a re-entry was granted, for the same reason RUFU-308's
+`task:execution-rearmed` pair exists: an execution re-arm writes no lifecycle row. It installs a
+`retrying` continuation under a due-gated `retryAfter` through
+`replaceActiveTaskWorkflowContinuation` and clears the failure marker
+(`{ status: null, error: null }`), and it touches no `column`, no `paused`, no `mergeRetries`, no
+`mergeConfirmed` and no `mergeDetails`. That last exclusion is load-bearing and is why the budget lives on
+`sourceMetadata[mergeRearmEpisode]`: `cleanupMergeStateForReverification` legitimately nulls
+`mergeDetails` and zeroes `mergeRetries` on the stale-merge-state path, so a ladder stored there would be
+wiped by an unrelated repair and the ceiling would silently reset to unlimited (RUFU-1027's shape). The
+episode is keyed by a signature over the card's merge frontier — task id, selected workflow, the sorted
+merge-region node ids, and whether the pre-merge gates are satisfied — so a genuinely changed question
+starts a fresh budget while an unchanged one cannot buy attempts by waiting. Manual Retry clears the
+episode in the same statement that zeroes the legacy counters (`buildManualRetryResetPatch`), which is what
+keeps Retry an exit.
+
+To count the class:
+
+```sql
+SELECT metadata->>'outcome', metadata->>'code', count(*)
+FROM run_audit_events
+WHERE mutation_type IN ('task:reconcile-inert-merge-node', 'task:reconcile-inert-merge-node-no-action')
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+```

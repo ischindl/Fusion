@@ -1280,6 +1280,35 @@ export type DatabaseMutationType =
   /** Deduped per (card, refusal reason) companion row for a candidate the sweep deliberately left parked. Same metadata. */
   | "task:reconcile-stale-acquisition-conflict-no-action"
   /*
+  FNXC:MergeNodeReArm 2026-11-21-10:35 (RUFU-834):
+  The merge re-arm family: the grant, its ceiling, and the sweep's per-card discovery verdict. A merge
+  re-arm writes NO lifecycle row, so the grant row is the only durable record that the re-entry happened
+  and on what evidence — the same reason RUFU-308's pair exists.
+
+  `task:merge-rearmed` metadata is ids/counts/fixed enums only — { taskId, nodeId, reason, attempt,
+  attemptLimit, evidence, outcome } — where `evidence` is the closed prover enum expressed as the granting
+  value. `task:merge-rearm-exhausted` adds refusal/refusalLimit/column and its `outcome` is `exhausted`.
+  The worktree path, the diff, the branch tip, the merge blocker sentence, and any error text are absent:
+  the fixed enum is the whole contract, and a path in the row would name someone's checkout.
+
+  `task:reconcile-inert-merge-node` and its `-no-action` companion carry { taskId, column, nodeId, code,
+  outcome }, where `code` is the closed admission vocabulary (`not-review-lane | active-work-exists |
+  live-session | no-failed-merge-item | failure-belongs-to-gate | gate-not-approved |
+  merge-blocker-present | human-merge-hold | auto-merge-withheld | already-landed | no-own-work |
+  lease-held-by-other | workspace-owned-elsewhere | suppressed-paused | too-young |
+  sentinel-already-parked`) and `outcome` is `rearmed | raced | parked | refused`. Refusals dedupe per
+  (card, code), the RUFU-356 shape, so a sustained refusal stays countable without re-announcing.
+
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue, exactly like `task:execution-rearmed` —
+  which `run-audit-catalogue.test.ts` locks table-for-table — because this is a recovery-loop diagnostic,
+  not a delivery-pipeline stage.
+  */
+  | "task:merge-rearmed"
+  | "task:merge-rearm-exhausted"
+  | "task:reconcile-inert-merge-node"
+  /** Deduped per (card, code) companion row for a candidate the sweep examined and left alone. Same metadata. */
+  | "task:reconcile-inert-merge-node-no-action"
+  /*
   FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:55 (RUFU-893):
   The planning-lane half of the worktree/branch identity lane REFUSED to clear a card's pointers. Before
   this event existed the refusal was invisible: the pre-change pass cleared unconditionally, so a card that

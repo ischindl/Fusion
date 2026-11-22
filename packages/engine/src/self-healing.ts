@@ -328,6 +328,9 @@ is distinguishable from a healthy pass that found no work without opening the da
 */
 import { emitSweepFailureAudit } from "./self-healing/sweep-failure-audit.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
+/* RUFU-834: the inert-merge-node sweep delegates every decision to the merge re-arm seam, so the lane
+ * vocabulary, the ownership discrimination, and the budget live in exactly one place. */
+import { attemptMergeRearm, type MergeRarmDeps, type MergeRarmVerdict } from "./executor/merge-rearm.js";
 import {
   getTaskPlanningOrExecutionLivenessSignal,
   isTaskPlanningOrExecutionLive,
@@ -2269,6 +2272,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   private staleAcquisitionConflictNoActionAudited = new Set<string>();
   /*
+  FNXC:MergeNodeReArm 2026-11-21-10:40 (RUFU-834):
+  `taskId:verdict` memo for `task:reconcile-inert-merge-node-no-action`, the same shape RUFU-356 holds
+  above. Keyed by the refusal VERDICT because "which owner does actually hold this card" is the question
+  the row exists to answer, and a card whose refusal changes owner must announce the new owner.
+  */
+  private inertMergeNodeNoActionAudited = new Set<string>();
+  /*
   FNXC:PlanningLaneWorktreeIdentity 2026-11-18-18:25 (RUFU-893):
   One `-no-action` row plus one History line per `(card, refusal code)` for the planning-lane identity
   gate, held on the manager the same way `staleAcquisitionConflictNoActionAudited` holds RUFU-356's. A
@@ -3514,6 +3524,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       frees is classified by the revival lanes in the SAME startup pass instead of one cycle later.
       */
       { name: "reconcile-review-revision-stall-parks", fn: () => this.reconcileReviewRevisionStallParks().then(() => undefined) },
+      /*
+      FNXC:MergeNodeReArm 2026-11-21-10:45 (RUFU-834), lease wording reconciled with RUFU-832 on 2026-11-22-00:24:
+      A review-lane card whose merge node died terminally owns no re-entry seam: it holds an unmerged
+      checkout whose merge will never run, and any row already parked on its `file-scope:<id>` wait stays
+      parked. (RUFU-832 retired the lease half of the original freeze — a review column now claims no
+      scheduling lease — so the surviving hazard is the undelivered merge plus those already-parked rows.)
+      Like the sweep above it runs at startup — a crash strands the card, and the maintenance cadence would
+      leave it inert for a whole cycle — and before the revival lanes so a card freed here is classified in
+      the same pass.
+      */
+      { name: "reconcile-inert-merge-node", fn: () => this.reconcileInertMergeNode().then(() => undefined) },
       /*
       FNXC:PreMergeApproval 2026-09-05-22:11:
       Runs AFTER the orphaned-step sweep, because that sweep is what produces the `failed` row this
@@ -4996,6 +5017,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // registration above — a card can be parked by the pre-fix classifier without a restart, and
           // the same ordering applies (frees the card before the revival lanes classify it).
           { name: "reconcile-review-revision-stall-parks", fn: () => this.reconcileReviewRevisionStallParks() },
+          // FNXC:MergeNodeReArm 2026-11-21-10:45 (RUFU-834): steady-state twin of the startup
+          // registration above — a merge can die terminally without a restart, and an inert card holds an
+          // unmerged checkout plus any row already parked behind it, so the cadence cannot wait for the
+          // next engine boot.
+          // It is placed in the task-recovery array (`batch2Fns`) beside
+          // `reconcile-review-revision-stall-parks`, the other sweep that un-freezes a review-lane park,
+          // and ahead of `recover-failed-pre-merge-steps` so a card this seam releases is classified by the
+          // revival lane in the SAME pass. The array name is `batch2Fns` even though RUFU-280's comment
+          // calls this same site "maintenance batch 1"; this registration mirrors RUFU-280's exactly.
+          { name: "reconcile-inert-merge-node", fn: () => this.reconcileInertMergeNode() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
@@ -13441,6 +13472,167 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.error(`reconcileReviewRevisionStallParks failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
+  }
+
+  /**
+   * RUFU-834: the inert-merge-node sweep.
+   *
+   * A review-lane card whose merge-region `kind: "task"` work item sits terminally `failed`, with zero
+   * active rows, no live session, and `status` NULL — is unreachable by every existing owner: the
+   * due-poll selects only `runnable`/`retrying`, `stranded-continuation-reclaim` selects only
+   * `held`/`blocked`, and RUFU-308's `execution-rearm` refuses non-`step-execute` nodes by rule. The
+   * card still holds an unmerged checkout whose merge will never run, and a row already parked on its
+   * `file-scope:<id>` wait has no route out. That is how RUFU-293 sat 14 days with 104 cards behind it on
+   * a green board, and no event existed to explain it. (RUFU-832 has since released the review lane's
+   * scheduling claim, so an inert card no longer freezes NEW overlapping work; the undelivered merge and
+   * the already-parked rows it left behind are what this sweep still owns.)
+   *
+   * Discovery is a paged board read with ONE batched work-item read per page — the per-card
+   * `listWorkflowWorkItemsForTask` shape RUFU-767 measured at 3 200 queries per 60 s is not repeated
+   * here. The page-cheap pre-filter is `taskHoldsUnmergedCheckout`: the card whose lease is the hazard
+   * is by definition the card still holding a checkout, and a card that holds none has nothing inert
+   * to re-enter. Everything after that — review-lane membership, active-row ownership, failed-node
+   * ownership, gate approval, blockers, the consent predicate, the grace window — is re-derived per
+   * card inside the seam against a fresh read.
+   *
+   * Registration mirrors `reconcile-review-revision-stall-parks`: startup recovery (a card can be
+   * stranded by a crash and must not wait for the maintenance cadence) plus maintenance batch 1, both
+   * ordered BEFORE the revival lanes so a card freed here is classified in the same pass.
+   */
+  async reconcileInertMergeNode(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause || settings.enginePaused) return 0;
+      const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
+      const pageSize = 500;
+      let offset = 0;
+      let rearmed = 0;
+      let withheld = 0;
+
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: pageSize, offset, excludeLog: true });
+        const candidates = tasks.filter((task) => {
+          if (task.deletedAt) return false;
+          // An operator park is authoritative; the seam refuses it too, but the batch read is skipped.
+          if (task.userPaused === true || task.paused === true) return false;
+          // Page-cheap pre-filter: the hazard is an unlanded delivery, and an unlanded delivery still
+          // owns a checkout. (Never the lease — RUFU-832 released the review lane's claim, and this
+          // pre-filter deliberately reads the checkout, not the scheduling decision.)
+          return taskHoldsUnmergedCheckout(task);
+        });
+
+        /*
+        One batched read for the whole page. A card with no `kind: "task"` row at all — a legacy card,
+        or a workflow that never reached a merge node — is answered by this map alone and never costs
+        the per-card IR resolution.
+        */
+        const itemsByTask = candidates.length > 0 && typeof this.store.listWorkflowWorkItemsForTasks === "function"
+          ? await this.store.listWorkflowWorkItemsForTasks(candidates.map((task) => task.id), { kinds: ["task"] }).catch(() => new Map<string, WorkflowWorkItem[]>())
+          : new Map<string, WorkflowWorkItem[]>();
+
+        for (const task of candidates) {
+          const rows = itemsByTask.get(task.id) ?? [];
+          // Second page-cheap gate: a terminal failed task-kind row, or the card is not this shape.
+          if (!rows.some((row) => row.state === "failed")) continue;
+          if (executingIds.has(task.id)) continue;
+          /*
+          FNXC:ReviewRevisionParkPerCardIsolation 2026-11-05-01:24 (RUFU-448), applied here from its
+          landing: one card's refusing store call must not end the page loop. The pass-level catch
+          stays for what it covers — a board or settings read that makes the whole sweep impossible.
+          */
+          try {
+            const result = await attemptMergeRearm(this.mergeRarmDeps(), { taskId: task.id });
+            if (result.outcome === "rearmed") {
+              rearmed += 1;
+              await emitBoundedRunAudit(this.store, {
+                taskId: task.id,
+                agentId: "self-healing",
+                runId: generateSyntheticRunId("reconcile-inert-merge-node", task.id),
+                domain: "database",
+                mutationType: "task:reconcile-inert-merge-node" as DatabaseMutationType,
+                target: task.id,
+                metadata: {
+                  taskId: task.id,
+                  column: task.column,
+                  nodeId: result.nodeId,
+                  code: "eligible",
+                  outcome: "rearmed",
+                },
+              }, { log });
+            } else if (result.outcome === "raced") {
+              // A race is not a refusal: the next pass re-examines it and a row would say nothing actionable.
+              withheld += 1;
+              log.debug(`reconcileInertMergeNode: ${task.id} took an active continuation from the re-arm — re-checked next pass`);
+            } else {
+              withheld += 1;
+              await this.emitInertMergeNodeNoAction(task, result.verdict, result.nodeId);
+            }
+          } catch (error) {
+            withheld += 1;
+            log.error(`reconcileInertMergeNode: re-arm attempt failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < pageSize) break;
+        offset += tasks.length;
+      }
+      if (rearmed > 0) log.log(`Re-armed ${rearmed} task(s) whose merge node had died terminally with nobody left to re-enter it`);
+      if (withheld > 0) log.debug(`Withheld inert-merge-node re-arm on ${withheld} task(s): each refusal reason is recorded per card on its first pass`);
+      return rearmed;
+    } catch (error) {
+      log.error(`reconcileInertMergeNode failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /** The store wiring the merge re-arm seam needs, built once per sweep pass. */
+  private mergeRarmDeps(): MergeRarmDeps {
+    return {
+      store: this.store,
+      // FN-8492's canonical liveness triple: a registered active path, the executing lock, or an
+      // executor-active binding. Any one of them means the card is owned right now.
+      hasLiveExecutionSurface: (taskId: string) =>
+        activeSessionRegistry.pathsForTask(taskId).some((path) => activeSessionRegistry.isPathActive(path))
+        || executingTaskLock.has(taskId)
+        || this.options.isTaskActive?.(taskId) === true,
+      /*
+      FNXC:MergeNodeReArm 2026-11-21-11:05 (RUFU-834):
+      The manager's injectable prover, so the evidence gate runs the SAME checkout prover every other
+      self-healing seam uses. Without this line the sweep would fall back to the default prover and a host
+      or a test that supplies one (`checkoutEmptinessProver`) would silently disagree with the seam it is
+      configuring — the RUFU-425 class of a measurement taken from the wrong place.
+      */
+      ...(this.options.checkoutEmptinessProver ? { emptinessProver: this.options.checkoutEmptinessProver } : {}),
+    };
+  }
+
+  /**
+   * One `-no-action` row per `(card, refusal code)`, memoised on the manager the way RUFU-356 memoises
+   * its own: a sustained refusal stays countable without re-announcing every pass, while a card that
+   * starts refusing for a NEW reason still announces itself.
+   */
+  private async emitInertMergeNodeNoAction(
+    task: Pick<Task, "id" | "column">,
+    code: MergeRarmVerdict,
+    nodeId: string | null | undefined,
+  ): Promise<void> {
+    const key = `${task.id}:${code}`;
+    if (this.inertMergeNodeNoActionAudited.has(key)) return;
+    this.inertMergeNodeNoActionAudited.add(key);
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-inert-merge-node", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-inert-merge-node-no-action" as DatabaseMutationType,
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        nodeId: nodeId ?? "unknown",
+        code,
+        outcome: "no-action",
+      },
+    }, { log });
   }
 
   /**

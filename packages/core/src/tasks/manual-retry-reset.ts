@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, HOLD_RELEASE_STARVATION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, HOLD_RELEASE_STARVATION_METADATA_KEY, MERGE_REARM_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -215,6 +215,19 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
       RUFU-395 rule: if a park reads a number, Retry must reset that number or the park has no door.
       */
       [UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY]: null,
+      /*
+      FNXC:MergeNodeReArm 2026-11-21-10:35 (RUFU-834):
+      And to the merge re-arm ladder, the next key in this one statement. RUFU-834's terminal park proves
+      itself from `terminalAt` on this episode, and the guard that makes the park idempotent refuses while
+      that key stands — so a Retry that cleared the `failed` badge but left the register behind would be a
+      no-op on the fifth instance of the same measured shape: the card would look released, the next
+      maintenance pass would read the surviving `terminalAt`, and it would be refused again with no write
+      and no notice. Retry is the only door out of `MERGE_REARM_EXHAUSTED:`, so it must reset the number
+      and the flag that park reads. The engine-side constant is imported from `../types.js` for exactly
+      the reason RUFU-1050 documents: core cannot import the engine, so a key declared engine-side is a
+      key this shared reset cannot name.
+      */
+      [MERGE_REARM_EPISODE_METADATA_KEY]: null,
       /*
       FNXC:HoldReleaseArmedPriority 2026-11-21-05:28 (RUFU-807 Step 3):
       And to the hold-release starvation episode, the EIGHTH key in this one statement. It is diagnostic

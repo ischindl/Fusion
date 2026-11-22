@@ -513,6 +513,17 @@ export function evaluateStrandedContinuationReclaim(input: {
   if (input.enginePaused) return { action: "none", reason: "engine-paused" };
   if (input.taskMissing) return { action: "retire", reason: "task-missing" };
   if (input.taskTerminal) return { action: "retire", reason: "task-terminal" };
+  /*
+  FNXC:MergeNodeReArm 2026-11-21-11:01 (RUFU-834):
+  Terminal states (`failed` / `succeeded` / `cancelled`) are excluded BY DESIGN and must stay excluded:
+  widening this branch would make this sweep the owner of every terminal row everywhere and erase the
+  RUFU-272 capacity/pause discrimination its own header defends. A terminal row is not stranded work, it
+  is a verdict, and re-writing a verdict is a different authority with different evidence requirements.
+  The one terminal shape that genuinely needs re-entry — a review-lane card whose MERGE-region row died
+  with zero active rows — has its own owner now: `reconcileInertMergeNode` / `attemptMergeRearm`
+  (`executor/merge-rearm.ts`), which proves unlanded delivery and spends its own budget before it touches
+  the row. Do not widen this branch to cover that card.
+  */
   if (!ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(input.item.state)) {
     return { action: "none", reason: "scheduler-owned" };
   }

@@ -4268,6 +4268,16 @@ export class InProcessRuntime
       });
       await drainDuePlanningContinuations({
         listDue: async () => {
+          /*
+          FNXC:MergeNodeReArm 2026-11-21-11:01 (RUFU-834):
+          This filter stays `runnable`/`retrying` and that is not an oversight: `failed` is a verdict, not a
+          queue position, so letting the pump claim terminal rows would let any dispatcher re-run a node the
+          graph already decided against, with no evidence and no budget. What makes `failed` survivable is a
+          named owner instead: `attemptMergeRearm` (executor/merge-rearm.ts, RUFU-834) proves the card still
+          owns an unlanded delivery, spends its own per-episode budget, and installs a row IN THIS CLAIM SET
+          (`retrying` + due-gated `retryAfter`), so the re-entry reaches the pump through the front door.
+          RUFU-308's `execution-rearm` is the same construction for the WIP `step-execute` frontier.
+          */
           const items = await this.taskStore.listDueWorkflowWorkItems({
             kinds: ["task"], states: ["runnable", "retrying"], limit: DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
           });

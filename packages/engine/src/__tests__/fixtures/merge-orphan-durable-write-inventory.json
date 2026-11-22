@@ -94,6 +94,8 @@
     "packages/engine/src/executor/execution-rearm.ts",
     "packages/engine/src/executor/graph-failure-pure.ts",
     "packages/engine/src/executor/lifecycle-columns.ts",
+    "packages/engine/src/executor/merge-rearm-candidate.ts",
+    "packages/engine/src/executor/merge-rearm.ts",
     "packages/engine/src/executor/optional-step-revision.ts",
     "packages/engine/src/executor/overlap-acquisition-park.ts",
     "packages/engine/src/executor/overlap-resume-gate.ts",
@@ -5269,6 +5271,126 @@
       "observedInSuite": "out-of-frontier",
       "executionProof": "none:out-of-frontier",
       "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::attemptMergeRearm::store.logEntry::#1",
+      "callSiteFingerprint": "deps.store.logEntry(task.id,message,undefined,deps.getRunContextFor?.(task.id))",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "attemptMergeRearm",
+      "writer": "store.logEntry",
+      "ordinal": 1,
+      "lineHint": 693,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to attemptMergeRearm; the merge re-arm seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::attemptMergeRearm::store.replaceActiveTaskWorkflowContinuation::#1",
+      "callSiteFingerprint": "deps.store.replaceActiveTaskWorkflowContinuation({taskId,runId,nodeId,kind,state,attempt,?,blockedReason,lastError,leaseOwner,leaseExpiresAt,onlyIfNoActiveTaskContinuation})",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "attemptMergeRearm",
+      "writer": "store.replaceActiveTaskWorkflowContinuation",
+      "ordinal": 1,
+      "lineHint": 645,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to attemptMergeRearm; the merge re-arm seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::attemptMergeRearm::store.updateTask::#1",
+      "callSiteFingerprint": "deps.store.updateTask(task.id,{status,error},deps.getRunContextFor?.(task.id))",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "attemptMergeRearm",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 688,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to attemptMergeRearm; the merge re-arm seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::claimMergeRarmSlot>updated::store.updateTaskAtomic::#1",
+      "callSiteFingerprint": "deps.store.updateTaskAtomic(input.taskId,(current) => { if (!current || current.deletedAt) return null; if (current.paused === true || current.userPaused === tru,deps.getRunContextFor?.(input.taskId))",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "claimMergeRarmSlot>updated",
+      "writer": "store.updateTaskAtomic",
+      "ordinal": 1,
+      "lineHint": 421,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to this merge re-arm symbol; the seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::terminalizeMergeRarmBudget::store.logEntryOnce::#1",
+      "callSiteFingerprint": "deps.store.logEntryOnce(task.id,{action,outcome,dedupeKey,windowMs})",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "terminalizeMergeRarmBudget",
+      "writer": "store.logEntryOnce",
+      "ordinal": 1,
+      "lineHint": 519,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to this merge re-arm symbol; the seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/merge-rearm.ts::terminalizeMergeRarmBudget::store.updateTask::#1",
+      "callSiteFingerprint": "deps.store.updateTask(task.id,{status,error,sourceMetadataPatch},deps.getRunContextFor?.(task.id))",
+      "file": "packages/engine/src/executor/merge-rearm.ts",
+      "enclosingSymbolPath": "terminalizeMergeRarmBudget",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 504,
+      "owningEntryPoint": "other",
+      "reachableDataStates": [
+        "unobservable:closure-wide production fixture pending"
+      ],
+      "axis1": "out-of-frontier",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to this merge re-arm symbol; the seam is a self-healing recovery pass that RE-ENTERS the merge node through the continuation store and never calls a merge writer itself (RUFU-834)."
     },
     {
       "callSiteId": "packages/engine/src/executor/overlap-acquisition-park.ts::recordOverlapAcquisitionPark::store.logEntry::#1",

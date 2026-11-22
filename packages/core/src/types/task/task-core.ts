@@ -911,6 +911,23 @@ how a Retry would stop being an exit (the RUFU-395 / RUFU-1027 shape). The engin
 */
 export const UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY = "unclaimedGraphWork" as const;
 
+/*
+FNXC:MergeNodeReArm 2026-11-21-10:35 (RUFU-834):
+The merge re-arm ladder's key, declared here for the same reason RUFU-1050 states for the key above: the
+operator's Retry must be able to name it. `buildManualRetryResetPatch` is shared by every retry surface
+and core cannot import the engine, so an engine-side key is a key the shared reset cannot clear — which
+is how a Retry stops being an exit (the RUFU-395 / RUFU-1027 shape, now three times measured).
+
+It is a SIBLING of `executionRearmEpisode`, not a merge into it, and that separation is the deliverable:
+RUFU-308's ladder is carried per step-frontier episode and bounds "no step progress", while this one is
+carried per merge-frontier episode and bounds "the merge delivered nothing". Folding them would make one
+card's four step re-arms spend the merge's budget, and RUFU-308's ceiling would silently become coarser
+than the guarantee its own comment states. The reason the two ladders must be distinct is that a merge
+reset (`cleanupMergeStateForReverification`) is legitimate traffic on the merge path while it is not on
+the step path, so a shared counter would be zeroed by an operation that proves nothing about steps.
+*/
+export const MERGE_REARM_EPISODE_METADATA_KEY = "mergeRearmEpisode" as const;
+
 /**
  * One measured episode of unclaimed graph work (RUFU-1050). Diagnostic plus bound; it gates nothing.
  *

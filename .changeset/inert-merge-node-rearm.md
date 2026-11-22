@@ -1,0 +1,7 @@
+---
+"@runfusion/fusion": patch
+---
+
+summary: A review card whose merge step died silently re-arms itself instead of sitting inert forever.
+category: fix
+dev: New self-healing sweep `reconcile-inert-merge-node` claims a card sitting in a review lane whose selected workflow's merge-region work item is terminally `failed` with zero active continuations — the state no other lane would take, because the due-poll pump claims only `runnable`/`retrying` and stranded-reclaim refuses terminal states by design. It grants a bounded re-entry (`attemptMergeRearm`): a `retrying` continuation installed through `replaceActiveTaskWorkflowContinuation` under a due-gated `retryAfter`, the card's dead-run badge shed via `{status:null,error:null}`, and no column move, no pause write, no `mergeRetries`/`mergeConfirmed`/`mergeDetails` touch. The budget (4 grants, 12 refusals) lives on the card's `sourceMetadata.mergeRearmEpisode`, never on `mergeDetails`, and is zeroed by the same `fn task retry` that clears the legacy counters; exhaustion is one terminal park with the `MERGE_REARM_EXHAUSTED:` sentinel announced once. Four audit events document it outside the curated delivery-pipeline catalogue — `task:merge-rearmed`, `task:merge-rearm-exhausted`, `task:reconcile-inert-merge-node`, `task:reconcile-inert-merge-node-no-action` — all through the bounded emit seam. Documented in `docs/run-audit.md` and `docs/architecture.md`.
