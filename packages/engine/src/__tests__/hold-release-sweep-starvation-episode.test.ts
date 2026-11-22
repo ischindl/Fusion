@@ -196,6 +196,19 @@ const starvationWrites = (writes: WriteCall[]): WriteCall[] =>
     return patch && HOLD_RELEASE_STARVATION_METADATA_KEY in patch;
   });
 
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-22-22:25 (RUFU-1167):
+A CLEAR is not a NAMING. `clearHoldReleaseStarvationBadges` writes the same key with `null` for every card a
+pass evaluated, and RUFU-1167's deficit ordering changes WHICH armed cards a truncated pass evaluates, so a
+floor test that asserted "no starvation write at all" would fail over the clears of the cards it reached.
+The claim the refresh floor guards is narrower and stays exact: no card is NEWLY NAMED past its floor.
+*/
+const starvationNaming = (writes: WriteCall[]): WriteCall[] =>
+  starvationWrites(writes).filter((write) => {
+    const patch = write.patch.sourceMetadataPatch as Record<string, unknown>;
+    return patch[HOLD_RELEASE_STARVATION_METADATA_KEY] !== null;
+  });
+
 describe("hold-release sweep starvation episode (RUFU-807 Step 3)", () => {
   beforeEach(() => {
     resetHoldReleaseInstrumentation();
@@ -316,7 +329,19 @@ describe("hold-release sweep starvation episode (RUFU-807 Step 3)", () => {
 
   it("re-writes a sustained starvation at most once per refresh floor, while the summary keeps counting it", async () => {
     const { store, tasks, writes, audits, clock } = fixture({ blowOnRead: 2, armed: ["R-A", "R-B", "R-D"] });
-    tasks.find((t) => t.id === "R-D")!.sourceMetadata = freshEpisode();
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-22-22:25 (RUFU-1167):
+    EVERY armed candidate carries the fresh episode, not only `R-D`. Which armed card ends up behind the
+    break is now order-dependent: RUFU-1167 promotes the card with the largest starvation deficit, so a
+    fixture that starves exactly one card promotes THAT card out of the tail and leaves an unstarved sibling
+    to be named for the first time - a first naming the refresh floor correctly does not suppress, which
+    would have failed this assertion for a reason that has nothing to do with the floor. Equal deficits keep
+    the sort stable (queue order governs among equal exposure), so the pass starves the same card it always
+    did, and the assertion below measures the one thing this test is about: a sustained starvation inside the
+    floor writes no row. It also generalizes the claim, which is now "no starved card on this pass writes",
+    not "the one card I hand-picked does not write".
+    */
+    for (const armedId of ["R-A", "R-B", "R-D"]) tasks.find((t) => t.id === armedId)!.sourceMetadata = freshEpisode();
 
     const result = await runHoldReleaseSweep(store, { now: () => clock.t, budgetMs: 10 });
 
@@ -325,7 +350,10 @@ describe("hold-release sweep starvation episode (RUFU-807 Step 3)", () => {
     // …but the row and the audit store see nothing new, because the stamp inside the floor proves it.
     // RUFU-393 measured 16 536 rows for one card over 2 d 19 h at a ~3 s poll; this bound is why that
     // cannot be re-authored here at a 10 s one.
-    expect(starvationWrites(writes)).toEqual([]);
+    expect(starvationNaming(writes)).toEqual([]);
+    // Every starvation write the pass DID make was the CLEAR it owes a card it reached — the self-draining
+    // half of RUFU-1167's ordering, proved from the same pass that named nobody.
+    expect(starvationWrites(writes).length).toBeGreaterThan(0);
     expect(starvationRows(audits)).toEqual([]);
   });
 

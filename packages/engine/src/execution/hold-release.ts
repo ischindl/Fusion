@@ -1461,6 +1461,55 @@ an armed population larger than one pass's budget rotates instead of re-refusing
 */
 const MAX_ARMED_PRIORITY_IDS = 200;
 const deferredTailsByProject = new Map<string, string[]>();
+
+/*
+FNXC:HoldReleaseArmedPriority 2026-11-22-22:25 (RUFU-1167):
+The ARMED partition's internal order becomes starvation-deficit-first whenever any armed card carries a
+persisted deficit, and stays plain queue order when none does.
+
+Why this is the whole fix and not a partition of its own: `recordHoldReleaseStarvation` names ONLY armed
+cards (a card with no live continuation waits on an ordinary queue, which RUFU-698's rotation answers), so
+the starved population is a SUBSET of the armed partition. A separate partition behind the armed one would
+sit behind every card it exists to promote and reorder nothing.
+
+Why it is not a priority level (FN-509 deleted those, leaving Boost as the only forward lever):
+`stallCount` is not a claim about a card's importance, it is the queue's own measured deficit on that card,
+authored by this same sweep. It carries no verdict about what the card is FOR.
+
+Why it cannot lock the front: `clearHoldReleaseStarvationBadges` clears the episode off EVERY card the pass
+evaluated, using `evaluatedTaskIds` as the sole authority, whatever the release outcome. Evaluation
+falsifies "the sweep never got to this card", so the card leaves the deficit ordering on the next pass and
+the next-most-starved card takes its turn. The partition drains itself with no new state and no new clear
+path, which is also why it needs no rotation window of its own.
+
+Why it is what the operator asked for: the queue is arrival-ordered, so the newest cards - which are the
+fix cards authored from a blocked board - are always the truncated tail, and the tail is exactly where
+`stallCount` accumulates. Deficit order reaches the repair half of the lane within a bounded number of
+passes instead of one round trip per lane length (measured on RunFusion 2026-11-22: 402 of 448 todo cards
+starved, 305 of them 100+ passes, max 128; RUFU-1064 deferred 114 times in 35 h).
+*/
+
+/** A card's starvation deficit as the pass sees it: `stallCount`, or absent when it has no valid episode. */
+function starvationDeficitOf(task: Task): number | undefined {
+  // The one strict reader, reused rather than re-derived: it rejects a JSON `null`, an array, an unknown
+  // code, and a non-finite count, so malformed legacy data degrades to "no deficit" and never to a zero.
+  const episode = readHoldReleaseStarvationEpisode(task.sourceMetadata);
+  if (!episode) return undefined;
+  return episode.stallCount > 0 ? episode.stallCount : undefined;
+}
+
+/**
+ * Collect the deficit of every card this pass could order. Reads the `sourceMetadata` already on the
+ * candidate rows, so ordering by deficit adds ZERO database reads to the sweep.
+ */
+function collectStarvationDeficits(tasks: readonly Task[]): Map<string, number> {
+  const deficits = new Map<string, number>();
+  for (const task of tasks) {
+    const deficit = starvationDeficitOf(task);
+    if (deficit !== undefined) deficits.set(task.id, deficit);
+  }
+  return deficits;
+}
 /** RUFU-807: the armed partition's own previous-pass tail, kept separate from the non-armed one. */
 const armedDeferredTailsByProject = new Map<string, string[]>();
 const syntheticSweepProjects = new WeakMap<object, string>();
@@ -1545,6 +1594,7 @@ function orderTasksForReleaseEvaluation(
   armedIds: ReadonlySet<string>,
   armedDeferredIds: readonly string[] | undefined,
   nonArmedDeferredIds: readonly string[] | undefined,
+  starvationDeficits: ReadonlyMap<string, number> = new Map(),
 ): HoldReleaseEvaluationOrder {
   if (armedIds.size === 0) {
     const rotation = rotateDeferredToFront(queueOrdered as Task[], nonArmedDeferredIds);
@@ -1563,7 +1613,27 @@ function orderTasksForReleaseEvaluation(
    * this whole fix depend on a card having already starved once.
    */
   const armedDeferred = takeDeferredFront(armedQueueOrdered, armedDeferredIds);
-  const armedFront = [...armedDeferred.front, ...armedDeferred.rest].slice(0, MAX_ARMED_PRIORITY_IDS);
+  const armedRotationOrder = [...armedDeferred.front, ...armedDeferred.rest];
+  /*
+  FNXC:HoldReleaseArmedPriority 2026-11-22-22:25 (RUFU-1167):
+  Deficit order SUPERSEDES the in-partition rotation rather than competing with it: a previously-deferred
+  armed card has a higher `stallCount` by construction, so ordering by deficit already promotes everything
+  the rotation window would, and keeps promoting it while the starvation persists. A stable sort keeps
+  queue order as the tie-break, so equal exposure stays equal order - cards admitted in the same pass have
+  equal deficits and MUST keep arriving oldest-first among themselves.
+
+  When no armed card carries a deficit this returns `armedRotationOrder` untouched, which is the exact
+  pre-change order every pre-RUFU-1167 fixture takes.
+  */
+  const anyArmedDeficit = armedRotationOrder.some((task) => starvationDeficits.has(task.id));
+  const armedEvaluationOrder = anyArmedDeficit
+    ? [...armedRotationOrder].sort((left, right) => {
+        const leftDeficit = starvationDeficits.get(left.id) ?? 0;
+        const rightDeficit = starvationDeficits.get(right.id) ?? 0;
+        return rightDeficit - leftDeficit;
+      })
+    : armedRotationOrder;
+  const armedFront = armedEvaluationOrder.slice(0, MAX_ARMED_PRIORITY_IDS);
   const nonArmed = takeDeferredFront(nonArmedQueueOrdered, nonArmedDeferredIds);
   const placed = new Set<string>([
     ...armedFront.map((task) => task.id),
@@ -1951,11 +2021,18 @@ export async function runHoldReleaseSweep(
     and dependency snapshot rather than changing the global listTasks order.
     */
     const armedIds = await readArmedContinuationTaskIds(store, sweepCandidateIds, expired());
+    /*
+    FNXC:HoldReleaseArmedPriority 2026-11-22-22:25 (RUFU-1167):
+    Taken from the candidate rows this pass already holds, before the order is built, so the deficit read
+    cannot spend the sweep's budget: it performs no query and no awaits.
+    */
+    const starvationDeficits = collectStarvationDeficits(allTasks);
     const evaluationOrder = orderTasksForReleaseEvaluation(
       sortTasksByQueueOrder(allTasks),
       armedIds,
       armedDeferredTailsByProject.get(projectKey),
       deferredTailsByProject.get(projectKey),
+      starvationDeficits,
     );
     if (evaluationOrder.armedCount > 0) result.armedPriorityCount = evaluationOrder.armedCount;
     if (evaluationOrder.rotatedDeferredCount > 0) result.rotatedDeferredCount = evaluationOrder.rotatedDeferredCount;
