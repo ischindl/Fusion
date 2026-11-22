@@ -962,6 +962,21 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         if (Object.keys(patch).length === 0) return;
         await store.getGlobalSettingsStore().updateSettings(patch);
       },
+      /*
+      FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760):
+      The vitest kill scope needs the SAME per-project store cache the board's stats refresh uses
+      (line ~1250), because `worktreesDir` is exclusive when configured: resolving it from the launch
+      project would put the viewed project's own task-worktree workers out of scope while a different
+      project's workers stayed inside it. A store that cannot be read simply reports no configured
+      root, which leaves the default `<rootDir>/.fusion/worktrees` candidates in play.
+      */
+      onResolveWorktreesDir: async (projectPath: string) => {
+        const scopedStore = projectPath === cwd ? store : await getProjectStore(projectPath);
+        if (!scopedStore) return undefined;
+        const projectSettings = await scopedStore.getSettings();
+        const configured = projectSettings.worktreesDir;
+        return typeof configured === "string" && configured.trim().length > 0 ? configured : undefined;
+      },
     });
     // Start the TUI and yield once so Ink can paint before init work.
     await runTuiStartupPrelude(tui);

@@ -15,6 +15,16 @@ const core = vi.hoisted(() => ({
 const { BACKUP_SCHEDULE_NAME, GlobalRoutineStore, buildBackupScheduleStatus, createBackupManager, resolveGlobalBackupRoot, runBackupCommand } = core;
 vi.mock("@fusion/core", async () => ({
   ...(await vi.importActual<typeof import("@fusion/core")>("@fusion/core")),
+  // FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760): the kill-vitest/system-stats registrar reads
+  // the attributed inventory (pids + proved-foreign pids), not the old bare pid list, so this is the
+  // seam that must stay stubbed — otherwise a route test in this file would shell out to a real
+  // `pgrep -f vitest` on the host.
+  findVitestProcessInventory: vi.fn().mockResolvedValue({
+    pids: [],
+    foreignPids: [],
+    unattributedPids: [],
+    scoped: false,
+  }),
   findVitestProcessIds: vi.fn().mockResolvedValue([]),
   BACKUP_SCHEDULE_NAME: core.BACKUP_SCHEDULE_NAME,
   GlobalRoutineStore: core.GlobalRoutineStore,

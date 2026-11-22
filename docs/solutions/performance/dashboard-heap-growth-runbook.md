@@ -27,6 +27,10 @@ related:
   # and answered in RUFU-634, so there is no second TOAST or side-table pass without re-reading that
   # measurement.
   - docs/solutions/performance/task-log-storage-policy-pricing.md
+  # Cross-linked from RUFU-760: every RSS number this runbook reasons about belongs to ONE process,
+  # and a `pgrep -f` pattern match can hand you two checkouts as if they were one. Attribution of the
+  # pid comes first; that method lives in the sibling runbook and is deliberately not restated here.
+  - docs/solutions/performance/dashboard-process-attribution-runbook.md
   - packages/dashboard/src/lib/retention-census.ts
   - packages/dashboard/src/metrics/retention-sampler.ts
   - scripts/check-retention-coverage.mjs

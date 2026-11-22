@@ -7,6 +7,7 @@ export * from "./error-message.js";
 export * from "./fs-watch-poll-controller.js";
 export * from "./logger.js";
 export * from "./otel-metrics.js";
+export * from "./proc-cwd.js";
 export * from "./process-supervisor.js";
 export * from "./run-command.js";
 export * from "./test-safety.js";

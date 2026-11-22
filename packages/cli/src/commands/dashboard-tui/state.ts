@@ -124,6 +124,19 @@ export interface TUICallbacks {
   onPersistVitestKillSettings?: (
     partial: { enabled?: boolean; thresholdPct?: number },
   ) => Promise<void>;
+  /*
+  FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760):
+  The memory-pressure auto-kill and the [k] shortcut SIGKILL processes, so they must know which
+  managed worktree root belongs to the project the board is actually showing. The TUI has no store of
+  its own, so the host resolves it from the board's own project store and hands back `worktreesDir`.
+  Optional: an unhosted controller (tests, embedded uses) falls back to scoping by the project root
+  alone, which is still narrower than the machine-wide probe it replaced and never widens the set.
+
+  This is deliberately a callback and NOT a `SettingsValues` field: `SettingsValues` is the rendered
+  settings view-model, and a worktree path is neither an engine knob the operator tunes here nor
+  something the settings panel should start displaying for a kill-scope lookup.
+  */
+  onResolveWorktreesDir?: (projectPath: string) => Promise<string | undefined>;
 }
 
 // Slim project shape used by interactive mode

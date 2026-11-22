@@ -1,12 +1,24 @@
 import type { Request } from "express";
-import { findVitestProcessIds, getAvailableMemoryBytes, resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
+import {
+  columnsWithFlag,
+  createLogger,
+  findVitestProcessInventory,
+  getAvailableMemoryBytes,
+  readProcessCwds,
+  resolveWorktreesDirCandidates,
+  resolveWorkflowIrForTask,
+  type VitestProcessInventory,
+} from "@fusion/core";
 import type { WorkflowIr } from "@fusion/core";
 import { ApiError, notFound, rethrowAsApiError } from "../api-error.js";
 import { resolveHeapCeiling } from "../lib/heap-ceiling.js";
 import { fetchFromRemoteNode } from "./register-settings-sync-helpers.js";
 import type { ApiRouteRegistrar } from "./types.js";
 import os from "node:os";
+import { resolve as resolvePath } from "node:path";
 import v8 from "node:v8";
+
+const vitestScopeLog = createLogger("dashboard-system-maintenance");
 
 /**
  * FNXC:RouteModularity 2026-07-19-18:00:
@@ -47,21 +59,62 @@ const getAppCpuPercent = (): number | null => {
   return Math.max(0, Number(((usedMicros / elapsedMicros) * 100).toFixed(1)));
 };
 
-const getVitestProcessIds = async (): Promise<number[]> => {
-  // Async pgrep/ps via findVitestProcessIds so the dashboard's event loop
-  // stays responsive while the process table is walked. The helper filters
-  // matches to actual node processes — a bare `pgrep -f vitest` also matches
-  // wrapper shells, monitors, and editors whose command line merely mentions
-  // vitest, and SIGKILLing those took out unrelated process trees
-  // (2026-06-03 incident).
-  return findVitestProcessIds();
+/*
+FNXC:VitestKillScope 2026-11-21-01:37 (RUFU-760):
+The directories whose ownership makes a process killable for THIS project: its own checkout plus every
+managed task-worktree root. `worktreesDir` is read from the request's own project store, because a
+configured root is exclusive — resolving it from the launch project instead would put another
+project's workers out of scope and this project's own workers would be missed.
+
+An unresolvable project resolves to NO roots, which the probe reads as "run unscoped", i.e. exactly
+the pre-attribution behavior. A failed lookup must never make a destructive action stricter, and it
+must never answer an operator's kill with a silent no-op.
+*/
+const resolveVitestScopeRoots = async (req: Request): Promise<string[]> => {
+  try {
+    const { store: scopedStore } = await getProjectContext(req);
+    const rootDir = scopedStore.getRootDir();
+    const settings = await scopedStore.getSettingsFast();
+    const candidates = [
+      rootDir,
+      ...resolveWorktreesDirCandidates(rootDir, { worktreesDir: settings.worktreesDir }),
+    ];
+    const roots = new Set<string>();
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string" || candidate.trim().length === 0) continue;
+      roots.add(resolvePath(candidate));
+    }
+    return [...roots];
+  } catch {
+    return [];
+  }
+};
+
+/*
+FNXC:VitestKillScope 2026-11-21-01:37 (RUFU-760):
+ONE resolution for both surfaces. `GET /api/system-stats` reports `vitestProcessCount` and
+`POST /api/kill-vitest` signals the set; when they resolved scope independently, the number the
+operator read and the pids the button signalled could be two different sets — the count showing one
+project while the kill reached another. No `procRoot` is ever passed from here: `resolveProcRoot()`
+remains the single decider of where the process table is read, in production and in tests alike.
+*/
+const getVitestProcessInventory = async (req: Request): Promise<VitestProcessInventory> => {
+  // Async pgrep/ps via the core probe so the dashboard's event loop stays responsive while the
+  // process table is walked. The probe first filters matches to actual node processes — a bare
+  // `pgrep -f vitest` also matches wrapper shells, monitors, and editors whose command line merely
+  // mentions vitest, and SIGKILLing those took out unrelated process trees (2026-06-03 incident) —
+  // and then drops only candidates whose cwd provably belongs to another checkout (RUFU-760).
+  const scopeRoots = await resolveVitestScopeRoots(req);
+  return scopeRoots.length > 0
+    ? findVitestProcessInventory({ scopeRoots })
+    : findVitestProcessInventory();
 };
 
 const collectSystemStatsResponse = async (req: Request) => {
   const mem = process.memoryUsage();
   const heapStats = v8.getHeapStatistics();
   const load = os.loadavg();
-  const vitestProcessIds = await getVitestProcessIds();
+  const vitestInventory = await getVitestProcessInventory(req);
   const cpuPercent = getAppCpuPercent();
 
   let totalTasks = 0;
@@ -183,7 +236,7 @@ const collectSystemStatsResponse = async (req: Request) => {
       active: activeTasks,
       agents: agentCounts,
     },
-    vitestProcessCount: vitestProcessIds.length,
+    vitestProcessCount: vitestInventory.pids.length,
     vitestLastAutoKillAt,
   };
 };
@@ -239,14 +292,33 @@ router.get("/nodes/:id/system-stats", async (req, res) => {
 
 /**
  * POST /api/kill-vitest
- * Kill all running vitest processes (excluding this process).
+ * Kill the running vitest processes of the request's project (excluding this process).
+ *
+ * FNXC:VitestKillScope 2026-11-21-01:37 (RUFU-760):
+ * The handler used to take `_req` and signal every node process on the host whose command line
+ * mentioned vitest, so the project the client sent decided nothing and a second checkout's test run
+ * died when an operator killed vitest for the project they were looking at. The request's project now
+ * decides the set, which is the same set the count above reports. A spared foreign pid is logged
+ * with its resolved cwd, so a kill that did fewer things than expected stays explainable afterwards;
+ * the log names pids and paths and carries nothing from those processes themselves.
  */
-router.post("/kill-vitest", async (_req, res) => {
+router.post("/kill-vitest", async (req, res) => {
   try {
-    const vitestProcessIds = await getVitestProcessIds();
+    const vitestInventory = await getVitestProcessInventory(req);
+
+    if (vitestInventory.foreignPids.length > 0) {
+      const foreignCwds = readProcessCwds(vitestInventory.foreignPids);
+      const detail = vitestInventory.foreignPids
+        .map((pid) => `${pid}=${foreignCwds.cwds.get(pid) ?? "unknown"}`)
+        .join(" ");
+      vitestScopeLog.warn(
+        `Spared ${vitestInventory.foreignPids.length} vitest process(es) whose cwd is outside this project's checkout and managed worktrees: ${detail}`,
+      );
+    }
+
     const killedPids: number[] = [];
 
-    for (const pid of vitestProcessIds) {
+    for (const pid of vitestInventory.pids) {
       try {
         process.kill(pid, "SIGKILL");
         killedPids.push(pid);

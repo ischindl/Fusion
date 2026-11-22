@@ -1743,8 +1743,21 @@ export {
 } from "./merge/pr-entity.js";
 export {
   findVitestProcessIds,
+  findVitestProcessInventory,
   type FindVitestProcessIdsOptions,
+  type VitestProcessInventory,
 } from "./process/vitest-processes.js";
+export {
+  FUSION_PROC_ROOT_ENV,
+  PROC_CWD_DELETED_SUFFIX,
+  isCwdAttributedTo,
+  isProcTableAvailable,
+  readProcessCwd,
+  readProcessCwds,
+  resolveProcRoot,
+  type ProcessCwdTable,
+  type ReadProcessCwdOptions,
+} from "./process/proc-cwd.js";
 export {
   classifyProviderError,
   countPriorStallDeadlockParks,

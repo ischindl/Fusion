@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } 
 import express from "express";
 import http from "node:http";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -180,6 +180,49 @@ import { createFnAgent } from "@fusion/engine";
 
 const mockIsGhAvailable = vi.mocked(isGhAvailable);
 const mockIsGhAuthenticated = vi.mocked(isGhAuthenticated);
+
+/*
+FNXC:VitestKillScope 2026-11-21-01:37 (RUFU-760):
+Every vitest-kill and system-stats assertion in this file names SYNTHETIC pids (1001, 1002, 3001, …).
+Whether such a pid exists on the machine running this file is a host fact, and a pid that exists on
+one runner and not another is precisely the flake this repo quarantines on sight. So the file
+relocates the proc table into its own temp root for the whole module: every synthetic pid is then
+PROVABLY unattributable everywhere, which is why the pre-existing `killed: 2, pids: [1001, 1002]`
+and `killed: 0` expectations stay true — they now assert the unattributable-stays-killable contract
+instead of accidentally reading the host's process table.
+
+A test that needs an ATTRIBUTED pid creates a proc entry inside this root, so the route runs the real
+resolver and the real link read: the substituted input is the proc table's LOCATION, never the
+attribution decision.
+*/
+let probeProcRoot = "";
+const probeCleanupDirs: string[] = [];
+
+function makeProbeDir(prefix: string): string {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), prefix));
+  probeCleanupDirs.push(dir);
+  return dir;
+}
+
+/** Lay down `<procRoot>/<pid>/cwd -> target`, the procfs shape the resolver reads. */
+function linkProbeProcessCwd(pid: number, target: string): void {
+  const pidDir = join(probeProcRoot, String(pid));
+  mkdirSync(pidDir, { recursive: true });
+  symlinkSync(target, join(pidDir, "cwd"));
+}
+
+beforeAll(() => {
+  probeProcRoot = makeProbeDir("fusion-routes-proc-");
+  process.env.FUSION_PROC_ROOT = probeProcRoot;
+});
+
+afterAll(() => {
+  delete process.env.FUSION_PROC_ROOT;
+  while (probeCleanupDirs.length > 0) {
+    const dir = probeCleanupDirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function createMockGlobalSettingsStore() {
   return {
@@ -528,6 +571,10 @@ describe("GET /api/system-stats", () => {
         error: 1,
       },
     });
+    // FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760): these two candidate pids have no entry in
+    // this file's relocated proc root, so their ownership is unknown — and unknown is not foreign.
+    // The count therefore still covers them, which is the unattributable-stays-counted half of the
+    // attribution contract.
     expect(res.body.vitestProcessCount).toBe(2);
     expect(res.body.vitestLastAutoKillAt).toBeNull();
 
@@ -825,6 +872,131 @@ describe("POST /api/kill-vitest", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ killed: 0, pids: [] });
     mockExecFile.mockClear();
+  });
+
+  /*
+  FNXC:VitestKillScope 2026-11-21-01:37 (RUFU-760):
+  The route-level half of the symptom assertion: `pgrep -f vitest` was machine-wide, so a worker
+  standing in ANOTHER checkout was signalled by a kill the operator issued for the project they were
+  looking at. These cases drive the real route, the real `readlink`, and a `process.kill` spy — the
+  inventory and the attribution resolver are never mocked, only the pgrep/ps output and (file-wide)
+  the proc table's location.
+  */
+  describe("checkout attribution", () => {
+    function storeScopedTo(projectRoot: string, worktreesDir?: string): TaskStore {
+      return createMockStore({
+        getRootDir: vi.fn().mockReturnValue(projectRoot),
+        getSettingsFast: vi.fn().mockResolvedValue(worktreesDir ? { worktreesDir } : {}),
+      } as unknown as Partial<TaskStore>);
+    }
+
+    function stubVitestProbe(pids: number[]): void {
+      mockExecFile
+        .mockImplementationOnce((...callArgs: unknown[]) => {
+          const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string) => void;
+          cb(null, `${pids.map((pid) => String(pid)).join("\n")}\n`);
+        })
+        .mockImplementationOnce((...callArgs: unknown[]) => {
+          const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string) => void;
+          cb(null, pids.map((pid) => `  ${pid} node`).join("\n"));
+        });
+    }
+
+    it("spares a worker whose cwd provably belongs to another checkout", async () => {
+      const projectA = makeProbeDir("checkout-a-");
+      const projectB = makeProbeDir("checkout-b-");
+      mkdirSync(join(projectA, "packages", "core"), { recursive: true });
+      linkProbeProcessCwd(3101, join(projectA, "packages", "core"));
+      linkProbeProcessCwd(3102, projectB);
+      stubVitestProbe([3101, 3102]);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const res = await REQUEST(buildApp(storeScopedTo(projectA)), "POST", "/api/kill-vitest");
+
+      expect(res.status).toBe(200);
+      expect(killSpy).toHaveBeenCalledTimes(1);
+      expect(killSpy).toHaveBeenCalledWith(3101, "SIGKILL");
+      expect(killSpy).not.toHaveBeenCalledWith(3102, "SIGKILL");
+      expect(res.body).toEqual({ killed: 1, pids: [3101] });
+
+      killSpy.mockRestore();
+      mockExecFile.mockClear();
+    });
+
+    it("kills the other project's own worker when the request names that other project", async () => {
+      const projectA = makeProbeDir("checkout-a-");
+      const projectB = makeProbeDir("checkout-b-");
+      linkProbeProcessCwd(3111, projectA);
+      linkProbeProcessCwd(3112, join(projectB, "packages"));
+      mkdirSync(join(projectB, "packages"), { recursive: true });
+      stubVitestProbe([3111, 3112]);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const res = await REQUEST(buildApp(storeScopedTo(projectB)), "POST", "/api/kill-vitest");
+
+      expect(killSpy).toHaveBeenCalledTimes(1);
+      expect(killSpy).toHaveBeenCalledWith(3112, "SIGKILL");
+      expect(res.body).toEqual({ killed: 1, pids: [3112] });
+
+      killSpy.mockRestore();
+      mockExecFile.mockClear();
+    });
+
+    it("counts a managed task worktree's worker as this project's own", async () => {
+      const project = makeProbeDir("checkout-a-");
+      const worktreeDir = join(project, ".fusion", "worktrees", "rufu-1");
+      mkdirSync(worktreeDir, { recursive: true });
+      linkProbeProcessCwd(3121, worktreeDir);
+      stubVitestProbe([3121]);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const res = await REQUEST(buildApp(storeScopedTo(project)), "POST", "/api/kill-vitest");
+
+      expect(res.body).toEqual({ killed: 1, pids: [3121] });
+
+      killSpy.mockRestore();
+      mockExecFile.mockClear();
+    });
+
+    it("keeps a configured worktreesDir in scope, because a configured root is exclusive", async () => {
+      const project = makeProbeDir("checkout-a-");
+      const configuredRoot = makeProbeDir("configured-worktrees-");
+      const workerDir = join(configuredRoot, "rufu-2");
+      mkdirSync(workerDir, { recursive: true });
+      linkProbeProcessCwd(3131, workerDir);
+      stubVitestProbe([3131]);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      const res = await REQUEST(buildApp(storeScopedTo(project, configuredRoot)), "POST", "/api/kill-vitest");
+
+      expect(res.body).toEqual({ killed: 1, pids: [3131] });
+
+      killSpy.mockRestore();
+      mockExecFile.mockClear();
+    });
+
+    it("reports in vitestProcessCount exactly the set the kill button signals", async () => {
+      const project = makeProbeDir("checkout-a-");
+      const other = makeProbeDir("checkout-b-");
+      linkProbeProcessCwd(3141, join(project, ".fusion"));
+      linkProbeProcessCwd(3142, other);
+      const store = storeScopedTo(project);
+
+      stubVitestProbe([3141, 3142]);
+      const stats = await GET(buildApp(store), "/api/system-stats");
+
+      stubVitestProbe([3141, 3142]);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      const kill = await REQUEST(buildApp(store), "POST", "/api/kill-vitest");
+
+      expect(stats.status).toBe(200);
+      expect(stats.body.vitestProcessCount).toBe(kill.body.pids.length);
+      expect(stats.body.vitestProcessCount).toBe(1);
+      expect(kill.body).toEqual({ killed: 1, pids: [3141] });
+
+      killSpy.mockRestore();
+      mockExecFile.mockClear();
+    });
   });
 });
 

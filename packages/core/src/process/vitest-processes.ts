@@ -1,4 +1,8 @@
 import { execFile as nodeExecFile } from "node:child_process";
+import { createLogger } from "./logger.js";
+import { isCwdAttributedTo, readProcessCwds } from "./proc-cwd.js";
+
+const log = createLogger("vitest-processes");
 
 /**
  * Locate running vitest processes safely.
@@ -12,8 +16,19 @@ import { execFile as nodeExecFile } from "node:child_process";
  * Root cause of the 2026-06-03 incident where the memory-pressure auto-kill
  * SIGKILLed unrelated process trees every 30s.
  *
- * This helper filters pgrep candidates to processes whose executable (`comm`)
- * is actually node, so only the vitest runner and its workers are reported.
+ * That incident was fixed by filtering candidates to processes whose executable
+ * (`comm`) is actually node, so only the vitest runner and its workers remain.
+ *
+ * FNXC:ProcessProbeAttribution 2026-11-21-01:37 (RUFU-760):
+ * The executable filter answers "is this the right KIND of process?" and says nothing about
+ * "whose process is this?". `pgrep -f` scans every checkout on the host, so a vitest worker started
+ * from another repository is a perfect candidate, and both callers of this probe — Command Center's
+ * `POST /api/kill-vitest` and the terminal dashboard's memory-pressure auto-kill — send SIGKILL.
+ * The requirement now: a candidate may be counted or signalled only once its working directory has
+ * been attributed to the caller's own checkout. `scopeRoots` carries that checkout (project root +
+ * its managed worktree roots); a candidate is dropped ONLY on positive proof of foreignness (its cwd
+ * resolved and lies outside every root). An unreadable cwd is never treated as foreign — macOS,
+ * other-uid, and exited-mid-scan processes stay killable exactly as before.
  */
 
 export interface FindVitestProcessIdsOptions {
@@ -21,6 +36,30 @@ export interface FindVitestProcessIdsOptions {
   excludePids?: number[];
   /** Test seam — injected execFile. */
   execFileImpl?: typeof nodeExecFile;
+  /**
+   * Directories whose cwd proves a candidate belongs to this project: the project root plus every
+   * managed task-worktree root. Omitted → today's machine-wide candidate set (`scoped: false`).
+   * Supplied but empty (a misconfiguration, never an intent) → also unscoped, plus a warn: an
+   * operator's kill must never silently become a no-op.
+   */
+  scopeRoots?: readonly string[];
+  /**
+   * Explicit proc-table override for tests that inject `execFileImpl`. Omit it in every production
+   * caller so `resolveProcRoot()` stays the single decider of where the process table is read.
+   */
+  procRoot?: string;
+}
+
+/** One scoped scan's result: what may be killed, what was proved foreign, and what stayed unknown. */
+export interface VitestProcessInventory {
+  /** Candidates that may be counted and signalled: in-scope plus every UNATTRIBUTABLE candidate. */
+  pids: number[];
+  /** Candidates proved to belong to another checkout — reported, never signalled. */
+  foreignPids: number[];
+  /** Candidates whose cwd could not be read; they remain in `pids`. */
+  unattributedPids: number[];
+  /** False when the scan ran machine-wide (no usable scope roots, or no attribution possible). */
+  scoped: boolean;
 }
 
 function execToStdout(
@@ -72,16 +111,69 @@ async function filterToNodeProcesses(
   return nodePids;
 }
 
-export async function findVitestProcessIds(
+/**
+ * Scan for vitest processes and attribute every candidate to a checkout.
+ *
+ * Dropping a candidate is the only destructive decision here, and it is taken on positive proof
+ * only: `cwd` resolved AND outside every scope root. Everything else — no proc table, another uid,
+ * a process that exited between `pgrep` and `readlink` — stays in `pids` so a host without `/proc`
+ * (macOS) keeps the behavior it had before attribution existed.
+ */
+export async function findVitestProcessInventory(
   options: FindVitestProcessIdsOptions = {},
-): Promise<number[]> {
+): Promise<VitestProcessInventory> {
   // pgrep/ps are POSIX-only; Windows callers treat this as a no-op.
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") {
+    return { pids: [], foreignPids: [], unattributedPids: [], scoped: false };
+  }
 
   const execFileImpl = options.execFileImpl ?? nodeExecFile;
   const excluded = new Set<number>([process.pid, ...(options.excludePids ?? [])]);
 
   const candidates = parsePids(await execToStdout(execFileImpl, "pgrep", ["-f", "vitest"]));
   const nodePids = await filterToNodeProcesses(execFileImpl, candidates);
-  return nodePids.filter((pid) => !excluded.has(pid));
+  const killable = nodePids.filter((pid) => !excluded.has(pid));
+
+  const requested = options.scopeRoots;
+  const scopeRoots = (requested ?? []).filter((root) => typeof root === "string" && root.trim().length > 0);
+  if (scopeRoots.length === 0) {
+    if (requested !== undefined) {
+      // Every supplied root was blank: a caller misconfiguration. Warn rather than obey, because
+      // obeying would answer an operator's "Kill vitest" with `killed: 0` and no explanation.
+      log.warn(
+        `Vitest probe received ${requested.length} scope root(s) but none was usable; running unscoped (machine-wide) rather than silently killing nothing.`,
+      );
+    }
+    return { pids: killable, foreignPids: [], unattributedPids: [], scoped: false };
+  }
+
+  const table = readProcessCwds(killable, { procRoot: options.procRoot });
+  if (!table.procTableAvailable) {
+    /*
+    FNXC:ProcessProbeAttribution 2026-11-21-01:37 (RUFU-760):
+    No proc table (macOS, Windows-without-procfs, an unrelocatable host) means attribution is
+    impossible for EVERY candidate, so reporting the scan as "scoped" would claim a guarantee the
+    platform cannot give. The candidate set stays exactly what it was before attribution existed.
+    */
+    return { pids: killable, foreignPids: [], unattributedPids: table.unattributedPids, scoped: false };
+  }
+  const pids: number[] = [];
+  const foreignPids: number[] = [];
+  for (const pid of killable) {
+    const cwd = table.cwds.get(pid);
+    if (cwd === undefined) {
+      // Unattributable: unknown is not foreign.
+      pids.push(pid);
+      continue;
+    }
+    if (isCwdAttributedTo(cwd, scopeRoots)) pids.push(pid);
+    else foreignPids.push(pid);
+  }
+  return { pids, foreignPids, unattributedPids: table.unattributedPids, scoped: true };
+}
+
+export async function findVitestProcessIds(
+  options: FindVitestProcessIdsOptions = {},
+): Promise<number[]> {
+  return (await findVitestProcessInventory(options)).pids;
 }

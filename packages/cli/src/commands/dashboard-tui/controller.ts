@@ -1,7 +1,13 @@
 import os from "node:os";
 import v8 from "node:v8";
 import { appendFileSync } from "node:fs";
-import { findVitestProcessIds, getAvailableMemoryBytes, getAvailableMemoryInfo } from "@fusion/core";
+import { resolve as resolvePath } from "node:path";
+import {
+  findVitestProcessInventory,
+  getAvailableMemoryBytes,
+  getAvailableMemoryInfo,
+  resolveWorktreesDirCandidates,
+} from "@fusion/core";
 
 const TUI_DEBUG_LOG = process.env.FUSION_TUI_DEBUG_LOG;
 function tuiDebug(tag: string, data: Record<string, unknown>): void {
@@ -341,19 +347,64 @@ export class DashboardTUI {
     }
   }
 
+  /*
+  FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760):
+  The directories whose ownership makes a vitest worker killable from this TUI: the project the board
+  is showing (`boardScopedProjectPath`, the same path `refreshTUIStats` scopes its stats by) plus
+  every managed task-worktree root that project resolves. Falling back to `process.cwd()` keeps a
+  single-project dashboard scoped to its own checkout instead of the machine.
+
+  A failing lookup returns whatever roots were already collected rather than an empty set: a failed
+  settings read must never WIDEN the set of processes a SIGKILL may reach.
+  */
+  private async resolveVitestScopeRoots(): Promise<string[]> {
+    const roots = new Set<string>();
+    try {
+      const projectRoot = this.boardScopedProjectPath ?? process.cwd();
+      roots.add(resolvePath(projectRoot));
+      const worktreesDir = await this.callbacks?.onResolveWorktreesDir?.(projectRoot);
+      for (const candidate of resolveWorktreesDirCandidates(projectRoot, { worktreesDir })) {
+        if (typeof candidate === "string" && candidate.trim().length > 0) {
+          roots.add(resolvePath(candidate));
+        }
+      }
+    } catch {
+      // Keep the partial set; never widen a destructive scope on a lookup failure.
+    }
+    return [...roots];
+  }
+
   /**
-   * Find and SIGKILL any running vitest processes, excluding this dashboard
-   * itself. Returns a count of pids signalled (best-effort — a pid may be
+   * Find and SIGKILL the vitest processes belonging to the project this dashboard is showing,
+   * excluding this dashboard itself. Returns a count of pids signalled (best-effort — a pid may be
    * gone by the time we send the signal).
+   *
+   * FNXC:VitestKillScope 2026-11-21-02:14 (RUFU-760):
+   * The memory-pressure guard and the [k] shortcut used to signal EVERY node process on the host
+   * whose command line mentioned vitest, so a test run started from another checkout died when this
+   * board was under memory pressure. A candidate is now dropped only when its working directory is
+   * provably outside this project's roots; an unreadable cwd stays killable, because "cannot prove
+   * ownership" is not evidence of foreign ownership. Where no proc table exists (macOS) or no root
+   * resolved, the inventory reports itself unscoped and behaves exactly as the old probe.
    */
   async killVitestProcesses(): Promise<{ killed: number; pids: number[] }> {
-    // findVitestProcessIds is pgrep-based (POSIX-only; no-op on Windows) and
-    // uses async execFile so the TUI render loop stays responsive while the
-    // process table is walked. Crucially it filters matches to actual node
-    // processes: a bare `pgrep -f vitest` also matches wrapper shells whose
-    // command line mentions vitest, monitors, and editors — SIGKILLing those
-    // took out unrelated process trees (2026-06-03 incident).
-    const pids = await findVitestProcessIds();
+    // findVitestProcessInventory is pgrep-based (POSIX-only; no-op on Windows) and uses async
+    // execFile so the TUI render loop stays responsive while the process table is walked. Crucially
+    // it filters matches to actual node processes: a bare `pgrep -f vitest` also matches wrapper
+    // shells whose command line mentions vitest, monitors, and editors — SIGKILLing those took out
+    // unrelated process trees (2026-06-03 incident).
+    const scopeRoots = await this.resolveVitestScopeRoots();
+    const inventory = scopeRoots.length > 0
+      ? await findVitestProcessInventory({ scopeRoots })
+      : await findVitestProcessInventory();
+    const pids = inventory.pids;
+
+    if (inventory.foreignPids.length > 0) {
+      this.log(
+        `Suppressed ${inventory.foreignPids.length} vitest process${inventory.foreignPids.length === 1 ? "" : "es"} whose cwd is outside this project's checkout and managed worktrees.`,
+        "kill-vitest",
+      );
+    }
 
     let killed = 0;
     for (const pid of pids) {

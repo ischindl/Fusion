@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { execFile as nodeExecFile } from "node:child_process";
-import { findVitestProcessIds } from "../process/vitest-processes.js";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { findVitestProcessIds, findVitestProcessInventory } from "../process/vitest-processes.js";
+import { resolveWorktreesDirCandidates } from "../tasks/worktree-layout.js";
 
 type ExecFileCallback = (err: Error | null, stdout: string, stderr: string) => void;
 
@@ -82,5 +86,205 @@ describe("findVitestProcessIds", () => {
     } finally {
       platformSpy.mockRestore();
     }
+  });
+});
+
+/*
+FNXC:ProcessProbeAttribution 2026-11-21-01:37 (RUFU-760):
+Fixtures for the attribution half of the probe. The fake proc table is a real temp tree holding
+REAL symlinks, so the real resolver decides attribution and the test asserts a decision, not a mock
+return value. The kernel's ` (deleted)` link text is reproducible verbatim here because symlink(2)
+stores an arbitrary target string and readlink(2) returns exactly that text — which is precisely how
+`/proc/<pid>/cwd` looks when the directory a process is standing in has been unlinked.
+*/
+const REAL_TMP = realpathSync(tmpdir());
+const createdProbeDirs: string[] = [];
+
+function makeTempDir(prefix: string): string {
+  const dir = mkdtempSync(join(REAL_TMP, prefix));
+  createdProbeDirs.push(dir);
+  return dir;
+}
+
+function linkProcessCwd(procRoot: string, pid: number, targetText: string): void {
+  const pidDir = join(procRoot, String(pid));
+  mkdirSync(pidDir, { recursive: true });
+  symlinkSync(targetText, join(pidDir, "cwd"));
+}
+
+function nodeCandidateOutput(pids: number[]): { pgrep: string; ps: string } {
+  return {
+    pgrep: `${pids.map((pid) => String(pid)).join("\n")}\n`,
+    ps: pids.map((pid) => `  ${pid} node`).join("\n"),
+  };
+}
+
+afterEach(() => {
+  while (createdProbeDirs.length > 0) {
+    const dir = createdProbeDirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("findVitestProcessInventory - checkout attribution", () => {
+  it("drops only the candidate proved to stand in another checkout, and names it foreign", async () => {
+    const procRoot = makeTempDir("proc-");
+    const projectA = makeTempDir("checkout-a-");
+    const projectB = makeTempDir("checkout-b-");
+    linkProcessCwd(procRoot, 3001, projectA);
+    linkProcessCwd(procRoot, 3002, join(projectB, "packages", "core"));
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: [projectA],
+      procRoot,
+    });
+
+    expect(inventory.pids).toEqual([3001]);
+    expect(inventory.foreignPids).toEqual([3002]);
+    expect(inventory.unattributedPids).toEqual([]);
+    expect(inventory.scoped).toBe(true);
+  });
+
+  it("keeps every candidate whose cwd resolves inside the project, runner and pool workers alike", async () => {
+    const procRoot = makeTempDir("proc-");
+    const projectA = makeTempDir("checkout-a-");
+    mkdirSync(join(projectA, "packages", "core"), { recursive: true });
+    linkProcessCwd(procRoot, 3001, projectA);
+    linkProcessCwd(procRoot, 3002, join(projectA, "packages", "core"));
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: [projectA],
+      procRoot,
+    });
+
+    expect(inventory.pids).toEqual([3001, 3002]);
+    expect(inventory.foreignPids).toEqual([]);
+    expect(inventory.scoped).toBe(true);
+  });
+
+  it("keeps a managed task worktree's worker, including one whose worktree directory is gone", async () => {
+    const procRoot = makeTempDir("proc-");
+    const project = makeTempDir("checkout-a-");
+    const worktreeRoot = join(project, ".fusion", "worktrees");
+    const liveWorktree = join(worktreeRoot, "rufu-1");
+    mkdirSync(liveWorktree, { recursive: true });
+    linkProcessCwd(procRoot, 3001, liveWorktree);
+    // The kernel shape for a worktree removed while its worker still runs.
+    linkProcessCwd(procRoot, 3002, `${join(worktreeRoot, "rufu-2")} (deleted)`);
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: resolveWorktreesDirCandidates(project, undefined),
+      procRoot,
+    });
+
+    expect(inventory.pids).toEqual([3001, 3002]);
+    expect(inventory.foreignPids).toEqual([]);
+  });
+
+  it("keeps an unattributable candidate and reports it as unattributed, never as foreign", async () => {
+    const procRoot = makeTempDir("proc-");
+    const project = makeTempDir("checkout-a-");
+    linkProcessCwd(procRoot, 3001, project);
+    // 3003 has no proc entry at all: exited between pgrep and readlink, or another uid.
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3003]));
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: [project],
+      procRoot,
+    });
+
+    expect(inventory.pids).toEqual([3001, 3003]);
+    expect(inventory.unattributedPids).toEqual([3003]);
+    expect(inventory.foreignPids).toEqual([]);
+    expect(inventory.scoped).toBe(true);
+  });
+
+  it("reports the scan unscoped and changes nothing where no proc table exists (macOS shape)", async () => {
+    const project = makeTempDir("checkout-a-");
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: [project],
+      procRoot: join(REAL_TMP, "fusion-proc-absent-7q2m"),
+    });
+
+    expect(inventory.pids).toEqual([3001, 3002]);
+    expect(inventory.foreignPids).toEqual([]);
+    expect(inventory.unattributedPids).toEqual([3001, 3002]);
+    expect(inventory.scoped).toBe(false);
+  });
+
+  it("treats an all-empty scope list as a misconfiguration: unscoped, warned, never a silent no-op", async () => {
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001]));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const inventory = await findVitestProcessInventory({
+        execFileImpl: impl,
+        scopeRoots: [],
+        procRoot: makeTempDir("proc-"),
+      });
+
+      expect(inventory.pids).toEqual([3001]);
+      expect(inventory.scoped).toBe(false);
+      expect(warnSpy.mock.calls.map((call) => String(call[0])).join(" ")).toContain("unscoped");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("stays unscoped and silent when no scope roots were requested at all", async () => {
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const inventory = await findVitestProcessInventory({ execFileImpl: impl });
+
+      expect(inventory.pids).toEqual([3001, 3002]);
+      expect(inventory.scoped).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("findVitestProcessIds delegates, so a scoped caller never sees a foreign pid", async () => {
+    const procRoot = makeTempDir("proc-");
+    const projectA = makeTempDir("checkout-a-");
+    const projectB = makeTempDir("checkout-b-");
+    linkProcessCwd(procRoot, 3001, projectA);
+    linkProcessCwd(procRoot, 3002, projectB);
+    const { impl } = makeExecFileMock(nodeCandidateOutput([3001, 3002]));
+
+    await expect(
+      findVitestProcessIds({ execFileImpl: impl, scopeRoots: [projectA], procRoot }),
+    ).resolves.toEqual([3001]);
+  });
+
+  it("still spares non-node wrapper shells and monitors while attributing the survivors", async () => {
+    const procRoot = makeTempDir("proc-");
+    const project = makeTempDir("checkout-a-");
+    const other = makeTempDir("checkout-b-");
+    linkProcessCwd(procRoot, 3001, project);
+    linkProcessCwd(procRoot, 3002, other);
+    const { impl } = makeExecFileMock({
+      pgrep: "3001\n3002\n3003\n",
+      ps: ["  3001 node", "  3002 node", "  3003 zsh"].join("\n"),
+    });
+
+    const inventory = await findVitestProcessInventory({
+      execFileImpl: impl,
+      scopeRoots: [project, ...resolveWorktreesDirCandidates(project, undefined)],
+      procRoot,
+    });
+
+    expect(inventory.pids).toEqual([3001]);
+    expect(inventory.foreignPids).toEqual([3002]);
   });
 });
