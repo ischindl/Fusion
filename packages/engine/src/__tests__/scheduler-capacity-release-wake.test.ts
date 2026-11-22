@@ -133,4 +133,34 @@ describe("Scheduler capacity-release event wakes", () => {
     expect(schedule).not.toHaveBeenCalled();
     expect(onCapacityReleased).not.toHaveBeenCalled();
   });
+
+  /*
+  FNXC:WipAdmissionParkCooldown 2026-11-19-22:35 (RUFU-558):
+  RUFU-558 bounds how often the hold/release sweep re-pays for a `move-rejected-or-no-slot` refusal, and it
+  deliberately does that INSIDE the sweep rather than by suppressing wakes here. Two reasons this file pins
+  the wake as UNCHANGED rather than adding a bypass:
+
+  1. the wake's evidence is that a COLUMN-lane slot vacated, which is the fact `downstream-full` is refused
+     on — and that arm is already re-derived live every pass at zero DB reads. A fair-probe bypass driven by
+     this wake would therefore re-run the expensive leg for the bounded class on a busy board and re-open the
+     very loop RUFU-558 closes;
+  2. the fairness contract RUFU-393 owns (`hold-release-capacity-release-crosses.test.ts`) is held by the
+     live lane sample, which a wake cannot improve — a wake cannot make the sample newer than it already is.
+
+  So a burst of vacating moves stays N real scheduling passes: the scheduler neither coalesces them away nor
+  hands any of them a waiver. Whether each pass then pays for the refused card is the sweep's decision, and
+  `hold-release-capacity-cooldown.test.ts` case (h) pins that a burst inside one refresh floor costs that
+  class exactly one expensive attempt.
+  */
+  it("lets a burst of capacity-vacating wakes through as N passes, with no waiver and no coalescing (RUFU-558)", async () => {
+    const { emit, schedule, onCapacityReleased } = createHarness();
+
+    for (let occupant = 0; occupant < 5; occupant += 1) {
+      await emit("in-progress", "in-review");
+    }
+
+    // Every vacating move still schedules: the bound is not here.
+    expect(schedule).toHaveBeenCalledTimes(5);
+    expect(onCapacityReleased).toHaveBeenCalledTimes(5);
+  });
 });

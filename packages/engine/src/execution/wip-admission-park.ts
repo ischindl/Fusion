@@ -242,6 +242,116 @@ export async function wipAdmissionParkDefersGraphEntry(
   return parked;
 }
 
+/*
+FNXC:WipAdmissionParkCooldown 2026-11-19-21:05 (RUFU-558):
+The sweep is the module's only WRITER that never reads its own episode back. Every graph-entry surface
+consults `wipAdmissionParkDefersGraphEntry` before paying for a dispatch; the hold/release sweep had no
+mirror of that question, so a card it refused by `move-rejected-or-no-slot` was re-refused from scratch on
+every pass at the poll cadence. Measured on the operator's SKEN board: one card, ~97 refusals attributed to
+it in 30 minutes while the board moved 1-3 cards per hour; reproduced in
+`hold-release-capacity-cooldown.test.ts` as 240 reservation attempts per card per hour at a 15 s cadence.
+
+`move-rejected-or-no-slot` is the one refusal code that needs this, and the reason is the cost of
+re-deriving it. `downstream-full`, `column-capacity` and the seam codes are re-checked from the LIVE
+in-memory lane sample every pass, which is zero DB reads and is what lets a parked card cross in the very
+pass its occupant leaves; that fairness contract is `hold-release-capacity-release-crosses.test.ts`'s, and
+this gate sits strictly after that sample so it cannot touch it. This code is different: it is what an
+EARLY RETURN and a `catch` report when `reserveSlot` answered null or the in-transaction move raised
+`capacity-exhausted`. Re-deriving it means re-paying for the readiness probes, the reservation and the
+move — the whole expensive leg — to rediscover a fact the sweep itself wrote seconds ago.
+
+So the allowlist below is one held reason wide ON PURPOSE. It is an allowlist, never a negation: a held
+reason added later defaults to "re-measure it every pass", because that is the honest default for a verdict
+whose cheap re-check exists. `downstream-full` is deliberately NOT here despite being a capacity wait —
+excluding it is the fairness half of this change, and a card whose pool just freed must be released in this
+pass, not one floor later.
+
+FNXC:WipAdmissionParkCooldown 2026-11-22-05:18 (RUFU-558):
+Two separate keys were wrong before this correction, and both were found by measurement rather than review.
+(1) The CLASS may not come from `episode.code`. The first cut read that label, and it is provably inert on
+the measured population: `moreSpecificWipAdmissionGate` sharpens a refreshing episode UPWARD ONLY, ranking
+`downstream-full` and `column-capacity` (4) above `move-rejected-or-no-slot` (3), so a card that ever
+reported a rank-4 label keeps it through every later codeless refusal and a code-keyed skip never fires for
+it again - project memory measured ~60 of ~138 `wipAdmissionStall` rows sitting in `todo` labeled
+`downstream-full`. The class comes from `heldSince`'s held REASON instead, because `trackHeld` records the
+arm that actually refused.
+(2) The ANCHOR may not come from `heldSince.sinceMs` either, which is what the correction's first draft then
+used. That field deliberately never moves while the reason is unchanged, because it answers "how long has
+this card been waiting" for the release log line and the sweep's `longest held` summary; once its age passes
+one floor it stays past one floor forever, so a clock-anchored bound bounds exactly ONE floor and then stops
+- measured 181 attempts/hour against an expected 4. The anchor is therefore the episode's OWN refresh clock
+(`lastAt`), reached through `wipAdmissionParkDefersDispatch`, which advances only when
+`publishWipAdmissionHold` accepts a write, and that acceptance is itself bounded to one per floor. One
+freshness notion, one floor, one anchor, shared with the graph-entry deferral RUFU-393 shipped; the held
+reason is a new axis over that clock, not a new clock.
+Consequence to keep: neither field may become a recovery owner - `docs/architecture.md` rules these episodes
+another lane's diagnostic, so no repair sweep may read them as candidacy evidence.
+*/
+const WIP_ADMISSION_HELD_REASONS_WITHOUT_CHEAP_RECHECK: readonly string[] = [
+  "move-rejected-or-no-slot",
+];
+
+/** Whether a held reason names the one class whose re-derivation costs the whole expensive leg (RUFU-558). */
+export function wipAdmissionHoldHasNoCheapRecheck(heldReason: string): boolean {
+  return WIP_ADMISSION_HELD_REASONS_WITHOUT_CHEAP_RECHECK.includes(heldReason);
+}
+
+/**
+ * The release-sweep cadence rule (RUFU-558): the sweep already asked the expensive leg this question, was
+ * refused for the ONE class that has no cheap live re-check, and that refusal was recorded inside RUFU-393's
+ * refresh floor — so ask again at the floor, not at the poll cadence.
+ *
+ * Two inputs do two different jobs, because neither alone answers the question:
+ * - `heldReason` (the sweep's own `heldSince` entry) decides WHETHER this class may be paced at all. It is
+ *   the arm that actually refused, so it stays accurate where the episode's gate label does not: that label
+ *   is sharpened upward only and `downstream-full` outranks `move-rejected-or-no-slot`, so keying on it is
+ *   inert for any card that ever reported a lane-shaped label. The witness is case (d) of
+ *   `hold-release-capacity-cooldown.test.ts` — episode label `downstream-full`, refused for real through
+ *   the codeless arm, and the bound must engage anyway.
+ * - the row's episode decides WHEN, through `wipAdmissionParkDefersDispatch`: the same freshness test the
+ *   graph-entry deferral uses, off the `lastAt` that `publishWipAdmissionHold` advances only on an accepted
+ *   write, which is itself bounded to one acceptance per floor. `heldSince.sinceMs` is NOT the anchor — it
+ *   never moves while the reason holds, because it means "how long has this card waited", and an age measured
+ *   from a start that never moves stops bounding one floor in (measured 181 attempts/hour).
+ *
+ * Every conjunct is in-memory over the row the pass already listed, so the skip costs no read: the held
+ * reason is in the one-wide allowlist; the marker is fresh and still names the column the card stands in, so
+ * a card that moved on is never held back by a stale claim; and Rule 2 of this module vetoes any episode
+ * whose remedy is graph work in that same column, which is why the RUFU-393 code-review P0 cannot be rebuilt
+ * here even by a future widening of the allowlist.
+ *
+ * `wipAdmissionInLaneWorkProbe` is deliberately NOT consulted. It exists because dropping a GRAPH run might
+ * abandon pending work, so that question has to be asked of the work-item rows. A skipped release attempt
+ * abandons nothing: the card stays in its hold lane and is re-attempted within one floor. The leg this defers
+ * (`evaluateCapacityHoldReadiness`'s PROMPT.md and work-item reads, `reserveSlot`, the in-transaction move)
+ * runs zero times on a skipped pass.
+ *
+ * Accepted costs, stated honestly: `HoldReleaseDeps` exposes no cheap pool-idle signal — `reserveSlot` is
+ * the only way to ask and asking IS the cost — so a slot that frees mid-floor is discovered at the next
+ * floor, the same bound RUFU-393 already accepts for dispatch; and a card whose remedy changes from a pool
+ * refusal to a planning or approval wait mid-wait is noticed one floor late too, because discovering it IS
+ * the leg this skips — once measured, that new reason sits outside the allowlist permanently, so the bound
+ * can cost a floor of latency but can never freeze a card. Neither cost gates a human: `promoteHeldTask` and
+ * `releaseHeldTaskByEvent` never consult this predicate, and the live lane sample still releases every other
+ * class in the pass a slot frees.
+ *
+ * Fails open in every unreadable case: no held-reason entry (a fresh card, or the first pass after an engine
+ * restart, since the map is process-local), no episode, an episode naming another column, an unparsable
+ * instant — each answers "not cooling", so the pass attempts exactly as it did before this predicate
+ * existed. That is why this adds no durable state and needs no migration.
+ */
+export function wipAdmissionReleaseAttemptIsCooling(
+  task: Pick<Task, "id" | "column" | "sourceMetadata">,
+  heldReason: string | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (heldReason === undefined || !wipAdmissionHoldHasNoCheapRecheck(heldReason)) return false;
+  const parked = wipAdmissionParkDefersDispatch(task, now);
+  if (!parked) return false;
+  // Rule 2 of this module: an episode explains a wait, it never decides one.
+  return !wipAdmissionGateHasInLaneRemedy(parked.episode.code);
+}
+
 /** The refusal facts a writer supplies, normalized from either the boundary or the sweep. */
 export interface WipAdmissionParkContext {
   /** Which gate refused. Must be one of the nine `TaskWipAdmissionStallCode` gates. */

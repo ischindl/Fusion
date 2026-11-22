@@ -71,6 +71,15 @@ and the plan did not. Read the gate before the counts. Until RUFU-758 these card
 a constant — which made a broken plan indistinguishable from a full lane, and was the reason this table's
 evidence read as capacity pressure on a board with zero live executions.
 
+RUFU-558 later bounded how often the sweep re-derives its objections, and the `downstream-full` rule above is why the bound keys on
+the sweep's own measured held reason rather than on the durable episode's gate code. A refusal the sweep
+measures as `downstream-full` is re-derived from the live lane sample every pass, so the class of objection
+this table depends on can never be memoised into a stale verdict: what is paced is the codeless sibling
+(`move-rejected-or-no-slot`), the one arm whose re-derivation costs readiness probes plus a pool reservation
+plus a move. Note the asymmetry before quoting a marker as evidence: because gate labels sharpen upward
+only, a marker reading `downstream-full` can be older than a later codeless refusal, so the label is
+neither the cadence key nor proof of which arm spoke last.
+
 ## Fix
 
 Extract the failed-park rule that FN-8704 had already written down inside `isRunningAgentTask` into one

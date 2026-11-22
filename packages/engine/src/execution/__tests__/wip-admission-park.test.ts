@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
-import { WIP_ADMISSION_STALL_METADATA_KEY } from "@fusion/core";
+import { WIP_ADMISSION_STALL_METADATA_KEY, WIP_ADMISSION_STALL_REFRESH_FLOOR_MS } from "@fusion/core";
 import {
   WIP_ADMISSION_STALL_ANNOUNCE_WINDOW_MS,
   WIP_ADMISSION_SWEEP_NODE,
@@ -9,7 +9,10 @@ import {
   isHumanOrEventRelease,
   publishWipAdmissionHold,
   recordWipAdmissionPark,
+  wipAdmissionGateHasInLaneRemedy,
   wipAdmissionParkCodeForHeldReason,
+  wipAdmissionHoldHasNoCheapRecheck,
+  wipAdmissionReleaseAttemptIsCooling,
   wipAdmissionSignatureFrom,
 } from "../wip-admission-park.js";
 
@@ -230,10 +233,132 @@ describe("sweep-arm and release-kind eligibility", () => {
   });
 });
 
+/*
+FNXC:WipAdmissionParkCooldown 2026-11-19-21:15 (RUFU-558):
+The release-sweep cadence rule, pinned at the predicate level so the ONE-wide allowlist cannot widen by
+accident. The integration file (`hold-release-capacity-cooldown.test.ts`) proves the loop is bounded; this
+matrix proves WHICH held reasons may be paced, and every row below is a card that must still be evaluated the
+same pass. The rows that matter most are `downstream-full` (its lane sample is free and live, so pacing it
+would delay a release that is ready now by a full refresh floor) and the readiness gates, whose freeze was the
+RUFU-393 code-review P0.
+
+FNXC:WipAdmissionParkCooldown 2026-11-22-05:18 (RUFU-558):
+The predicate takes BOTH axes on purpose, and the matrix is the proof that neither can be dropped. The reason
+axis decides the class; the row's own episode decides the moment. The `awaiting-planning:*` rows are written in
+the FORM the sweep actually reports them (suffixed with the readiness reason), because that suffix is what an
+exact-match allowlist tests against - a row spelling only the bare code would pass while the real reason
+string slipped past.
+*/
+describe("wipAdmissionReleaseAttemptIsCooling", () => {
+  /** One floor of rest, in the same units the episode's instants are stored in. */
+  const FLOOR = WIP_ADMISSION_STALL_REFRESH_FLOOR_MS;
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const episode = (over: Record<string, unknown> = {}) => ({
+    code: "move-rejected-or-no-slot",
+    signature: "capacity|todo->in-progress",
+    nodeId: WIP_ADMISSION_SWEEP_NODE,
+    fromColumn: "todo",
+    toColumn: "in-progress",
+    firstAt: iso(T0),
+    lastAt: iso(T0),
+    stallCount: 2,
+    poolId: "column:in-progress",
+    occupants: 0,
+    limit: 4,
+    ...over,
+  });
+  /** The row the sweep already listed: cadence must cost no extra read, so the marker rides the row. */
+  const row = (over: Record<string, unknown> = {}, column = "todo") => ({
+    id: "RUFU-558",
+    column,
+    sourceMetadata: { [WIP_ADMISSION_STALL_METADATA_KEY]: episode(over) },
+  });
+  const cooling = (
+    task: { id: string; column: string; sourceMetadata: Record<string, unknown> },
+    reason: string | undefined,
+    now: number,
+  ) => wipAdmissionReleaseAttemptIsCooling(task, reason, now);
+
+  it("paces the refusal the sweep itself authored, for exactly one floor", () => {
+    expect(cooling(row(), "move-rejected-or-no-slot", T0 + 15_000)).toBe(true);
+    expect(cooling(row(), "move-rejected-or-no-slot", T0 + FLOOR - 1)).toBe(true);
+    // At the floor the refusal is stale and the expensive leg runs again: a bound, never a lock.
+    expect(cooling(row(), "move-rejected-or-no-slot", T0 + FLOOR)).toBe(false);
+    expect(cooling(row(), "move-rejected-or-no-slot", T0 + FLOOR * 4)).toBe(false);
+  });
+
+  it("engages on a card whose episode label was sharpened upward, which a code-keyed bound never could", () => {
+    // `moreSpecificWipAdmissionGate` keeps this label forever. Keying the bound on it answers "not cooling"
+    // for these cards permanently - the inertness this correction removes - so both rank-4 labels must pace.
+    for (const code of ["downstream-full", "column-capacity"]) {
+      expect(cooling(row({ code }), "move-rejected-or-no-slot", T0 + 15_000)).toBe(true);
+    }
+  });
+
+  it("never paces a refusal that has a cheap live re-check, however fresh the marker", () => {
+    for (const reason of [
+      "downstream-full",
+      "column-capacity",
+      "scheduler-seam",
+      "capacity-rejection-without-facts",
+      "no-downstream-capacity-column",
+      "no-release-target",
+      "deps-unsatisfied",
+      "timer-not-elapsed",
+    ]) {
+      expect(cooling(row(), reason, T0 + 1_000)).toBe(false);
+    }
+  });
+
+  it("never paces a readiness park, in the shape the sweep really reports it (RUFU-393 P0)", () => {
+    // A card whose remaining work is in the refused column must keep being evaluated, or it is never planned.
+    for (const reason of [
+      "awaiting-approval",
+      "awaiting-planning",
+      "awaiting-planning:seed-prompt",
+      "awaiting-planning:plan-review-pending",
+      "awaiting-planning:needs-replan",
+    ]) {
+      expect(cooling(row(), reason, T0 + 1_000)).toBe(false);
+      expect(cooling(row(), reason, T0 + FLOOR * 8)).toBe(false);
+    }
+    // Rule 2 reaches the label too: an episode naming an in-lane-remedy gate is never paced, whatever the
+    // sweep's current reason says. That is the guard a future widening of the allowlist cannot step over.
+    for (const code of ["awaiting-planning", "awaiting-approval"] as const) {
+      expect(wipAdmissionGateHasInLaneRemedy(code)).toBe(true);
+      expect(cooling(row({ code }), "move-rejected-or-no-slot", T0 + 1_000)).toBe(false);
+    }
+  });
+
+  it("treats an unknown or newly added held reason as NOT paceable (positive list, not a negation)", () => {
+    expect(cooling(row(), "plan-premise-unmet", T0 + 1_000)).toBe(false);
+    expect(cooling(row(), "some-future-refusal", T0 + 1_000)).toBe(false);
+    expect(cooling(row(), "", T0 + 1_000)).toBe(false);
+  });
+
+  it("paces nothing it cannot read: no reason, no marker, another column, or an unusable instant", () => {
+    // A fresh card, or the first pass after an engine restart: the reason map is process-local.
+    expect(cooling(row(), undefined, T0 + 15_000)).toBe(false);
+    // No marker at all - e.g. cleared at the move seam by `clearWipAdmissionStallPatch`.
+    expect(cooling({ id: "RUFU-558", column: "todo", sourceMetadata: {} }, "move-rejected-or-no-slot", T0 + 15_000)).toBe(false);
+    // The marker names the column the card was refused IN; this card moved on.
+    expect(cooling(row({}, "in-progress"), "move-rejected-or-no-slot", T0 + 15_000)).toBe(false);
+    // A legacy or hand-edited marker with no instants is not a marker, and an unparsable stamp is not a clock.
+    expect(cooling(row({ lastAt: undefined }), "move-rejected-or-no-slot", T0 + 15_000)).toBe(false);
+    expect(cooling(row({ lastAt: "not-a-date" }), "move-rejected-or-no-slot", T0 + 15_000)).toBe(false);
+  });
+
+  it("classifies a held reason as paceable only when it genuinely has no cheap re-check", () => {
+    expect(wipAdmissionHoldHasNoCheapRecheck("move-rejected-or-no-slot")).toBe(true);
+    expect(wipAdmissionHoldHasNoCheapRecheck("downstream-full")).toBe(false);
+    expect(wipAdmissionHoldHasNoCheapRecheck("awaiting-planning:seed-prompt")).toBe(false);
+  });
+});
+
+
 describe("clearWipAdmissionPark", () => {
   it("clears the marker key only, and never names a column", async () => {
     const { store, updateTask } = makeStore();
-    
     await clearWipAdmissionPark(store, "RUFU-393");
     const patch = updateTask.mock.calls[0][1] as { sourceMetadataPatch: Record<string, unknown> };
     expect(patch.sourceMetadataPatch).toEqual({ [WIP_ADMISSION_STALL_METADATA_KEY]: null });

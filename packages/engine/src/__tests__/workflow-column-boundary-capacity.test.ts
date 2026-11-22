@@ -17,10 +17,16 @@ import {
   TransitionRejectionError,
   getWorkflowEventBus,
   resetWorkflowEventBusForTesting,
+  WIP_ADMISSION_STALL_METADATA_KEY,
+  type Task,
   type WorkflowIr,
   type WorkflowLifecycleEvent,
 } from "@fusion/core";
 import { createWorkflowColumnBoundary } from "../workflows/workflow-column-boundary.js";
+import {
+  wipAdmissionParkDefersDispatch,
+  wipAdmissionReleaseAttemptIsCooling,
+} from "../execution/wip-admission-park.js";
 
 /** Minimal two-column IR: a wip column and a review column, plus the remediation target. */
 function ir(): WorkflowIr {
@@ -188,6 +194,50 @@ describe("workflow column boundary — capacity rejection on the remediation cro
       nodeId: "code-review-remediation",
     }));
     expect(boundary.currentColumn()).toBe("in-progress");
+  });
+
+  /*
+  FNXC:WipAdmissionParkCooldown 2026-11-19-23:25 (RUFU-558):
+  This crossing is the OTHER writer of the one durable WIP-admission episode — a `capacity-exhausted`
+  rejection here parks the run, and `recordWipAdmissionPark` stamps the same
+  `sourceMetadata.wipAdmissionStall` key the hold/release sweep stamps. RUFU-558 bounds re-attempt cadence
+  for ONE class and this pin holds the line from the review-lane side: a card refused here must never fall
+  into the paced class. A widened bound would silently stop the remediation crossing from being retried on
+  the pass a WIP slot frees, which is the exact release-timeliness contract this card is forbidden to break.
+
+  FNXC:WipAdmissionParkCooldown 2026-11-22-06:05 (RUFU-558):
+  The class is the SWEEP's held reason, never the episode's gate code — the shipped predicate takes
+  `heldReason` and an allowlist one reason wide (`move-rejected-or-no-slot`, produced solely by the
+  expensive leg). A boundary crossing is not that leg: it publishes `column-capacity` / seam facts the live
+  sample re-derives, and no sweep arm reports the paced reason for a card it parked. So the guarantee this
+  pin holds is class-scope, asserted on the real sweep vocabulary rather than on the marker's label — a
+  label is not proof of which arm spoke last, which is the misreading that made the first cut inert.
+  */
+  it("refuses to place a boundary capacity park in the sweep's one memo-skipped class", () => {
+    const task = {
+      id: "FN-CAP1",
+      column: "in-review",
+      sourceMetadata: {
+        [WIP_ADMISSION_STALL_METADATA_KEY]: {
+          code: "column-capacity",
+          signature: "capacity|in-review->in-progress",
+          nodeId: "code-review-remediation",
+          fromColumn: "in-review",
+          toColumn: "in-progress",
+          lastAt: new Date().toISOString(),
+          firstAt: new Date().toISOString(),
+          stallCount: 1,
+        },
+      },
+    } as unknown as Task;
+
+    // Every held reason the sweep can report for a lane-capacity wait sits outside the one-wide allowlist,
+    // so a boundary-parked card is never paced — however fresh its episode is.
+    for (const heldReason of ["downstream-full", "no-downstream-capacity-column", "awaiting-approval"]) {
+      expect(wipAdmissionReleaseAttemptIsCooling(task, heldReason)).toBe(false);
+    }
+    // An episode nobody paced keeps declining the GRAPH re-entry — one episode, two different rules.
+    expect(wipAdmissionParkDefersDispatch(task)).toBeTruthy();
   });
 });
 

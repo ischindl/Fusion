@@ -106,7 +106,7 @@ only in an in-process `Map` that a restart wipes and that never reaches the card
 durable episode is what turns "the engine knew why and said nothing" into an operator-visible wait; the
 refresh floor inside `wipAdmissionStallWrite` is what makes calling it from a poll safe.
 */
-import { publishWipAdmissionHold } from "./wip-admission-park.js";
+import { publishWipAdmissionHold, wipAdmissionReleaseAttemptIsCooling } from "./wip-admission-park.js";
 /*
 FNXC:HoldReleaseArmedPriority 2026-11-21-06:30 (RUFU-807 Step 3):
 The naming half of the same fix, imported beside the capacity publisher it sits next to in the pass: one
@@ -2032,6 +2032,42 @@ export async function runHoldReleaseSweep(
             const occupants = countCapacitySlot(allTasks, effectiveWorkflowIdByTask, new Set(resolveWipBudgetColumns(ir, capacityTarget)), workflowId, capacity.countPending);
             capacityFactsByTaskId.set(task.id, { poolId: workflowId, occupants, limit: capacity.limit });
             if (occupants >= capacity.limit) { trackHeld(task.id, "downstream-full", deps.now()); result.held.push({ taskId: task.id, reason: "downstream-full" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+          }
+          /*
+          FNXC:WipAdmissionParkCooldown 2026-11-19-21:20 (RUFU-558):
+          The read-back this sweep never had. A card the expensive leg refused — the readiness probes,
+          `reserveSlot`, the in-transaction move — within the current refresh floor, by the one arm that has
+          no cheap live re-check, is re-paid for that refusal every ~15 s pass otherwise. Unlike
+          `downstream-full`, which the in-memory lane sample above re-derives every pass for free, this
+          verdict only exists as the residue of an attempt, so the pass carries the refusal it already
+          measured instead of paying to rediscover it.
+
+          Placement is load-bearing in both directions: AFTER the `downstream-full` sample and its
+          `capacityFactsByTaskId.set` so (i) a pool that just freed still releases the card THIS pass
+          (RUFU-393's fairness contract, owned by `hold-release-capacity-release-crosses.test.ts`) and (ii)
+          the episode refreshed by the publish pass below keeps THIS pass's real pool sample rather than a
+          stale one (RUFU-372); and BEFORE `evaluateCapacityHoldReadiness` so the reads are actually saved.
+
+          FNXC:WipAdmissionParkCooldown 2026-11-22-05:18 (RUFU-558):
+          Two axes, one predicate. The CLASS comes from this sweep's own held reason (`heldSince`, the arm
+          that actually refused), not from the episode's gate code: `moreSpecificWipAdmissionGate` sharpens
+          that label upward only and ranks `move-rejected-or-no-slot` below `downstream-full` /
+          `column-capacity`, so any card that ever reported a rank-4 label would keep it and never be skipped
+          - inert on the ~60-of-138 measured population. The WHEN stays the episode's own refresh clock, the
+          same `lastAt` freshness test `wipAdmissionParkDefersGraphEntry` already applies, because
+          `heldSince.sinceMs` never moves while the reason holds and an age from a start that never moves
+          stops bounding one floor in. Reporting the CARRIED reason (not a new one) and calling no `trackHeld`
+          here keeps `sinceMs` = the real wait, so the summary's `longest held` and the release log line stay
+          truthful, and no new held reason enters `SWEEP_ARM_TO_PARK_CODE`. Fail-open: no clock entry - a
+          fresh card, or the first pass after an engine restart, since the map is process-local while the
+          episode is durable - evaluates the card exactly as before, which is why this adds no durable state
+          and no migration.
+          */
+          const carried = heldSince.get(task.id)?.reason;
+          if (carried !== undefined && wipAdmissionReleaseAttemptIsCooling(task, carried, deps.now())) {
+            result.held.push({ taskId: task.id, reason: carried });
+            evaluatedTaskIds.add(task.id);
+            return { kind: "skip" };
           }
           shouldRelease = true;
         }

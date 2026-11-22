@@ -12,6 +12,19 @@ The third defect in the reported incident was that a withheld card never crossed
 3. two workflow pools stay independent. Step 1 proved the host budget is per project and the refusal holder set
    equals the live-claim set, so a full lane can only ever be THIS workflow's lane; a fix that widened the pool
    would have been a wrong fix wearing the right badge.
+
+FNXC:WipAdmissionParkCooldown 2026-11-19-22:05 (RUFU-558):
+Assertion 1's sentence — "must never become a gate" — is amended, and only in the register of this header; every
+assertion below stays byte-identical, because this file is the contract RUFU-558 had to satisfy rather than work
+around. What it now means: the published verdict never withholds a crossing that the LIVE lane sample would
+grant, and it bounds the cadence at which the sweep re-pays for the one refusal class that has no cheap live
+re-check (`move-rejected-or-no-slot`, which only exists as the residue of an expensive attempt). Both halves of
+that sentence are load-bearing here. The skip RUFU-558 adds sits strictly AFTER the in-memory occupancy count
+this file exercises, so case 1 still crosses in the first pass a slot frees; and its allowlist is one gate code
+wide, which is why the `parkedCard()` fixture below — `code: "downstream-full"`, the live sample's own verdict —
+is never a candidate for a skip at all. Had RUFU-558 bounded `downstream-full` too, this test would have gone red
+in exactly the pass its occupant leaves, and the fix for "invisible" would have become the second lock it already
+warns about. See `hold-release-capacity-cooldown.test.ts` for the bounded class and its per-arm attempt counts.
 */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";

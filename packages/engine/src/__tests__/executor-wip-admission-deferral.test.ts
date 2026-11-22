@@ -22,7 +22,7 @@ work`) are the same function read from two sides, and a suite that tests one sid
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task, WorkflowIr } from "@fusion/core";
 import { WIP_ADMISSION_STALL_METADATA_KEY, WIP_ADMISSION_STALL_REFRESH_FLOOR_MS } from "@fusion/core";
-import { executeCore } from "../executor/execute-core.js";
+import { executeCore, type ExecuteCoreDeps } from "../executor/execute-core.js";
 import { buildExecuteCoreDeps } from "../executor/deps-bags.js";
 import {
   wipAdmissionGateHasInLaneRemedy,
@@ -30,10 +30,28 @@ import {
   wipAdmissionInLaneWorkProbe,
   wipAdmissionParkDefersDispatch,
   wipAdmissionParkDefersGraphEntry,
+  wipAdmissionReleaseAttemptIsCooling,
 } from "../execution/wip-admission-park.js";
 
 const TASK_ID = "RUFU-393";
-const NOW = Date.parse("2026-11-02T12:00:00.000Z");
+/*
+FNXC:WipAdmissionParkCooldown 2026-11-19-22:55 (RUFU-558):
+This anchor was a frozen literal (`Date.parse("2026-11-02T12:00:00.000Z")`) while the marker it stamps is
+read against the WALL CLOCK. `wipAdmissionParkDefersDispatch` answers freshness as
+`now - lastAt < WIP_ADMISSION_STALL_REFRESH_FLOOR_MS`, and the surfaces under test - `executeCore` and the
+column-boundary hooks - call it with `Date.now()` and no injected clock. A fixture 15 minutes wide cannot
+survive a calendar: seventeen days after it was written, every `episode()` in this file aged out, and three
+`executeCore` cases went red because the PRODUCTION code correctly refused to trust a stale marker. The
+defect was in the fixture's clock, not in the guard.
+
+This is the same trap the file already names further down - "The deferral clock is wall-clock Date.now(),
+so 'old' must be expressed relative to real now" - which had been applied to the one aged case and not to
+the anchor every FRESH case inherits. Anchoring `NOW` to the real clock fixes both directions at once: a
+fresh `lastAt` stays fresh and `NOW - REFRESH_FLOOR` stays exactly at the floor, and every predicate case
+that injects `NOW` explicitly stays deterministic because its margins are 60 s and 15 min, not
+milliseconds.
+*/
+const NOW = Date.now();
 
 function episode(overrides: Record<string, unknown> = {}) {
   return {
@@ -422,5 +440,111 @@ describe("executeCore — the outer surface never starves in-lane work", () => {
     const host = { store: probeStore({ items: [] }), graphRouting: new Set<string>(), completionFinalizedTaskIds: new Set<string>(), options: {} };
     const deps = buildExecuteCoreDeps(host as never) as unknown as ExecuteCoreDeps;
     expect(typeof deps.hasInLaneWorkflowWork).toBe("function");
+  });
+});
+
+/*
+FNXC:WipAdmissionParkCooldown 2026-11-19-23:05 (RUFU-558):
+One episode, two lanes, two DIFFERENT rules — and that asymmetry is the design, so it is pinned rather than
+assumed. RUFU-393 gave the executor/graph lane a deferral (`wipAdmissionParkDefersGraphEntry`, called from
+`executeCore` and the continuation drain) and RUFU-558 gave the mover a bound. Both read the SAME
+`sourceMetadata.wipAdmissionStall` key, and neither lane may narrow the other:
+
+- a boundary capacity park (the hold→wip seam, and the in-review → in-progress remediation crossing) writes
+  the same one episode a sweep refusal writes, so there is exactly ONE per-card refusal state on the row;
+- the graph lane defers a DISPATCH on it whatever the gate code, because re-entering the graph to re-discover
+  one refusal is the 16 536-row storm this key exists to stop;
+- the release lane bounds a re-ATTEMPT only for the one code with no cheap live re-check, because the live
+  lane sample is what releases a card the pass its occupant leaves.
+
+The paired assertions below are what stops a future edit from unifying the two rules and silently breaking
+whichever lane the other test does not cover.
+*/
+describe("one episode, two lanes: the graph defers a dispatch on any gate, the sweep bounds only the no-cheap-recheck class", () => {
+  /** Every gate code the row may carry, from the same closed vocabulary the writer validates against. */
+  const ALL_GATE_CODES = [
+    "scheduler-seam",
+    "column-capacity",
+    "capacity-rejection-without-facts",
+    "downstream-full",
+    "move-rejected-or-no-slot",
+    "no-downstream-capacity-column",
+    "awaiting-planning",
+    "awaiting-approval",
+  ] as const;
+
+  it("the graph lane defers entry for EVERY gate code, including the boundary parks' own codes", () => {
+    for (const code of ALL_GATE_CODES) {
+      const parked = wipAdmissionParkDefersDispatch(parkedTask({
+        sourceMetadata: { [WIP_ADMISSION_STALL_METADATA_KEY]: episode({ code }) },
+      }), NOW);
+      expect(parked, `graph lane must defer a dispatch on ${code}`).toBeTruthy();
+    }
+  });
+
+  it("the release lane bounds exactly ONE held reason, so the graph's breadth cannot leak into the mover", () => {
+    /*
+    FNXC:WipAdmissionParkCooldown 2026-11-22-05:18 (RUFU-558):
+    The two lanes read the same row on DIFFERENT axes, and that asymmetry is the whole design: the graph lane
+    asks the marker (any gate), the mover asks its own held reason (one gate). This case used to enumerate
+    gate CODES on both sides, which is exactly what made the first cut inert - `moreSpecificWipAdmissionGate`
+    sharpens a label upward only, so a code-keyed sweep bound never fires for the ~60-of-138 cards whose
+    marker reads `downstream-full`. The mover's axis is therefore its reported held reason, and the row's
+    marker is held constant here because it decides only WHEN and the Rule-2 veto.
+    */
+    const ALL_HELD_REASONS = [
+      "move-rejected-or-no-slot",
+      "downstream-full",
+      "column-capacity",
+      "scheduler-seam",
+      "capacity-rejection-without-facts",
+      "no-downstream-capacity-column",
+      "no-release-target",
+      "deps-unsatisfied",
+      "timer-not-elapsed",
+      "awaiting-planning:seed-prompt",
+      "awaiting-approval",
+    ] as const;
+    const bounded: string[] = [];
+    const notBounded: string[] = [];
+    for (const reason of ALL_HELD_REASONS) {
+      const task = parkedTask({
+        sourceMetadata: { [WIP_ADMISSION_STALL_METADATA_KEY]: episode({ code: "move-rejected-or-no-slot" }) },
+      });
+      (wipAdmissionReleaseAttemptIsCooling(task, reason, NOW) ? bounded : notBounded).push(reason);
+    }
+    // Exactly one, and it is the arm whose re-derivation costs the whole expensive leg.
+    expect(bounded).toEqual(["move-rejected-or-no-slot"]);
+    // Every live-sampled class - including both boundary parks' - stays re-measured every pass.
+    expect(notBounded).toContain("scheduler-seam");
+    expect(notBounded).toContain("column-capacity");
+    expect(notBounded).toContain("downstream-full");
+    expect(notBounded).toHaveLength(ALL_HELD_REASONS.length - 1);
+  });
+
+  it("a boundary capacity park and a sweep refusal leave the row the same single episode key", () => {
+    /*
+    The review-lane twin of the bound: a card parked by the in-review → in-progress `capacity-exhausted`
+    remediation crossing carries `column-capacity`, which the sweep will NOT memo-skip. What still protects
+    it is the graph deferral, and what still explains it is the one shared key. Asserting the key count is
+    how a future second state gets caught here rather than in production.
+    */
+    const reviewParked = parkedTask({
+      column: "in-review",
+      sourceMetadata: { [WIP_ADMISSION_STALL_METADATA_KEY]: episode({
+        code: "column-capacity",
+        fromColumn: "in-review",
+        toColumn: "in-progress",
+      }) },
+    });
+
+    expect(Object.keys(reviewParked.sourceMetadata ?? {})).toEqual([WIP_ADMISSION_STALL_METADATA_KEY]);
+    // The review/executor lane still declines a re-dispatch of this parked card...
+    expect(wipAdmissionParkDefersDispatch(reviewParked, NOW)).toBeTruthy();
+    // ...while the sweep keeps re-measuring it. The mover's axis is its OWN held reason, and a lane whose
+    // occupancy is live-sampled reports `downstream-full` / `column-capacity`, both outside the one-wide
+    // allowlist; a card the sweep never refused through the pool cannot be paced by this bound at all.
+    expect(wipAdmissionReleaseAttemptIsCooling(reviewParked, "downstream-full", NOW)).toBe(false);
+    expect(wipAdmissionReleaseAttemptIsCooling(reviewParked, "column-capacity", NOW)).toBe(false);
   });
 });

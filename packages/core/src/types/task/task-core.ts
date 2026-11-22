@@ -878,6 +878,34 @@ Diagnostic-only by contract, exactly like the planning episode: this key must ne
 release, dispatch or merge. It is written KEY-level through `updateTask`'s `sourceMetadataPatch` so
 `duplicateOfTaskIds`/`handoffFrom`/`planAdmissionStall` survive, and it is cleared whenever the card
 actually changes column (the park is column-scoped by construction, so a move makes it false).
+
+FNXC:WipAdmissionParkCooldown 2026-11-19-21:21 (RUFU-558):
+"Never gates" still holds in the WHETHER direction and must not be read as having softened: no lane,
+status, pause, operator action, or merge decision may consult this key as a refusal, and the operator
+surfaces (`promoteHeldTask`, `releaseHeldTaskByEvent`) never consult it at all.
+
+FNXC:WipAdmissionParkCooldown 2026-11-22-05:18 (RUFU-558):
+The cadence bound RUFU-558 wired is real (at most one attempt per refresh floor — 4/hour/card instead of
+one per ~15 s poll, i.e. ~240/hour), but it keys on the sweep's OWN in-process held-reason clock
+(`hold-release.ts`'s `heldSince`), NOT on this episode. The first cut keyed it on `episode.code` and was
+inert across the whole measured population: `moreSpecificWipAdmissionGate` sharpens a stored code upward
+only, and `downstream-full` / `column-capacity` (rank 4) outrank `move-rejected-or-no-slot` (rank 3), so a
+card that ever reported a lane-shaped label kept it and the codeless refusal the pool actually returned
+never matched. The episode stays the DIAGNOSTIC that announces the wait; the clock is what paces it, which
+keeps this key diagnostic-only in both directions and adds no durable state. Three consequences a reader
+must not undo: the sweep never reads this row to decide cadence (it reads the row only to WRITE the
+episode); the bound is process-local, so a restart pays exactly one re-probe rather than needing a new
+durable field; and a held-REASON change re-stamps the clock, so a card that starts waiting on planning or
+approval is evaluated on the next pass. Which reasons may be paced is decided by
+`wipAdmissionReleaseAttemptIsCooling` over a one-wide allowlist of held reasons with no cheap live
+re-check, whose only member is `move-rejected-or-no-slot`. Every other class (`downstream-full`,
+`column-capacity`, the seam codes) is re-derived every pass from a live in-memory lane sample at zero DB
+reads, and that sample is what makes "released in the pass a slot frees" true, so memo-gating it would
+trade a storm for a 15-minute delay on every release on the board. `move-rejected-or-no-slot` has no cheap
+live re-check: it exists only as the report of an expensive leg (readiness probes, a `reserveSlot`
+worktree-pool probe, an in-transaction move). Re-deriving it every poll was the loop an operator watched
+burn pool connections for hours on a card whose column visibly had room, with no audit row to show for it.
+WHETHER never; WHEN for one class, measured by the sweep itself.
 */
 export const WIP_ADMISSION_STALL_METADATA_KEY = "wipAdmissionStall" as const;
 
@@ -1287,6 +1315,14 @@ export interface TaskSource {
    * - WIP-admission park episode (RUFU-393): `wipAdmissionStall`
    *   ({@link TaskWipAdmissionStallEpisode}, nullable) names the gate that refused this card's
    *   hold->WIP crossing and when it was first refused. Diagnostic-only; never gates release.
+   *   RUFU-558 narrowed that last clause to "never withholds a release the live facts would grant". The
+   *   cadence bound it added — 4 attempts/hour instead of ~240 — keys on the hold/release sweep's own
+   *   in-process held-reason clock, NOT on this episode: the episode's `code` is sharpened upward only, so
+   *   it cannot name the codeless refusal the bound exists to pace. The sweep therefore re-measures every
+   *   class whose live check is cheap (above all `downstream-full`, whose lane sample releases a card in the
+   *   pass a slot frees) and paces only the one class with no cheap re-check. WHETHER never; WHEN for that
+   *   one class. See `docs/architecture.md` section
+   *   "Withheld hold->WIP crossing invariant".
    * - `followUp: { version: number }` (FNXC:TaskFollowUp 2026-09-17-15:55) marks FN-513's
    *   FOLLOW-UP sub-type of `task_refine`: a child prepared from a still-running parent's plan and
    *   in-flight implementation. It is a versioned marker rather than a new `SourceType` because a
